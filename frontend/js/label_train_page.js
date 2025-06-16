@@ -788,7 +788,7 @@ async function showInferenceModal(datasetName) {
             let dateHTML = `<div class="form-check"><input class="form-check-input" type="checkbox" id="${dateDir}-im" onchange="updateChildrenCheckboxes('${dateDir}-im', true)"><label class="form-check-label" for="${dateDir}-im">${dateDir}</label></div>`;
             let sessionsHTML = "<div style='margin-left:20px'>";
             fetchedRecordingTree[dateDir].forEach(sessionDir => {
-                sessionsHTML += `<div class="form-check"><input class="form-check-input" type="checkbox" id="${dir}-${sessionDir}-im"><label class="form-check-label" for="${dateDir}-${sessionDir}-im">${sessionDir}</label></div>`;
+                sessionsHTML += `<div class="form-check"><input class="form-check-input" type="checkbox" id="${dateDir}-${sessionDir}-im"><label class="form-check-label" for="${dateDir}-${sessionDir}-im">${sessionDir}</label></div>`;
             });
             sessionsHTML += `</div>`;
             treeContainer.innerHTML += dateHTML + sessionsHTML;
