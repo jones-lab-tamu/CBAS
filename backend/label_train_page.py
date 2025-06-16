@@ -779,6 +779,19 @@ def cancel_commit_stage():
 # =================================================================
 
 @eel.expose
+def create_augmented_dataset(source_dataset_name: str, new_dataset_name: str):
+    """
+    (LAUNCHER) Spawns a background worker to create a new dataset with
+    augmented (horizontally flipped) videos and labels.
+    """
+    if not all([gui_state.proj, source_dataset_name, new_dataset_name]):
+        eel.showErrorOnLabelTrainPage("Project not loaded or invalid names provided.")()
+        return
+
+    print(f"Spawning worker to augment '{source_dataset_name}' into '{new_dataset_name}'")
+    eel.spawn(workthreads.augment_dataset_worker, source_dataset_name, new_dataset_name)
+
+@eel.expose
 def reload_project_data():
     """
     Triggers a full reload of the current project's data from the disk.

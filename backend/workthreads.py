@@ -33,7 +33,8 @@ import eel
 import cbas
 import gui_state
 import classifier_head
-
+import subprocess
+import shutil
 
 # =================================================================
 # LOGGING HELPER
@@ -55,6 +56,106 @@ def log_message(message: str, level: str = "INFO"):
 # =================================================================
 # WORKER THREAD CLASSES
 # =================================================================
+
+def augment_dataset_worker(source_dataset_name: str, new_dataset_name: str):
+    """
+    (WORKER) Creates a new dataset by creating augmented video files.
+    This process is resumable and idempotent.
+    """
+    try:
+        # 1. Get the source dataset
+        source_dataset = gui_state.proj.datasets.get(source_dataset_name)
+        if not source_dataset:
+            raise ValueError(f"Source dataset '{source_dataset_name}' not found.")
+
+        # =========================================================================
+        # Get or Create the new dataset
+        # =========================================================================
+        if new_dataset_name in gui_state.proj.datasets:
+            log_message(f"Found existing dataset '{new_dataset_name}'. Resuming augmentation...", "INFO")
+            new_dataset = gui_state.proj.datasets[new_dataset_name]
+        else:
+            log_message(f"Creating new dataset '{new_dataset_name}'. Beginning video processing...", "INFO")
+            new_dataset = gui_state.proj.create_dataset(
+                name=new_dataset_name,
+                behaviors=source_dataset.config.get("behaviors", []),
+                recordings_whitelist=source_dataset.config.get("whitelist", [])
+            )
+            if not new_dataset:
+                raise RuntimeError(f"Failed to create new dataset folder for '{new_dataset_name}'.")
+        # =========================================================================
+
+        ffmpeg_filter_chain = "hflip,eq=brightness=0.03:contrast=1.1,gblur=sigma=0.2"
+        
+        all_instances = [inst for behavior_list in source_dataset.labels["labels"].values() for inst in behavior_list]
+        unique_video_paths = set(os.path.join(gui_state.proj.path, inst["video"]) for inst in all_instances if "video" in inst)
+        total_videos_to_process = len(unique_video_paths)
+        if total_videos_to_process == 0:
+            log_message("No videos found in source dataset to augment.", "WARN")
+            eel.refreshAllDatasets()()
+            return
+
+        videos_processed_count = 0
+        processed_videos = {} 
+
+        for source_video_path in unique_video_paths:
+            videos_processed_count += 1
+            progress_label = f"Processing video {videos_processed_count} of {total_videos_to_process}"
+            percent_complete = (videos_processed_count / total_videos_to_process) * 100
+            eel.update_augmentation_progress(percent_complete, progress_label)()
+            
+            video_dir = os.path.dirname(source_video_path)
+            augmented_video_name = f"{os.path.splitext(os.path.basename(source_video_path))[0]}_aug.mp4"
+            output_video_path = os.path.join(video_dir, augmented_video_name)
+
+            # =========================================================================
+            # Check Before Processing
+            # =========================================================================
+            if os.path.exists(output_video_path):
+                log_message(f"Skipping already augmented video: {os.path.basename(output_video_path)}", "INFO")
+            else:
+                log_message(f"Augmenting: {os.path.basename(source_video_path)} -> {os.path.basename(output_video_path)}", "INFO")
+                command = [
+                    "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                    "-i", source_video_path,
+                    "-vf", ffmpeg_filter_chain,
+                    "-c:a", "copy",
+                    output_video_path
+                ]
+                subprocess.run(command, check=True)
+            # =========================================================================
+            
+            processed_videos[source_video_path] = output_video_path
+
+        # This final part now runs safely after all videos are confirmed to exist
+        log_message("Finalizing label file...", "INFO")
+        new_labels = []
+        for instance in all_instances:
+            source_path = os.path.join(gui_state.proj.path, instance["video"])
+            if source_path in processed_videos:
+                new_instance = instance.copy()
+                augmented_video_path = processed_videos[source_path]
+                new_instance["video"] = os.path.relpath(augmented_video_path, start=gui_state.proj.path)
+                new_labels.append(new_instance)
+        
+        new_dataset.labels = source_dataset.labels.copy()
+        for inst in new_labels:
+            behavior_name = inst.get("label")
+            if behavior_name in new_dataset.labels["labels"]:
+                new_dataset.labels["labels"][behavior_name].append(inst)
+        with open(new_dataset.labels_path, "w") as f:
+            yaml.dump(new_dataset.labels, f, allow_unicode=True)
+
+        log_message(f"Augmentation complete! The '{new_dataset_name}' dataset is ready.", "INFO")
+        eel.refreshAllDatasets()()
+
+    except Exception as e:
+        log_message(f"Augmentation failed: {e}", "ERROR")
+        import traceback
+        traceback.print_exc()
+        eel.showErrorOnLabelTrainPage(f"Augmentation failed: {e}")()
+    finally:
+        eel.spawn(eel.update_augmentation_progress(-1))
 
 class EncodeThread(threading.Thread):
     """A background thread that continuously processes video encoding tasks."""

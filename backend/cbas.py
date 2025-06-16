@@ -336,13 +336,29 @@ class Recording:
         self.name = os.path.basename(path)
         
         all_files = [f.path for f in os.scandir(self.path) if f.is_file()]
-        self.video_files = sorted([f for f in all_files if f.endswith(".mp4")], key=lambda x: int(x.split("_")[-1].split(".")[0]))
+
+        def sort_key(filepath):
+            # Use regex to find the number sequence before the extension or _aug
+            # This looks for one or more digits (\d+) that are followed by
+            # either "_aug" or the ".mp4" extension.
+            match = re.search(r'_(\d+)(?:_aug)?\.mp4', os.path.basename(filepath))
+            if match:
+                return int(match.group(1))
+            return -1 # Fallback for non-matching names, sorts them first
+
+        self.video_files = sorted(
+            [f for f in all_files if f.endswith(".mp4")],
+            key=sort_key
+        )
+        
         self.encoding_files = [f for f in all_files if f.endswith("_cls.h5")]
         self.unencoded_files = [vf for vf in self.video_files if vf.replace(".mp4", "_cls.h5") not in self.encoding_files]
 
         self.classifications = {}
         for csv_file in [f for f in all_files if f.endswith(".csv")]:
             try:
+                # This part is for parsing model names from output files, it's unrelated
+                # to the video sorting issue and should still work fine.
                 model_name = os.path.basename(csv_file).split("_")[-2]
                 self.classifications.setdefault(model_name, []).append(csv_file)
             except IndexError: continue
@@ -793,12 +809,11 @@ class Project:
         self.datasets[name] = ds
         return ds
 
-    def convert_instances(self, insts: list, seq_len: int, behaviors: list, progress_callback=None) -> tuple:
+    def convert_instances(self, project_root_path: str, insts: list, seq_len: int, behaviors: list, progress_callback=None) -> tuple:
         """Converts labeled instances from dicts into training-ready tensors."""
         seqs, labels = [], []
         half_seqlen = seq_len // 2
 
-        # Group instances by their source video file to avoid redundant H5 file reads.
         instances_by_video = {}
         for inst in insts:
             video_path = inst.get("video")
@@ -807,19 +822,20 @@ class Project:
         
         total_videos = len(instances_by_video)
         
-        # Iterate through each unique video file, loading it only ONCE.
-        for i, (video_path, video_instances) in enumerate(instances_by_video.items()):
+        for i, (relative_video_path, video_instances) in enumerate(instances_by_video.items()):
             if progress_callback:
                 progress_callback((i + 1) / total_videos * 100)
             
-            cls_path = video_path.replace(".mp4", "_cls.h5")
+            # Use the passed-in project_root_path instead of gui_state
+            absolute_video_path = os.path.join(project_root_path, relative_video_path)
+            cls_path = os.path.splitext(absolute_video_path)[0] + "_cls.h5"
+            
             if not os.path.exists(cls_path):
-                print(f"Warning: H5 file not found, skipping instances for {video_path}")
+                print(f"Warning: H5 file not found, skipping instances for {relative_video_path}")
                 continue
 
             try:
                 with h5py.File(cls_path, "r") as f:
-                    # Load the entire H5 data for this video just once.
                     cls_arr = f["cls"][:]
             except Exception as e:
                 print(f"Warning: Could not read H5 file {cls_path}: {e}")
@@ -828,10 +844,8 @@ class Project:
             if cls_arr.ndim < 2 or cls_arr.shape[0] < seq_len:
                 continue
             
-            # Center the embeddings for this video once.
             cls_centered = cls_arr - np.mean(cls_arr, axis=0)
             
-            # Now process all instances belonging to this specific video.
             for inst in video_instances:
                 start = int(inst.get("start", -1))
                 end = int(inst.get("end", -1))
@@ -854,12 +868,10 @@ class Project:
                         continue
                     
                     try:
-                        seqs.append(torch.from_numpy(window).float()) # Use .float() for safety
+                        seqs.append(torch.from_numpy(window).float())
                         labels.append(torch.tensor(behaviors.index(inst["label"])).long())
                     except ValueError:
-                        # This happens if an instance's label is not in the official behavior list.
-                        # We simply skip this invalid instance.
-                        if seqs: seqs.pop() # Remove the corresponding sequence
+                        if seqs: seqs.pop()
         
         if not seqs:
             return [], []
@@ -869,7 +881,6 @@ class Project:
         seqs, labels = zip(*shuffled_pairs)
         
         return list(seqs), list(labels)
-
     def _load_dataset_common(self, name, split):
         """
         Helper to load a dataset, using a Stratified Group Split strategy.
@@ -974,8 +985,9 @@ class Project:
         def train_prog(p): progress_callback(p*0.5) if progress_callback else None
         def test_prog(p): progress_callback(50 + p*0.5) if progress_callback else None
         
-        train_seqs, train_labels = self.convert_instances(train_insts, seq_len, behaviors, train_prog)
-        test_seqs, test_labels = self.convert_instances(test_insts, seq_len, behaviors, test_prog)
+        # Pass self.path to the function call
+        train_seqs, train_labels = self.convert_instances(self.path, train_insts, seq_len, behaviors, train_prog)
+        test_seqs, test_labels = self.convert_instances(self.path, test_insts, seq_len, behaviors, test_prog)
         
         return BalancedDataset(train_seqs, train_labels, behaviors), StandardDataset(test_seqs, test_labels), train_insts, test_insts
 
@@ -987,13 +999,15 @@ class Project:
         def train_prog(p): progress_callback(p*0.5) if progress_callback else None
         def test_prog(p): progress_callback(50 + p*0.5) if progress_callback else None
         
-        train_seqs, train_labels = self.convert_instances(train_insts, seq_len, behaviors, train_prog)
+        # Pass self.path to the function call
+        train_seqs, train_labels = self.convert_instances(self.path, train_insts, seq_len, behaviors, train_prog)
         if not train_labels: return None, None, None, None, None
         
         class_counts = np.bincount([lbl.item() for lbl in train_labels], minlength=len(behaviors))
         weights = [sum(class_counts) / (len(behaviors) * c) if c > 0 else 0 for c in class_counts]
 
-        test_seqs, test_labels = self.convert_instances(test_insts, seq_len, behaviors, test_prog)
+        # Pass self.path to the function call
+        test_seqs, test_labels = self.convert_instances(self.path, test_insts, seq_len, behaviors, test_prog)
 
         return StandardDataset(train_seqs, train_labels), StandardDataset(test_seqs, test_labels), weights, train_insts, test_insts
 

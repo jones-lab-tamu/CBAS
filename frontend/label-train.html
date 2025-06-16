@@ -112,6 +112,29 @@
     </div>
   </div>
 
+<!-- Modal for Augmenting a Dataset -->
+<div class="modal" tabindex="-1" id="augmentDatasetModal">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Augment Dataset: <span id="aug-dataset-name" class="fw-bold"></span></h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p>This will create a new dataset named <strong id="aug-new-dataset-name"></strong>.</p>
+        <p>The process will physically copy every labeled video and apply a horizontal flip, a slight variation in brightness and contrast, and a small Gaussian blur. This will create a more diverse dataset to help the model generalize better and reduce overfitting.</p>
+        <div class="alert alert-warning" role="alert">
+          <i class="bi bi-exclamation-triangle-fill me-2"></i><strong>Warning:</strong> This can use a significant amount of disk space and may take several minutes depending on the number of videos.
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-primary" id="startAugmentationButton">Start Augmentation</button>
+      </div>
+    </div>
+  </div>
+</div>
+
   <!-- Modal for Starting Inference/Classification -->
   <div class="modal" tabindex="-1" id="inferenceModal">
     <div class="modal-dialog modal-dialog-centered">
@@ -426,6 +449,18 @@
     </div>
   </div>
 </div>
+
+  <!-- =================================================================
+  PROGRESS BAR OVERLAY
+  ================================================================== -->
+  <div id="progress-bar-overlay" class="fixed-bottom p-3" style="display: none; background-color: rgba(43, 48, 53, 0.9); z-index: 1040;">
+    <div class="container">
+        <h6 id="progress-bar-label" class="text-light mb-2">Augmenting Dataset...</h6>
+        <div class="progress" style="height: 25px;">
+            <div id="progress-bar-element" class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 0%;" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">0%</div>
+        </div>
+    </div>
+  </div>
 
   <!-- =================================================================
   LOG PANEL FOOTER

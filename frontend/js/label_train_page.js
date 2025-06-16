@@ -8,6 +8,56 @@
 // EEL-EXPOSED & LOG PANEL FUNCTIONS
 // =================================================================
 
+eel.expose(update_augmentation_progress);
+function update_augmentation_progress(percent, label = "Augmenting Dataset...") {
+    const overlay = document.getElementById('progress-bar-overlay');
+    const bar = document.getElementById('progress-bar-element');
+    const barLabel = document.getElementById('progress-bar-label');
+
+    if (!overlay || !bar || !barLabel) return;
+
+    if (percent < 0) { // A negative value signals that the task is done/failed.
+        overlay.style.display = 'none';
+        return;
+    }
+
+    overlay.style.display = 'block';
+    barLabel.innerText = label;
+
+    const displayPercent = Math.round(percent);
+    bar.style.width = `${displayPercent}%`;
+    bar.innerText = `${displayPercent}%`;
+    bar.setAttribute('aria-valuenow', displayPercent);
+
+    if (displayPercent >= 100) {
+        barLabel.innerText = "Finalizing...";
+        // Optional: Hide after a short delay
+        setTimeout(() => {
+            overlay.style.display = 'none';
+        }, 2000);
+    }
+}
+
+
+// 2. Find and REPLACE the existing startAugmentation function with this new version.
+async function startAugmentation(sourceDatasetName, newDatasetName) {
+    if (!sourceDatasetName || !newDatasetName) return;
+
+    augmentDatasetBsModal.hide();
+    
+    // HIDE the spinner and SHOW the progress bar.
+    document.getElementById('cover-spin').style.visibility = 'hidden';
+    update_augmentation_progress(0, `Augmenting '${sourceDatasetName}'...`);
+
+    try {
+        await eel.create_augmented_dataset(sourceDatasetName, newDatasetName)();
+    } catch (error) {
+        showErrorOnLabelTrainPage("An error occurred while trying to start the augmentation task: " + error.message);
+        // Hide the progress bar on error
+        update_augmentation_progress(-1);
+    }
+}
+
 eel.expose(update_log_panel);
 function update_log_panel(message) {
     const logContainer = document.getElementById('log-panel-content');
@@ -58,6 +108,7 @@ const errorModalElement = document.getElementById('errorModal');
 const preLabelModalElement = document.getElementById('preLabelModal');
 const importVideosModalElement = document.getElementById('importVideosModal');
 const manageDatasetModalElement = document.getElementById('manageDatasetModal');
+const augmentDatasetModalElement = document.getElementById('augmentDatasetModal');
 
 let addDatasetBsModal = addDatasetModalElement ? new bootstrap.Modal(addDatasetModalElement) : null;
 let trainBsModal = trainModalElement ? new bootstrap.Modal(trainModalElement) : null;
@@ -66,7 +117,7 @@ let generalErrorBsModal = errorModalElement ? new bootstrap.Modal(errorModalElem
 let preLabelBsModal = preLabelModalElement ? new bootstrap.Modal(preLabelModalElement) : null;
 let importVideosBsModal = importVideosModalElement ? new bootstrap.Modal(importVideosModalElement) : null;
 let manageDatasetBsModal = manageDatasetModalElement ? new bootstrap.Modal(manageDatasetModalElement) : null;
-
+let augmentDatasetBsModal = augmentDatasetModalElement ? new bootstrap.Modal(augmentDatasetModalElement) : null;
 
 // =================================================================
 // ROUTING & UTILITY FUNCTIONS
@@ -126,6 +177,18 @@ function createCountCellHTML(data) {
     return `<span title="${instTooltip}">${instHtml}</span> <span title="${frameTooltip}">${frameHtml}</span>`;
 }
 
+function showAugmentModal(datasetName) {
+    if (!augmentDatasetBsModal) return;
+    const newName = `${datasetName}_aug`;
+    document.getElementById('aug-dataset-name').innerText = datasetName;
+    document.getElementById('aug-new-dataset-name').innerText = newName;
+    
+    // Attach the onclick event here to ensure we have the correct datasetName
+    const startBtn = document.getElementById('startAugmentationButton');
+    startBtn.onclick = () => startAugmentation(datasetName, newName);
+
+    augmentDatasetBsModal.show();
+}
 
 // =================================================================
 // EEL-EXPOSED FUNCTIONS (Called FROM Python)
@@ -462,6 +525,21 @@ function jumpToInstance(direction) {
     eel.jump_to_instance(direction)();
 }
 
+async function startAugmentation(sourceDatasetName, newDatasetName) {
+    if (!sourceDatasetName || !newDatasetName) return;
+
+    augmentDatasetBsModal.hide();
+    document.getElementById('cover-spin').style.visibility = 'visible';
+    update_log_panel(`Starting augmentation for dataset '${sourceDatasetName}'. A new dataset will be created at '${newDatasetName}'.`);
+
+    try {
+        await eel.create_augmented_dataset(sourceDatasetName, newDatasetName)();
+    } catch (error) {
+        showErrorOnLabelTrainPage("An error occurred while trying to start the augmentation task: " + error.message);
+        document.getElementById('cover-spin').style.visibility = 'hidden';
+    }
+}
+
 async function showPreLabelOptions(datasetName) {
     const modelSelect = document.getElementById('pl-model-select');
     const sessionSelect = document.getElementById('pl-session-select');
@@ -561,12 +639,13 @@ async function onSessionSelectChange(event) {
     }
 }
 
+eel.expose(refreshAllDatasets);
 async function refreshAllDatasets() {
     console.log("Refreshing datasets from disk...");
     document.getElementById('cover-spin').style.visibility = 'visible';
     try {
-        await eel.reload_project_data()();
-        await loadInitialDatasetCards();
+        await eel.reload_project_data()(); // Python reloads its internal data
+        await loadInitialDatasetCards();   // JavaScript redraws the UI
     } catch (error) {
         console.error("Failed to refresh datasets:", error);
         showErrorOnLabelTrainPage("An error occurred while trying to refresh the datasets.");
@@ -924,6 +1003,11 @@ async function loadInitialDatasetCards() {
                         <button class="btn btn-sm btn-outline-secondary me-auto" type="button" onclick="showManageDatasetModal('${datasetName}')" data-bs-toggle="tooltip" data-bs-placement="top" title="View dataset files on disk">
                             <i class="bi bi-folder2-open"></i> Manage
                         </button>
+						
+						<button class="btn btn-sm btn-outline-info me-1" type="button" onclick="showAugmentModal('${datasetName}')" data-bs-toggle="tooltip" data-bs-placement="top" title="Create a new dataset with augmented (flipped) videos">
+							<i class="bi bi-images"></i> Augment
+						</button>						
+						
                         <button class="btn btn-sm btn-outline-primary me-1" type="button" onclick="showPreLabelOptions('${datasetName}')" data-bs-toggle="tooltip" data-bs-placement="top" title="Label videos for this dataset">Label</button>
                         <button class="btn btn-sm btn-outline-success me-1" type="button" onclick="showTrainModal('${datasetName}')" data-bs-toggle="tooltip" data-bs-placement="top" title="Train a new model with this dataset's labels">Train</button>`;
                 
@@ -999,6 +1083,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('modal-import-button-final')?.addEventListener('click', handleImportSubmit);
 	document.getElementById('pl-model-select')?.addEventListener('change', onModelSelectChange);
     document.getElementById('pl-session-select')?.addEventListener('change', onSessionSelectChange);
+	document.getElementById('startAugmentationButton')?.addEventListener('click', startAugmentation);
 
     const fullTimelineElement = document.getElementById('full-timeline-image');
     if (fullTimelineElement) {
