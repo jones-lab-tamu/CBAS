@@ -238,6 +238,7 @@ class TrainingThread(threading.Thread):
             os.mkdir(model_dir)
 
         torch.save(model.state_dict(), model_path)
+        task.dataset.config["model"] = task.name
 
         with open(task.dataset.config_path, "w+") as file:
             yaml.dump(task.dataset.config, file, allow_unicode=True)
