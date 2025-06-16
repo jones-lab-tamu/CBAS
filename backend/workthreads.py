@@ -239,7 +239,6 @@ class TrainingThread(threading.Thread):
             log_message(f"Loading and processing dataset '{task.name}' for training...", "INFO")
             def update_progress(p): eel.updateDatasetLoadProgress(task.name, p)()
             
-            # --- START OF MODIFICATION ---
             train_insts, test_insts = None, None # Initialize
             if task.training_method == "weighted_loss":
                 train_ds, test_ds, weights, train_insts, test_insts = gui_state.proj.load_dataset_for_weighted_loss(task.name, seq_len=task.sequence_length, progress_callback=update_progress)
@@ -250,7 +249,6 @@ class TrainingThread(threading.Thread):
             # Error check if loading failed
             if train_ds is None or test_ds is None or train_insts is None or test_insts is None:
                 raise ValueError("Dataset loading returned None. Check for empty labels or other data issues.")
-            # --- END OF MODIFICATION ---
             
             eel.updateDatasetLoadProgress(task.name, 100)() # Signal completion
             log_message(f"Dataset '{task.name}' loaded successfully.", "INFO")
@@ -271,11 +269,19 @@ class TrainingThread(threading.Thread):
             trial_model, trial_reports, trial_best_epoch = cbas.train_lstm_model(
                 train_ds, test_ds, task.sequence_length, task.behaviors,
                 lr=task.learning_rate, batch_size=task.batch_size,
-                epochs=task.epochs, device=self.device, class_weights=weights
+                epochs=task.epochs, device=self.device, class_weights=weights,
+                patience=task.patience
             )
 
             if trial_model and trial_reports and trial_best_epoch != -1:
-                f1 = trial_reports[trial_best_epoch].sklearn_report.get("weighted avg", {}).get("f1-score", -1.0)
+                # We need to access the VALIDATION report (val_report) to get the F1 score.
+                
+                # Get the PerformanceReport object for the best epoch of this trial
+                best_epoch_report = trial_reports[trial_best_epoch]
+                
+                # Access the f1-score from the validation report inside that object
+                f1 = best_epoch_report.val_report.get("weighted avg", {}).get("f1-score", -1.0)
+                                              
                 eel.updateTrainingStatusOnUI(task.name, f"Trial {i + 1} F1: {f1:.4f}")()
                 if f1 > best_f1:
                     log_message(f"New best model in Trial {i + 1} with F1: {f1:.4f}", "INFO")
@@ -290,7 +296,14 @@ class TrainingThread(threading.Thread):
 
     def _save_training_results(self, task, model, reports, best_epoch_idx, train_insts, test_insts):
         """Saves the best model, performance reports, and plots."""
-        log_message(f"Saving results for best model (F1: {reports[best_epoch_idx].sklearn_report['weighted avg']['f1-score']:.4f})...", "INFO")
+        # Get the specific report for the best epoch
+        best_report_obj = reports[best_epoch_idx]
+        
+        # The report to save to disk and display should be from the VALIDATION set
+        best_validation_report = best_report_obj.val_report
+        best_validation_cm = best_report_obj.val_cm
+        
+        log_message(f"Saving results for best model (Validation F1: {best_validation_report['weighted avg']['f1-score']:.4f})...", "INFO")
         model_dir = os.path.join(gui_state.proj.models_dir, task.name)
         os.makedirs(model_dir, exist_ok=True)
         torch.save(model.state_dict(), os.path.join(model_dir, "model.pth"))
@@ -298,26 +311,29 @@ class TrainingThread(threading.Thread):
         with open(os.path.join(model_dir, "config.yaml"), "w") as f:
             yaml.dump({"seq_len": task.sequence_length, "behaviors": task.behaviors}, f)
         
-        best_report = reports[best_epoch_idx]
+        # Save the validation report to the dataset folder
         with open(os.path.join(task.dataset.path, "performance_report.yaml"), 'w') as f:
-            yaml.dump(best_report.sklearn_report, f)
+            yaml.dump(best_validation_report, f)
         
-        save_confusion_matrix_plot(best_report.confusion_matrix, os.path.join(task.dataset.path, "confusion_matrix_BEST.png"))
+        # Save the validation confusion matrix
+        save_confusion_matrix_plot(best_validation_cm, os.path.join(task.dataset.path, "confusion_matrix_BEST.png"))
         
         cm_dir = os.path.join(task.dataset.path, "epoch_confusion_matrices")
         os.makedirs(cm_dir, exist_ok=True)
         for i, r in enumerate(reports):
-            if r.confusion_matrix.size > 0:
-                save_confusion_matrix_plot(r.confusion_matrix, os.path.join(cm_dir, f"epoch_{i+1}_cm.png"))
+            # Save the validation CM for each epoch for potential review
+            if r.val_cm.size > 0:
+                save_confusion_matrix_plot(r.val_cm, os.path.join(cm_dir, f"epoch_{i+1}_cm.png"))
 
+        # Now, call the plotting function with the full list of epoch reports
         for metric in ["f1-score", "recall", "precision"]:
             plot_report_list_metric(reports, metric, task.behaviors, task.dataset.path)
             
         gui_state.proj.models[task.name] = cbas.Model(model_dir)
-        # Pass the instance lists to the UI update function
-        self._update_metrics_in_ui(task.name, best_report.sklearn_report, task.behaviors, task.dataset, train_insts, test_insts)
+        # The UI metrics should reflect the model's performance on unseen (validation) data
+        self._update_metrics_in_ui(task.name, best_validation_report, task.behaviors, task.dataset, train_insts, test_insts)
         log_message(f"Training for '{task.name}' complete. Model and reports saved.", "INFO")
-        eel.updateTrainingStatusOnUI(task.name, f"Training complete. Best F1: {best_report.sklearn_report['weighted avg']['f1-score']:.4f}")
+        eel.updateTrainingStatusOnUI(task.name, f"Training complete. Best Validation F1: {best_validation_report['weighted avg']['f1-score']:.4f}")
 
     def _update_metrics_in_ui(self, dataset_name, report_dict, behaviors, dataset_obj, train_insts, test_insts):
         """
@@ -428,11 +444,12 @@ class TrainingThread(threading.Thread):
 
 class TrainingTask():
     """A simple data class to hold all parameters for a single training job."""
-    def __init__(self, name, dataset, behaviors, batch_size, learning_rate, epochs, sequence_length, training_method):
+    def __init__(self, name, dataset, behaviors, batch_size, learning_rate, epochs, sequence_length, training_method, patience): # Add patience
         self.name, self.dataset, self.behaviors = name, dataset, behaviors
         self.batch_size, self.learning_rate = batch_size, learning_rate
         self.epochs, self.sequence_length = epochs, sequence_length
         self.training_method = training_method
+        self.patience = patience # Store patience
 
 
 def save_confusion_matrix_plot(cm_data: np.ndarray, path: str):
@@ -446,24 +463,39 @@ def save_confusion_matrix_plot(cm_data: np.ndarray, path: str):
 
 
 def plot_report_list_metric(reports: list, metric: str, behaviors: list, out_dir: str):
-    """Plots a given metric (e.g., 'f1-score') over epochs for all behaviors."""
+    """Plots a given metric over epochs for all behaviors, for both training and validation sets."""
     if not reports: return
     plt.figure(figsize=(10, 7))
     epochs = range(1, len(reports) + 1)
+    
+    # Use seaborn's color palette for distinct colors
+    colors = plt.cm.get_cmap('tab10', len(behaviors))
 
-    for b_name in behaviors:
-        values = [r.sklearn_report.get(b_name, {}).get(metric, np.nan) for r in reports]
-        if not all(np.isnan(v) for v in values):
-            plt.plot(epochs, values, marker='o', linestyle='-', label=str(b_name))
+    # Plot Train and Validation metrics for each behavior
+    for i, b_name in enumerate(behaviors):
+        train_values = [r.train_report.get(b_name, {}).get(metric, np.nan) for r in reports]
+        val_values = [r.val_report.get(b_name, {}).get(metric, np.nan) for r in reports]
+        
+        if not all(np.isnan(v) for v in train_values):
+            plt.plot(epochs, train_values, marker='o', linestyle='-', label=f'{b_name} (Train)', color=colors(i))
+        if not all(np.isnan(v) for v in val_values):
+            plt.plot(epochs, val_values, marker='x', linestyle='--', label=f'{b_name} (Val)', color=colors(i))
 
-    w_avg_values = [r.sklearn_report.get('weighted avg', {}).get(metric, np.nan) for r in reports]
-    if not all(np.isnan(v) for v in w_avg_values):
-        plt.plot(epochs, w_avg_values, marker='x', linestyle='--', label='Weighted Avg')
+    # Plot Weighted Averages
+    w_avg_train = [r.train_report.get('weighted avg', {}).get(metric, np.nan) for r in reports]
+    w_avg_val = [r.val_report.get('weighted avg', {}).get(metric, np.nan) for r in reports]
+    
+    if not all(np.isnan(v) for v in w_avg_train):
+        plt.plot(epochs, w_avg_train, marker='o', linestyle='-', color='black', linewidth=2, label='Weighted Avg (Train)')
+    if not all(np.isnan(v) for v in w_avg_val):
+        plt.plot(epochs, w_avg_val, marker='x', linestyle='--', color='grey', linewidth=2, label='Weighted Avg (Val)')
 
-    plt.xlabel("Epochs"); plt.ylabel(metric.replace('-', ' ').title())
+    plt.xlabel("Epochs")
+    plt.ylabel(metric.replace('-', ' ').title())
     plt.title(f"{metric.replace('-', ' ').title()} Over Epochs")
     plt.legend(title="Behaviors", bbox_to_anchor=(1.04, 1), loc='upper left')
-    plt.grid(True); plt.tight_layout(rect=[0, 0, 0.85, 1])
+    plt.grid(True, linestyle='--', alpha=0.6)
+    plt.tight_layout(rect=[0, 0, 0.8, 1]) # Adjust rect to make space for the legend
     plt.savefig(os.path.join(out_dir, f"{metric.replace(' ', '_')}_epochs_plot.png"))
     plt.close()
 

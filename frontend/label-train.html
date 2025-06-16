@@ -250,6 +250,15 @@
                 <input type="number" class="form-control" id="tm-epochs" value="10" step="1" min="1" max="100">
               </div>
             </div>
+			<div class="row justify-content-center align-items-center g-2 mt-2">
+				<div class="col" data-bs-toggle="tooltip" data-bs-placement="top" title="Stop training if validation F1 score does not improve for this many epochs.">
+					<p>Patience:</p>
+					<input type="number" class="form-control" id="tm-patience" value="3" step="1" min="1" max="20">
+				</div>
+				<div class="col">
+					<!-- This column is empty to balance the layout -->
+				</div>
+			</div>			
           </div>
         </div>
         <div class="modal-footer">

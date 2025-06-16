@@ -1014,17 +1014,20 @@ def off_diagonal(x: torch.Tensor) -> torch.Tensor:
     return x.flatten()[:-1].view(n - 1, n + 1)[:, 1:].flatten()
 
 class PerformanceReport:
-    """Simple container for scikit-learn classification report and confusion matrix."""
-    def __init__(self, report: dict, cm: np.ndarray):
-        self.sklearn_report = report
-        self.confusion_matrix = cm
+    """Simple container for training and validation reports for a single epoch."""
+    def __init__(self, train_report: dict, train_cm: np.ndarray, val_report: dict, val_cm: np.ndarray):
+        self.train_report = train_report
+        self.train_cm = train_cm
+        self.val_report = val_report
+        self.val_cm = val_cm
 
-def train_lstm_model(train_set, test_set, seq_len: int, behaviors: list, batch_size=512, lr=1e-4, epochs=10, device=None, class_weights=None) -> tuple:
-    """Main function to train the classifier head model."""
+def train_lstm_model(train_set, test_set, seq_len: int, behaviors: list, batch_size=512, lr=1e-4, epochs=10, device=None, class_weights=None, patience=3) -> tuple:
+    """Main function to train the classifier head model, now with training set evaluation."""
     if len(train_set) == 0: return None, None, -1
     if device is None: device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    train_loader = torch.utils.data.DataLoader(train_set, batch_size, shuffle=True, collate_fn=collate_fn, num_workers=0, pin_memory=(device.type == 'cuda'))
+    # Use drop_last=True for the train loader to ensure consistent batch sizes for some calculations
+    train_loader = torch.utils.data.DataLoader(train_set, batch_size, shuffle=True, collate_fn=collate_fn, num_workers=0, pin_memory=(device.type == 'cuda'), drop_last=True)
     test_loader = torch.utils.data.DataLoader(test_set, batch_size, shuffle=False, collate_fn=collate_fn) if len(test_set) > 0 else None
 
     model = classifier_head.classifier(in_features=768, out_features=len(behaviors), seq_len=seq_len).to(device)
@@ -1034,8 +1037,10 @@ def train_lstm_model(train_set, test_set, seq_len: int, behaviors: list, batch_s
     
     best_f1, best_model_state, best_epoch = -1.0, None, -1
     epoch_reports = []
+    epochs_no_improve = 0
 
     for e in range(epochs):
+        # --- Training Phase ---
         model.train()
         for i, (d, l) in enumerate(train_loader):
             d, l = d.to(device).float(), l.to(device)
@@ -1047,34 +1052,61 @@ def train_lstm_model(train_set, test_set, seq_len: int, behaviors: list, batch_s
             rawm_centered = rawm - rawm.mean(dim=0)
             covm_loss = torch.tensor(0.0).to(device)
             if rawm_centered.ndim == 2 and rawm_centered.shape[0] > 1:
-                # Original formulation for (Features x Features) covariance
                 covm = (rawm_centered.T @ rawm_centered) / (rawm_centered.shape[0] - 1)
-                # To regularize feature dimensions, not batch samples
                 covm_loss = torch.sum(torch.pow(off_diagonal(covm), 2))
             
             loss = inv_loss + covm_loss
             loss.backward(); optimizer.step()
             if i % 50 == 0: print(f"[Epoch {e+1}/{epochs} Batch {i}/{len(train_loader)}] Loss: {loss.item():.4f}")
 
+        # --- Evaluation Phase ---
+        model.eval()
+        
+        # 1. Evaluate on Training Set
+        train_actuals, train_predictions = [], []
+        with torch.no_grad():
+            for d, l in train_loader:
+                logits = model.forward_nodrop(d.to(device).float())
+                train_actuals.extend(l.cpu().numpy())
+                train_predictions.extend(logits.argmax(1).cpu().numpy())
+        
+        train_report = classification_report(train_actuals, train_predictions, target_names=behaviors, output_dict=True, zero_division=0)
+        train_cm = confusion_matrix(train_actuals, train_predictions, labels=range(len(behaviors)))
+
+        # 2. Evaluate on Validation (Test) Set
+        val_report, val_cm = {}, np.array([])
         if test_loader:
-            model.eval()
-            actuals, predictions = [], []
+            val_actuals, val_predictions = [], []
             with torch.no_grad():
                 for d, l in test_loader:
                     logits = model.forward_nodrop(d.to(device).float())
-                    actuals.extend(l.cpu().numpy())
-                    predictions.extend(logits.argmax(1).cpu().numpy())
+                    val_actuals.extend(l.cpu().numpy())
+                    val_predictions.extend(logits.argmax(1).cpu().numpy())
             
-            if actuals:
-                report = classification_report(actuals, predictions, target_names=behaviors, output_dict=True, zero_division=0)
-                cm = confusion_matrix(actuals, predictions, labels=range(len(behaviors)))
-                epoch_reports.append(PerformanceReport(report, cm))
-                wf1 = report.get("weighted avg", {}).get("f1-score", -1.0)
-                print(f"--- Epoch {e+1} Validation F1: {wf1:.4f} ---")
-                if wf1 > best_f1:
-                    best_f1, best_epoch, best_model_state = wf1, e, model.state_dict().copy()
+            if val_actuals:
+                val_report = classification_report(val_actuals, val_predictions, target_names=behaviors, output_dict=True, zero_division=0)
+                val_cm = confusion_matrix(val_actuals, val_predictions, labels=range(len(behaviors)))
+        
+        # Store both reports for this epoch
+        epoch_reports.append(PerformanceReport(train_report, train_cm, val_report, val_cm))
 
-    if best_model_state is None and epochs > 0: # Save last state if no improvement
+        # --- Early Stopping Logic (based on VALIDATION F1 score) ---
+        current_val_f1 = val_report.get("weighted avg", {}).get("f1-score", -1.0)
+        print(f"--- Epoch {e+1} | Train F1: {train_report.get('weighted avg', {}).get('f1-score', -1.0):.4f} | Val F1: {current_val_f1:.4f} ---")
+        
+        if current_val_f1 > best_f1:
+            best_f1, best_epoch, best_model_state = current_val_f1, e, model.state_dict().copy()
+            epochs_no_improve = 0
+        else:
+            epochs_no_improve += 1
+        
+        if test_loader and epochs_no_improve >= patience:
+            print(f"Early stopping triggered after {patience} epochs with no improvement.")
+            from workthreads import log_message
+            log_message(f"Early stopping triggered at epoch {e + 1}.", "INFO")
+            break
+            
+    if best_model_state is None and epochs > 0:
         best_model_state = model.state_dict().copy()
         best_epoch = epochs - 1
 

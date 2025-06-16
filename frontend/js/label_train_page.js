@@ -766,11 +766,16 @@ async function submitTrainModel() {
     const learningRate = document.getElementById('tm-lrate').value;
     const epochsCount = document.getElementById('tm-epochs').value;
     const trainMethod = document.getElementById('tm-method').value;
+    const patience = document.getElementById('tm-patience').value; // Get the new value
 
-    if (!batchSize || !seqLen || !learningRate || !epochsCount) { showErrorOnLabelTrainPage("All training parameters must be filled."); return; }
+    if (!batchSize || !seqLen || !learningRate || !epochsCount || !patience) { // Add patience to the check
+        showErrorOnLabelTrainPage("All training parameters must be filled."); 
+        return; 
+    }
     
     updateTrainingStatusOnUI(datasetName, "Training task queued...");
-    await eel.train_model(datasetName, batchSize, learningRate, epochsCount, seqLen, trainMethod)();
+    // Add patience to the eel.train_model call
+    await eel.train_model(datasetName, batchSize, learningRate, epochsCount, seqLen, trainMethod, patience)();
     trainBsModal?.hide();
 }
 
