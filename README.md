@@ -104,6 +104,7 @@ We have tested the installation instructions to be as straightforward and user-f
 
 *   [**Camera & Recording Setup:** For instructions on configuring RTSP IP cameras and our recommended recording hardware.](Cameras.md)
 *   [**Training a Custom Model:** For a detailed guide on creating a new dataset and training a custom classification model.](Training.md)
+*   [**Understanding the Project Directory:** For a detailed breakdown of the file and folder structure.](ProjectDirectory.md)
 
 --------------
 ## Hardware Requirements
