@@ -205,7 +205,9 @@ def get_inferred_videos_for_session(session_dir_rel: str, model_name: str) -> li
             csv_path = os.path.join(session_abs_path, file)
             mp4_path = csv_path.replace(f"_{model_name}_outputs.csv", ".mp4")
             if os.path.exists(mp4_path):
-                ready_videos.append((mp4_path, os.path.basename(mp4_path)))
+                # Only add the video if it is NOT an augmented file.
+                if not mp4_path.endswith("_aug.mp4"):
+                    ready_videos.append((mp4_path, os.path.basename(mp4_path)))
                 
     return sorted(ready_videos, key=lambda x: x[1])
 
