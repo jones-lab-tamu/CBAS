@@ -219,6 +219,10 @@ def start_classification(name, whitelist):
     return label_train_page.start_classification(name, whitelist)
 
 @eel.expose
+def cancel_training_task(name):
+    return workthreads.cancel_training_task(name)
+
+@eel.expose
 def recalculate_dataset_stats(name):
     return label_train_page.recalculate_dataset_stats(name)
 

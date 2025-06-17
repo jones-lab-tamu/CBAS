@@ -334,8 +334,29 @@ eel.expose(updateTrainingStatusOnUI);
 function updateTrainingStatusOnUI(datasetName, message) {
     const statusElem = document.getElementById(`dataset-status-${datasetName}`);
     if (statusElem) {
-        statusElem.innerText = message;
+        // If the message is about training, add a cancel button
+        if (message.toLowerCase().includes('training') || message.toLowerCase().includes('loading dataset')) {
+            statusElem.innerHTML = `
+                <div class="d-flex justify-content-between align-items-center">
+                    <span>${message}</span>
+                    <button class="btn btn-xs btn-outline-danger py-0" onclick="cancelTraining('${datasetName}')">
+                        Cancel
+                    </button>
+                </div>`;
+        } else {
+            // For other messages like "complete" or "failed", just show the text
+            statusElem.innerHTML = message;
+        }
+        
         statusElem.style.display = message ? 'block' : 'none';
+    }
+}
+
+// Add this new function to call the backend to cancel
+function cancelTraining(datasetName) {
+    if (confirm(`Are you sure you want to cancel the training task for '${datasetName}'?`)) {
+        console.log(`Requesting cancellation for training task: ${datasetName}`);
+        eel.cancel_training_task(datasetName)(); // We will create this Eel function next
     }
 }
 

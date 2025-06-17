@@ -373,9 +373,12 @@ class TrainingThread(threading.Thread):
         self.cuda_stream = torch.cuda.Stream(device=self.device) if self.device.type == 'cuda' else None
         self.training_queue_lock = threading.Lock()
         self.training_queue: list[TrainingTask] = []
+        self.cancel_event = threading.Event()
 
     def queue_task(self, task: "TrainingTask"):
         """Adds a new training task to this thread's queue."""
+        # Reset the cancel event every time a new task is queued
+        self.cancel_event.clear()
         with self.training_queue_lock:
             self.training_queue.append(task)
         log_message(f"Queued training task for dataset: {task.name}", "INFO")
@@ -383,6 +386,10 @@ class TrainingThread(threading.Thread):
     def run(self):
         """The main loop for the thread. Pulls tasks from its internal queue."""
         while True:
+            if self.cancel_event.is_set():
+                time.sleep(1) # Wait if cancelled
+                continue
+
             task_to_run = None
             with self.training_queue_lock:
                 if self.training_queue:
@@ -401,6 +408,10 @@ class TrainingThread(threading.Thread):
     def _execute_training_task(self, task: "TrainingTask"):
         """Orchestrates the training process: data loading, trials, and result saving."""
         try:
+            if self.cancel_event.is_set():
+                log_message(f"Skipping task for '{task.name}' due to cancellation.", "WARN")
+                return
+
             eel.updateTrainingStatusOnUI(task.name, "Loading dataset...")()
             log_message(f"Loading and processing dataset '{task.name}' for training...", "INFO")
             def update_progress(p): eel.updateDatasetLoadProgress(task.name, p)()
@@ -430,10 +441,15 @@ class TrainingThread(threading.Thread):
         NUM_TRIALS = 10
 
         for i in range(NUM_TRIALS):
+            if self.cancel_event.is_set():
+                log_message(f"Cancelling training for '{task.name}' before trial {i+1}.", "WARN")
+                eel.updateTrainingStatusOnUI(task.name, "Training cancelled.")()
+                return # Exit the entire task execution
+
             eel.updateTrainingStatusOnUI(task.name, f"Training Trial {i + 1}/{NUM_TRIALS}...")()
             log_message(f"Starting training trial {i + 1}/{NUM_TRIALS} for '{task.name}'.", "INFO")
             trial_model, trial_reports, trial_best_epoch = cbas.train_lstm_model(
-                train_ds, test_ds, task.sequence_length, task.behaviors,
+                train_ds, test_ds, task.sequence_length, task.behaviors, self.cancel_event,
                 lr=task.learning_rate, batch_size=task.batch_size,
                 epochs=task.epochs, device=self.device, class_weights=weights,
                 patience=task.patience
@@ -617,6 +633,20 @@ class TrainingTask():
         self.training_method = training_method
         self.patience = patience # Store patience
 
+def cancel_training_task(dataset_name: str):
+    """Finds the running training task and signals it to cancel."""
+    if not gui_state.training_thread:
+        return
+
+    # Set the main cancel event for the thread
+    gui_state.training_thread.cancel_event.set()
+    log_message(f"Cancellation signal sent for training task on dataset '{dataset_name}'.", "WARN")
+    
+    # Also clear the queue to prevent any pending tasks from running
+    with gui_state.training_thread.training_queue_lock:
+        gui_state.training_thread.training_queue.clear()
+
+    eel.updateTrainingStatusOnUI(dataset_name, f"Training cancelled by user.")()
 
 def save_confusion_matrix_plot(cm_data: np.ndarray, path: str):
     """Saves a confusion matrix plot to a file."""

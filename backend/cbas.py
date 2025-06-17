@@ -25,6 +25,7 @@ from datetime import datetime
 import random
 import yaml
 import re
+import threading
 
 # Third-party imports
 import cv2
@@ -1075,8 +1076,10 @@ class PerformanceReport:
         self.val_report = val_report
         self.val_cm = val_cm
 
-def train_lstm_model(train_set, test_set, seq_len: int, behaviors: list, batch_size=512, lr=1e-4, epochs=10, device=None, class_weights=None, patience=3) -> tuple:
-    """Main function to train the classifier head model, now with training set evaluation."""
+# In cbas.py
+
+def train_lstm_model(train_set, test_set, seq_len: int, behaviors: list, cancel_event: threading.Event, batch_size=512, lr=1e-4, epochs=10, device=None, class_weights=None, patience=3) -> tuple:
+    """Main function to train the classifier head model, now with cancellation support."""
     if len(train_set) == 0: return None, None, -1
     if device is None: device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
@@ -1094,6 +1097,11 @@ def train_lstm_model(train_set, test_set, seq_len: int, behaviors: list, batch_s
     epochs_no_improve = 0
 
     for e in range(epochs):
+        # Check for cancellation signal at the start of each epoch
+        if cancel_event.is_set():
+            print(f"Cancellation detected within training loop at epoch {e+1}.")
+            return None, epoch_reports, best_epoch
+
         # --- Training Phase ---
         model.train()
         for i, (d, l) in enumerate(train_loader):
@@ -1110,7 +1118,8 @@ def train_lstm_model(train_set, test_set, seq_len: int, behaviors: list, batch_s
                 covm_loss = torch.sum(torch.pow(off_diagonal(covm), 2))
             
             loss = inv_loss + covm_loss
-            loss.backward(); optimizer.step()
+            loss.backward()
+            optimizer.step()
             if i % 50 == 0: print(f"[Epoch {e+1}/{epochs} Batch {i}/{len(train_loader)}] Loss: {loss.item():.4f}")
 
         # --- Evaluation Phase ---
@@ -1141,7 +1150,6 @@ def train_lstm_model(train_set, test_set, seq_len: int, behaviors: list, batch_s
                 val_report = classification_report(val_actuals, val_predictions, target_names=behaviors, output_dict=True, zero_division=0)
                 val_cm = confusion_matrix(val_actuals, val_predictions, labels=range(len(behaviors)))
         
-        # Store both reports for this epoch
         epoch_reports.append(PerformanceReport(train_report, train_cm, val_report, val_cm))
 
         # --- Early Stopping Logic (based on VALIDATION F1 score) ---
@@ -1161,8 +1169,9 @@ def train_lstm_model(train_set, test_set, seq_len: int, behaviors: list, batch_s
             break
             
     if best_model_state is None and epochs > 0:
-        best_model_state = model.state_dict().copy()
-        best_epoch = epochs - 1
+        if not test_loader: # Only save last state if there was no validation set at all
+             best_model_state = model.state_dict().copy()
+             best_epoch = epochs - 1
 
     if best_model_state:
         final_model = classifier_head.classifier(in_features=768, out_features=len(behaviors), seq_len=seq_len)
