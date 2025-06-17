@@ -1092,9 +1092,27 @@ async function loadInitialDatasetCards(datasets = null) {
                         </button>`;
                 }
 
+                if (datasetName.endsWith('_aug')) {
+                    // If it's an augmented dataset, wrap the disabled button in a span for the tooltip
+                    htmlContent += `
+                        <span class="d-inline-block" tabindex="0" data-bs-toggle="tooltip" data-bs-placement="top" title="Labeling should be done on the original source dataset">
+                            <button class="btn btn-sm btn-outline-primary me-1" type="button" disabled>
+                                Label
+                            </button>
+                        </span>`;
+                } else {
+                    // Otherwise, render the normal, enabled button
+                    htmlContent += `
+                        <button class="btn btn-sm btn-outline-primary me-1" type="button" onclick="showPreLabelOptions('${datasetName}')" data-bs-toggle="tooltip" data-bs-placement="top" title="Label videos for this dataset">
+                            Label
+                        </button>`;
+                }
+
+                // The "Train" button remains as it was
                 htmlContent += `
-                        <button class="btn btn-sm btn-outline-primary me-1" type="button" onclick="showPreLabelOptions('${datasetName}')" data-bs-toggle="tooltip" data-bs-placement="top" title="Label videos for this dataset">Label</button>
-                        <button class="btn btn-sm btn-outline-success me-1" type="button" onclick="showTrainModal('${datasetName}')" data-bs-toggle="tooltip" data-bs-placement="top" title="Train a new model with this dataset's labels">Train</button>`;
+                        <button class="btn btn-sm btn-outline-success me-1" type="button" onclick="showTrainModal('${datasetName}')" data-bs-toggle="tooltip" data-bs-placement="top" title="Train a new model with this dataset's labels">
+                            Train
+                        </button>`;
                 
                 if (modelExists) {
                     htmlContent += `<button class="btn btn-sm btn-outline-warning" type="button" onclick="showInferenceModal('${datasetName}')" data-bs-toggle="tooltip" data-bs-placement="top" title="Use this dataset's trained model to classify unlabeled videos">Infer</button>`;

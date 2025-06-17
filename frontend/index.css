@@ -263,3 +263,12 @@ kbd {
 .log-level-INFO { color: #ced4da; }
 .log-level-WARN { color: #ffc107; background-color: rgba(255, 193, 7, 0.1); }
 .log-level-ERROR { color: #f8d7da; background-color: #dc3545; font-weight: bold;}
+
+/* =================================================================
+   CUSTOM BUTTON STYLES
+   ================================================================= */
+.btn.disabled- M.D. - Copy,
+.btn:disabled {
+  opacity: 0.45 !important; /* Make it more faded than Bootstrap's default */
+  cursor: not-allowed !important; /* Show the 'not-allowed' cursor on hover */
+}
