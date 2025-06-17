@@ -512,6 +512,13 @@ class TrainingThread(threading.Thread):
             plot_report_list_metric(reports, metric, task.behaviors, task.dataset.path)
             
         gui_state.proj.models[task.name] = cbas.Model(model_dir)
+        
+        # Update the dataset's config file to link it to the newly created model.
+        task.dataset.config['model'] = task.name 
+        with open(task.dataset.config_path, 'w') as f:
+            yaml.dump(task.dataset.config, f, allow_unicode=True)       
+        
+        
         # The UI metrics should reflect the model's performance on unseen (validation) data
         self._update_metrics_in_ui(task.name, best_validation_report, task.behaviors, task.dataset, train_insts, test_insts)
         log_message(f"Training for '{task.name}' complete. Model and reports saved.", "INFO")
