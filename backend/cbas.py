@@ -449,6 +449,8 @@ class Model:
         if not os.path.exists(self.weights_path): raise FileNotFoundError(f"Model weights not found: {self.weights_path}")
 
 
+# In backend/cbas.py
+
 class Dataset:
     """Manages a dataset's configuration, labeled instances, and data loading."""
     def __init__(self, path: str):
@@ -544,19 +546,7 @@ class Dataset:
     def predictions_to_instances_with_confidence(self, csv_path: str, model_name: str, threshold: float = 0.5, smoothing_window: int = 1) -> tuple[list, pd.DataFrame]:
         """
         Processes a prediction CSV to find behavior instances and their average confidence.
-        Optionally applies a median filter to smooth the predictions before creating instances.
-        
-        Args:
-            csv_path (str): Path to the prediction CSV file.
-            model_name (str): The name of the model used for prediction.
-            threshold (float): The probability threshold to consider a prediction valid.
-            smoothing_window (int): The kernel size for the median filter. A value of 1 or less
-                                    disables smoothing. Must be an odd number.
-                                    
-        Returns:
-            A tuple containing:
-            - A list of instance dictionaries, each with a 'confidence' key.
-            - The full pandas DataFrame of probabilities.
+        Applies a median filter to smooth predictions and then finds contiguous blocks of the same behavior.
         """
         try:
             df = pd.read_csv(csv_path)
@@ -567,79 +557,49 @@ class Dataset:
         if not behaviors or any(b not in df.columns for b in behaviors):
             return [], df
 
-        # Get the raw predicted label and its probability for each frame
         df['predicted_label'] = df[behaviors].idxmax(axis=1)
         df['max_prob'] = df[behaviors].max(axis=1)
 
-        # --- NEW: Conditional Smoothing Logic ---
         if smoothing_window > 1:
-            # Ensure the window size is odd for the median filter
             if smoothing_window % 2 == 0:
                 smoothing_window += 1
             
-            # 1. Map string labels to integer indices for filtering
             behavior_map = {name: i for i, name in enumerate(behaviors)}
             df['predicted_index'] = df['predicted_label'].map(behavior_map).fillna(-1).astype(int)
-
-            # 2. Apply the median filter on the integer indices
             df['smoothed_index'] = medfilt(df['predicted_index'], kernel_size=smoothing_window)
-
-            # 3. Map the smoothed integer indices back to string labels
             index_to_behavior_map = {i: name for name, i in behavior_map.items()}
             df['label_for_grouping'] = df['smoothed_index'].map(index_to_behavior_map)
         else:
-            # If no smoothing, use the original predictions for grouping
             df['label_for_grouping'] = df['predicted_label']
-        # --- END of new logic ---
-
-        # The rest of the function now iterates using the 'label_for_grouping' column
-        in_event, current_event = False, {}
-        for i, row in df.iterrows():
-            # Use the original max_prob for the threshold check
-            is_above_thresh = row['max_prob'] >= threshold
             
-            # Check if the label for grouping is valid (not NaN from the map)
-            if pd.isna(row['label_for_grouping']):
-                if in_event: # End the current event if we hit an invalid label
-                    in_event = False
-                    current_event['end'] = i - 1
-                    current_event['confidence'] = np.mean(current_event.pop('confidences', [0]))
-                    if current_event['end'] >= current_event['start']:
-                        instances.append(current_event)
+        df['block_start'] = df['label_for_grouping'].ne(df['label_for_grouping'].shift())
+        block_start_indices = df[df['block_start']].index.tolist()
+        
+        if len(df) not in block_start_indices:
+            block_start_indices.append(len(df))
+
+        for i in range(len(block_start_indices) - 1):
+            start_idx = block_start_indices[i]
+            end_idx = block_start_indices[i+1] - 1
+            
+            block_label = df['label_for_grouping'].iloc[start_idx]
+            
+            if pd.isna(block_label):
                 continue
 
-            if not in_event and is_above_thresh:
-                in_event = True
-                current_event = {"video": csv_path.replace(f"_{model_name}_outputs.csv", ".mp4"), 
-                                 "start": i, 
-                                 "label": row['label_for_grouping'], # Use the potentially smoothed label
-                                 "confidences": [row['max_prob']]}
-            elif in_event:
-                # End the event if threshold is not met OR the label changes
-                if not is_above_thresh or row['label_for_grouping'] != current_event['label']:
-                    in_event = False
-                    current_event['end'] = i - 1
-                    current_event['confidence'] = np.mean(current_event.pop('confidences', [0]))
-                    if current_event['end'] >= current_event['start']:
-                        instances.append(current_event)
-                    
-                    # Start a new event immediately if conditions are met
-                    if is_above_thresh:
-                        in_event = True
-                        current_event = {"video": csv_path.replace(f"_{model_name}_outputs.csv", ".mp4"), 
-                                         "start": i, 
-                                         "label": row['label_for_grouping'], 
-                                         "confidences": [row['max_prob']]}
-                else: # Still in the same event, just append the confidence
-                    current_event['confidences'].append(row['max_prob'])
-
-        # Finalize the last event if the video ends during it
-        if in_event and 'start' in current_event:
-            current_event['end'] = len(df) - 1
-            current_event['confidence'] = np.mean(current_event.pop('confidences', [0]))
-            if current_event['end'] >= current_event['start']:
-                instances.append(current_event)
-                
+            block_confidence = df['max_prob'].iloc[start_idx:end_idx + 1].mean()
+            
+            # Note: We now create the instance regardless of threshold.
+            # The filtering happens on the UI side. This simplifies logic.
+            new_instance = {
+                "video": csv_path.replace(f"_{model_name}_outputs.csv", ".mp4"),
+                "start": start_idx,
+                "end": end_idx,
+                "label": block_label,
+                "confidence": block_confidence
+            }
+            instances.append(new_instance)
+        
         return instances, df
 
 

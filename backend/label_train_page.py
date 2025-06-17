@@ -576,36 +576,48 @@ def jump_to_instance(direction: int):
     if not gui_state.label_session_buffer:
         eel.highlightBehaviorRow(None)(); eel.updateConfidenceBadge(None, None)(); return
 
-    for i, inst in enumerate(gui_state.label_session_buffer):
-        if inst.get("start", -1) <= gui_state.label_index <= inst.get("end", -1):
-            gui_state.selected_instance_index = i
-            break
-    else:
-        gui_state.selected_instance_index = -1
-        
-    sorted_instances = sorted(enumerate(gui_state.label_session_buffer), key=lambda item: item[1]['start'])
+    # Sort instances by start time to ensure a predictable order
+    sorted_instances = sorted(gui_state.label_session_buffer, key=lambda x: x.get('start', 0))
     if not sorted_instances:
         eel.highlightBehaviorRow(None)(); eel.updateConfidenceBadge(None, None)(); return
 
-    current_frame = gui_state.label_index
-    target_item = None
-
-    if direction > 0:
-        found = next((item for item in sorted_instances if item[1]['start'] > current_frame), None)
-        target_item = found or sorted_instances[0]
+    current_instance_index_in_sorted_list = -1
+    # Find which instance the playhead is currently inside
+    for i, inst in enumerate(sorted_instances):
+        if inst.get("start", -1) <= gui_state.label_index <= inst.get("end", -1):
+            current_instance_index_in_sorted_list = i
+            break
+    
+    target_instance = None
+    if current_instance_index_in_sorted_list != -1:
+        # If we are inside an instance, find the next/prev one from there
+        next_idx = (current_instance_index_in_sorted_list + direction) % len(sorted_instances)
+        target_instance = sorted_instances[next_idx]
     else:
-        found = next((item for item in reversed(sorted_instances) if item[1]['start'] < current_frame), None)
-        target_item = found or sorted_instances[-1]
-            
-    if target_item:
-        original_index, instance_data = target_item
-        gui_state.label_index = instance_data['start']
-        gui_state.selected_instance_index = gui_state.label_session_buffer.index(instance_data)
-        confidence = instance_data.get('confidence')
-        eel.updateConfidenceBadge(instance_data['label'], confidence)()
-        eel.highlightBehaviorRow(instance_data['label'])()
+        # If we are in a "gap", find the closest instance in the desired direction
+        if direction > 0: # Find the next instance after the playhead
+            found = next((inst for inst in sorted_instances if inst.get('start', -1) > gui_state.label_index), None)
+            target_instance = found or sorted_instances[0] # Wrap around to the first
+        else: # Find the previous instance before the playhead
+            found = next((inst for inst in reversed(sorted_instances) if inst.get('start', -1) < gui_state.label_index), None)
+            target_instance = found or sorted_instances[-1] # Wrap around to the last
+
+    if target_instance:
+        # Set the playhead to the start of the target instance
+        gui_state.label_index = target_instance.get('start', 0)
+        # Find the original index of this instance in the main (unsorted) buffer to update the selection state
+        try:
+            gui_state.selected_instance_index = gui_state.label_session_buffer.index(target_instance)
+        except ValueError:
+             gui_state.selected_instance_index = -1 # Should not happen, but a safeguard
+
+        # Update the UI
+        confidence = target_instance.get('confidence')
+        eel.updateConfidenceBadge(target_instance.get('label'), confidence)()
+        eel.highlightBehaviorRow(target_instance.get('label'))()
         render_image()
     else:
+        # No instances found, clear the UI selection
         eel.highlightBehaviorRow(None)(); eel.updateConfidenceBadge(None, None)()
 
 
@@ -992,71 +1004,73 @@ def start_classification(dataset_name_for_model: str, recordings_whitelist_paths
 
 def render_image():
     """
-    Renders the current video frame and timelines using the robust "crop and zoom" 
-    approach, with a visible external bracket for selection.
+    Renders the current video frame and timelines.
+    Implements a FIXED-WIDTH zoom for consistent visual representation.
     """
     if not gui_state.label_capture or not gui_state.label_capture.isOpened():
         eel.updateLabelImageSrc(None, None, None)(); return
 
     total_frames = int(gui_state.label_capture.get(cv2.CAP_PROP_FRAME_COUNT))
-    if total_frames == 0:
-        eel.updateLabelImageSrc(None, None, None)(); return
+    if total_frames == 0: return
 
     current_frame_idx = max(0, min(int(gui_state.label_index), total_frames - 1))
     gui_state.label_capture.set(cv2.CAP_PROP_POS_FRAMES, current_frame_idx)
     ret, frame = gui_state.label_capture.read()
+    if not ret or frame is None: return
 
-    if not ret or frame is None:
-        eel.updateLabelImageSrc(None, None, None)(); return
+    main_frame_blob = base64.b64encode(cv2.imencode(".jpg", cv2.resize(frame, (500, 500)))[1].tobytes()).decode("utf-8")
 
-    main_frame_blob, timeline_blob, zoom_blob = None, None, None
-
-    frame_resized = cv2.resize(frame, (500, 500))
-    _, encoded_main_frame = cv2.imencode(".jpg", frame_resized)
-    main_frame_blob = base64.b64encode(encoded_main_frame.tobytes()).decode("utf-8")
-
-    base_timeline_canvas = np.full((50, 500, 3), 100, dtype=np.uint8)
-    fill_colors(base_timeline_canvas, total_frames)
-
-    full_timeline_with_highlight = base_timeline_canvas.copy()
+    # --- 1. Draw Full Timeline ---
+    full_timeline_canvas = np.full((50, 500, 3), 100, dtype=np.uint8)
+    fill_colors(full_timeline_canvas, total_frames)
+    
+    # --- 2. Define Zoom Window (NEW FIXED-WIDTH LOGIC) ---
+    zoom_center_frame = float(current_frame_idx)
+    
+    # If an instance is selected, center the view on it. Otherwise, center on the playhead.
     if gui_state.selected_instance_index != -1 and gui_state.selected_instance_index < len(gui_state.label_session_buffer):
         instance = gui_state.label_session_buffer[gui_state.selected_instance_index]
-        start_px = int(500 * instance['start'] / total_frames)
-        end_px = int(500 * (instance['end'] + 1) / total_frames)
-        if start_px >= end_px: end_px = start_px + 1
-        cv2.rectangle(full_timeline_with_highlight, (start_px, 0), (end_px, 49), (255, 255, 255), 2)
+        zoom_center_frame = instance.get('start', 0) + (instance.get('end', 0) - instance.get('start', 0)) / 2.0
+    
+    # The zoom width is now a FIXED percentage of the total video length.
+    zoom_width_frames = total_frames * 0.10 
+    
+    zoom_start_frame = max(0, zoom_center_frame - zoom_width_frames / 2.0)
+    zoom_end_frame = min(total_frames, zoom_center_frame + zoom_width_frames / 2.0)
+    zoom_duration = zoom_end_frame - zoom_start_frame
 
-    zoom_width_frames = total_frames * 0.10
-    zoom_start_frame = max(0, current_frame_idx - zoom_width_frames / 2)
-    zoom_end_frame = min(total_frames, current_frame_idx + zoom_width_frames / 2)
-    start_px_crop = int(500 * zoom_start_frame / total_frames)
-    end_px_crop = int(500 * zoom_end_frame / total_frames)
-    
-    if start_px_crop < end_px_crop:
-        zoom_crop = base_timeline_canvas[:, start_px_crop:end_px_crop]
-        zoom_canvas = cv2.resize(zoom_crop, (500, 50), interpolation=cv2.INTER_NEAREST)
-    else:
-        zoom_canvas = np.full((50, 500, 3), 100, dtype=np.uint8)
-    
+    # --- 3. Draw Zoom Timeline ---
+    zoom_canvas = np.full((50, 500, 3), 100, dtype=np.uint8)
+    if zoom_duration > 0:
+        fill_colors(zoom_canvas, total_frames, zoom_start_frame, zoom_end_frame)
+
+    # --- 4. Draw Highlights and Markers ---
     if gui_state.selected_instance_index != -1 and gui_state.selected_instance_index < len(gui_state.label_session_buffer):
         instance = gui_state.label_session_buffer[gui_state.selected_instance_index]
-        zoom_window_duration = zoom_end_frame - zoom_start_frame
-        if zoom_window_duration > 0:
-            bracket_start_x = int(500 * (instance['start'] - zoom_start_frame) / zoom_window_duration)
-            bracket_end_x = int(500 * (instance['end'] + 1 - zoom_start_frame) / zoom_window_duration)
-            clamped_start_x = max(0, bracket_start_x)
-            clamped_end_x = min(499, bracket_end_x)
-            if clamped_start_x <= clamped_end_x:
-                y_pos, tick_height, thickness, color = 47, 5, 2, (255, 255, 255)
-                cv2.line(zoom_canvas, (clamped_start_x, y_pos), (clamped_end_x, y_pos), color, thickness)
-                if bracket_start_x >= 0 and bracket_start_x < 500: cv2.line(zoom_canvas, (bracket_start_x, y_pos), (bracket_start_x, y_pos - tick_height), color, thickness)
-                if bracket_end_x > 0 and bracket_end_x < 500: cv2.line(zoom_canvas, (bracket_end_x, y_pos), (bracket_end_x, y_pos - tick_height), color, thickness)
-
-    marker_color = (0, 0, 0)
-    cv2.line(zoom_canvas, (249, 0), (249, 50), marker_color, 2)
-    cv2.line(full_timeline_with_highlight, (int(500 * current_frame_idx / total_frames), 0), (int(500 * current_frame_idx / total_frames), 50), marker_color, 2)
+        # Highlight on Full Timeline
+        start_px_full = int(500 * instance.get('start', 0) / total_frames)
+        end_px_full = int(500 * (instance.get('end', 0) + 1) / total_frames)
+        if start_px_full < end_px_full:
+            cv2.rectangle(full_timeline_canvas, (start_px_full, 0), (end_px_full, 49), (255, 255, 255), 2)
+        
+        # Highlight on Zoom Timeline
+        if zoom_duration > 0:
+            start_x_zoom = int(500 * (instance.get('start', 0) - zoom_start_frame) / zoom_duration)
+            end_x_zoom = int(500 * (instance.get('end', 0) + 1 - zoom_start_frame) / zoom_duration)
+            cv2.rectangle(zoom_canvas, (start_x_zoom, 0), (end_x_zoom, 49), (255, 255, 255), 2)
+            
+    # Marker on Full Timeline
+    marker_pos_full = int(500 * current_frame_idx / total_frames)
+    cv2.line(full_timeline_canvas, (marker_pos_full, 0), (marker_pos_full, 49), (0, 0, 0), 2)
     
-    _, encoded_timeline = cv2.imencode(".jpg", full_timeline_with_highlight)
+    # Marker on Zoom Timeline
+    if zoom_duration > 0:
+        marker_pos_zoom = int(500 * (current_frame_idx - zoom_start_frame) / zoom_duration)
+        if 0 <= marker_pos_zoom < 500:
+            cv2.line(zoom_canvas, (marker_pos_zoom, 0), (marker_pos_zoom, 49), (0, 0, 0), 2)
+
+    # --- 5. Encode and Send ---
+    _, encoded_timeline = cv2.imencode(".jpg", full_timeline_canvas)
     timeline_blob = base64.b64encode(encoded_timeline.tobytes()).decode("utf-8")
     
     _, encoded_zoom = cv2.imencode(".jpg", zoom_canvas)
@@ -1065,23 +1079,25 @@ def render_image():
     eel.updateLabelImageSrc(main_frame_blob, timeline_blob, zoom_blob)()
 
 
-def fill_colors(canvas_img: np.ndarray, total_frames: int):
+def fill_colors(canvas_img: np.ndarray, total_frames: int, view_start_frame: int = 0, view_end_frame: int = -1):
     """
-    Draws colored bars on a timeline canvas.
+    Draws solid colored bars on a timeline canvas.
+    Transparency/alpha based on confidence has been removed for clarity.
     """
-    if not all([gui_state.label_dataset, gui_state.label_videos, gui_state.label_capture, gui_state.label_capture.isOpened()]):
-        return canvas_img
+    if view_end_frame == -1:
+        view_end_frame = total_frames
+    
+    view_duration = view_end_frame - view_start_frame
+    if view_duration <= 0: return
 
     behaviors = gui_state.label_dataset.labels.get("behaviors", [])
-    if total_frames == 0: return canvas_img
-
-    timeline_y, timeline_h, timeline_w = 0, canvas_img.shape[0], canvas_img.shape[1]
+    timeline_w = canvas_img.shape[1]
 
     for inst in gui_state.label_session_buffer:
-        is_human_added = 'confidence' not in inst
         is_confirmed = inst.get('_confirmed', False)
         
-        if gui_state.label_confirmation_mode and not (is_human_added or is_confirmed):
+        # In confirmation mode, only show confirmed/human labels.
+        if gui_state.label_confirmation_mode and not ('confidence' not in inst or is_confirmed):
             continue
 
         try:
@@ -1089,36 +1105,34 @@ def fill_colors(canvas_img: np.ndarray, total_frames: int):
             color_hex = gui_state.label_behavior_colors[b_idx].lstrip("#")
             bgr_color = tuple(int(color_hex[i:i+2], 16) for i in (4, 2, 0))
             
-            start_px = int(timeline_w * inst.get("start", 0) / total_frames)
-            end_px = int(timeline_w * (inst.get("end", 0) + 1) / total_frames)
-
-            if inst.get("start", 0) <= inst.get("end", 0) and start_px == end_px:
-                end_px = start_px + 1
+            # Calculate pixel positions relative to the current view (full or zoom)
+            start_px = int(timeline_w * (inst.get("start", 0) - view_start_frame) / view_duration)
+            end_px = int(timeline_w * (inst.get("end", 0) + 1 - view_start_frame) / view_duration)
 
             if start_px < end_px:
-                confidence = inst.get('confidence', 1.0)
-                overlay = canvas_img.copy()
-                cv2.rectangle(overlay, (start_px, timeline_y), (end_px, timeline_y + timeline_h - 1), bgr_color, -1)
+                # --- SIMPLIFIED DRAWING LOGIC ---
+                # Always draw the solid color. No more addWeighted.
+                cv2.rectangle(canvas_img, (start_px, 0), (end_px, 49), bgr_color, -1)
                 
-                alpha = 1.0 if gui_state.label_confirmation_mode else confidence
-                cv2.addWeighted(overlay, alpha, canvas_img, 1 - alpha, 0, canvas_img)
-                
+                # If the instance is confirmed, draw a white border on top.
                 if is_confirmed:
-                   cv2.rectangle(canvas_img, (start_px, timeline_y), (end_px, timeline_y + timeline_h - 1), (255, 255, 255), 1)
+                   cv2.rectangle(canvas_img, (start_px, 0), (end_px, 49), (255, 255, 255), 1)
 
         except (ValueError, IndexError):
             continue
 
+    # Logic for drawing a new, in-progress label remains the same.
     if gui_state.label_type != -1 and gui_state.label_start != -1:
         color_hex = gui_state.label_behavior_colors[gui_state.label_type].lstrip("#")
         bgr_color = tuple(int(color_hex[i:i+2], 16) for i in (4, 2, 0))
         start_f, end_f = min(gui_state.label_start, gui_state.label_index), max(gui_state.label_start, gui_state.label_index)
-        start_px, end_px = int(timeline_w * start_f / total_frames), int(timeline_w * (end_f + 1) / total_frames)
+        
+        start_px = int(timeline_w * (start_f - view_start_frame) / view_duration)
+        end_px = int(timeline_w * (end_f + 1 - view_start_frame) / view_duration)
+        
         if start_px < end_px:
-            cv2.rectangle(canvas_img, (start_px, timeline_y), (end_px, timeline_y + timeline_h - 1), bgr_color, -1)
-            cv2.rectangle(canvas_img, (start_px, timeline_y), (end_px, timeline_y + timeline_h - 1), (255, 255, 255), 1)
-
-    return canvas_img
+            cv2.rectangle(canvas_img, (start_px, 0), (end_px, 49), bgr_color, -1)
+            cv2.rectangle(canvas_img, (start_px, 0), (end_px, 49), (255, 255, 255), 1)
 
 def update_counts():
     """Updates instance/frame counts in the UI based on the current session buffer."""
