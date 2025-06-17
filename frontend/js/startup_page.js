@@ -24,27 +24,6 @@ let filePickerMode = 0;
 // UI INITIALIZATION & UTILITY FUNCTIONS
 // =================================================================
 
-/** Displays a random "fun fact" blurb on the startup card. */
-function initializeFunBlurb() {
-    const blurbs = [
-        "eel included", "electronic!", "thanks Yann", "just lin alg",
-        "add <i>Mus musculus</i>", "around the clock",
-    ];
-    const links = [
-        "https://github.com/python-eel/Eel", "https://www.electronjs.org/",
-        "https://ai.meta.com/blog/self-supervised-learning-the-dark-matter-of-intelligence/",
-        "https://en.wikipedia.org/wiki/Linear_algebra", "https://en.wikipedia.org/wiki/Laboratory_mouse",
-        "https://en.wikipedia.org/wiki/Circadian_rhythm",
-    ];
-
-    const funBlurbElement = document.getElementById("fun-blurb-text");
-    if (funBlurbElement) {
-        const randomIndex = Math.floor(Math.random() * blurbs.length);
-        funBlurbElement.innerHTML = blurbs[randomIndex];
-        funBlurbElement.href = links[randomIndex];
-    }
-}
-
 /** Shows the error modal with a custom message. */
 function showErrorOnStartup(message) {
     const errorModalElement = document.getElementById("errorModal");
@@ -147,25 +126,22 @@ if (window.electronAPI) {
 
 // --- DOM Content Loaded (Initial Setup) ---
 document.addEventListener('DOMContentLoaded', () => {
-    initializeFunBlurb();
-
     // Attach listeners to the main project selection buttons
     document.getElementById("create")?.addEventListener("click", () => {
         filePickerMode = 0;
-        // Get the last known project path to suggest a default location
         const lastProjectPath = JSON.parse(window.localStorage.getItem("project"))?.project_path;
         window.electronAPI?.send("open-file-dialog", { defaultPath: lastProjectPath });
     });
     
     document.getElementById("open")?.addEventListener("click", () => {
         filePickerMode = 1;
-        // Also do this for the "Open" button
         const lastProjectPath = JSON.parse(window.localStorage.getItem("project"))?.project_path;
         window.electronAPI?.send("open-file-dialog", { defaultPath: lastProjectPath });
     });
 
     // Attach listener to the modal's "Create" button
     document.querySelector('#createModal .btn-primary')?.addEventListener('click', handleCreateProjectSubmit);
+
 });
 
 

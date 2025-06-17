@@ -272,3 +272,43 @@ kbd {
   opacity: 0.45 !important; /* Make it more faded than Bootstrap's default */
   cursor: not-allowed !important; /* Show the 'not-allowed' cursor on hover */
 }
+
+/* =================================================================
+   STARTUP PAGE LOGO STYLES
+   ================================================================= */
+#logo-container {
+    /* This new container will manage positioning and size */
+    position: relative; /* Required for absolute positioning of children */
+    width: 90%; /* Use a percentage of the parent card */
+    max-width: 450px; /* But don't let it get too huge */
+    height: 400px; /* Fixed height for the logo area */
+    margin: auto; /* Center the container horizontally */
+    margin-top: 20px; /* Add some space from the top of the card */
+}
+
+#logo-container img {
+    /* Style for both logos */
+    position: absolute; /* Stack them on top of each other */
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain; /* Ensure the image scales properly without distortion */
+    transition: opacity 0.1s ease-in-out; /* This is the key to the fade effect! */
+    cursor: pointer;
+}
+
+/* By default, the mouseover logo is invisible */
+#logo-container img#logo-mouseover {
+    opacity: 0;
+}
+
+/* On hover of the CONTAINER, make the mouseover logo visible */
+#logo-container:hover img#logo-mouseover {
+    opacity: 1;
+}
+
+/* On hover of the CONTAINER, make the default logo invisible */
+#logo-container:hover img#logo-default {
+    opacity: 0;
+}
