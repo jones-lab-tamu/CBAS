@@ -1,5 +1,5 @@
 <p align="center">
-    <img src="./assets/CBAS_logo.png" alt="CBAS Logo" style="width: 800px; height: auto;">
+    <img src="./frontend/assets/cbas_logo.svg" alt="CBAS Logo" style="width: 800px; height: auto;">
 </p>
 
 # CBAS v3 (BETA)
