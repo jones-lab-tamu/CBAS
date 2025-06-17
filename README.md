@@ -2,11 +2,10 @@
     <img src="./frontend/assets/cbas_logo.svg" alt="CBAS Logo" style="width: 500px; height: auto;">
 </p>
 <details align="center">
-  <summary>What's with the old fish logo in CBASv2? (A Fun History)</summary>
+  <summary>What's with the old fish logo in CBASv2?</summary>
   <br>
   <p>The original CBAS logo featured fish, which confused some of our rodent-focused users! The name CBAS is pronounced like "sea bass," which was the source of the original pun.</p>
-  <p>As a fun easter egg and a nod to our history, here is the v3 logo paying homage to its v2 predecessor:</p>
-  <img src="./frontend/assets/cbas_mouseover.svg" alt="CBAS Easter Egg Logo" style="width: 400px; height: auto;">
+  <img src="./frontend/assets/cbas_mouseover.svg" alt="CBAS Easter Egg Logo" style="width: 500px; height: auto;">
 </details>
 
 # CBAS v3 (BETA)
