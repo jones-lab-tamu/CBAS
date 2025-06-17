@@ -779,6 +779,9 @@ async function startPreLabeling() {
     const modelName = document.getElementById('pl-model-select').value;
     const videoPath = document.getElementById('pl-video-select').value;
 
+    // --- Get the value from the smoothing window input ---
+    const smoothingWindow = parseInt(document.getElementById('pl-smoothing-window').value) || 1;
+
     if (!modelName || modelName.includes("...")) { showErrorOnLabelTrainPage("Please select a model."); return; }
     if (!videoPath || videoPath.includes("...")) { showErrorOnLabelTrainPage("Please select a video."); return; }
 
@@ -786,7 +789,8 @@ async function startPreLabeling() {
     document.getElementById('cover-spin').style.visibility = 'visible';
 
     try {
-        const success = await eel.start_labeling_with_preload(datasetName, modelName, videoPath)();
+        // --- Pass the new smoothingWindow value to the backend ---
+        const success = await eel.start_labeling_with_preload(datasetName, modelName, videoPath, smoothingWindow)();
         if (!success) showErrorOnLabelTrainPage("Pre-labeling failed. The backend task could not be started.");
     } catch (e) {
         showErrorOnLabelTrainPage(`An error occurred: ${e.message || e}`);

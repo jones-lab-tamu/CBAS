@@ -42,6 +42,7 @@ import matplotlib
 matplotlib.use('Agg') # Essential for non-GUI thread plotting
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
+from scipy.signal import medfilt # Or use pandas rolling median
 
 # Local application imports
 import classifier_head
@@ -540,10 +541,18 @@ class Dataset:
             if current_event['end'] >= current_event['start']: instances.append(current_event)
         return instances
 
-    def predictions_to_instances_with_confidence(self, csv_path: str, model_name: str, threshold: float = 0.5) -> tuple[list, pd.DataFrame]:
+    def predictions_to_instances_with_confidence(self, csv_path: str, model_name: str, threshold: float = 0.5, smoothing_window: int = 1) -> tuple[list, pd.DataFrame]:
         """
         Processes a prediction CSV to find behavior instances and their average confidence.
+        Optionally applies a median filter to smooth the predictions before creating instances.
         
+        Args:
+            csv_path (str): Path to the prediction CSV file.
+            model_name (str): The name of the model used for prediction.
+            threshold (float): The probability threshold to consider a prediction valid.
+            smoothing_window (int): The kernel size for the median filter. A value of 1 or less
+                                    disables smoothing. Must be an odd number.
+                                    
         Returns:
             A tuple containing:
             - A list of instance dictionaries, each with a 'confidence' key.
@@ -558,30 +567,73 @@ class Dataset:
         if not behaviors or any(b not in df.columns for b in behaviors):
             return [], df
 
+        # Get the raw predicted label and its probability for each frame
         df['predicted_label'] = df[behaviors].idxmax(axis=1)
         df['max_prob'] = df[behaviors].max(axis=1)
-        
+
+        # --- NEW: Conditional Smoothing Logic ---
+        if smoothing_window > 1:
+            # Ensure the window size is odd for the median filter
+            if smoothing_window % 2 == 0:
+                smoothing_window += 1
+            
+            # 1. Map string labels to integer indices for filtering
+            behavior_map = {name: i for i, name in enumerate(behaviors)}
+            df['predicted_index'] = df['predicted_label'].map(behavior_map).fillna(-1).astype(int)
+
+            # 2. Apply the median filter on the integer indices
+            df['smoothed_index'] = medfilt(df['predicted_index'], kernel_size=smoothing_window)
+
+            # 3. Map the smoothed integer indices back to string labels
+            index_to_behavior_map = {i: name for name, i in behavior_map.items()}
+            df['label_for_grouping'] = df['smoothed_index'].map(index_to_behavior_map)
+        else:
+            # If no smoothing, use the original predictions for grouping
+            df['label_for_grouping'] = df['predicted_label']
+        # --- END of new logic ---
+
+        # The rest of the function now iterates using the 'label_for_grouping' column
         in_event, current_event = False, {}
         for i, row in df.iterrows():
+            # Use the original max_prob for the threshold check
             is_above_thresh = row['max_prob'] >= threshold
-            if not in_event and is_above_thresh:
-                in_event = True
-                current_event = {"video": csv_path.replace(f"_{model_name}_outputs.csv", ".mp4"), "start": i, "label": row['predicted_label'], "confidences": [row['max_prob']]}
-            elif in_event:
-                if not is_above_thresh or row['predicted_label'] != current_event['label']:
+            
+            # Check if the label for grouping is valid (not NaN from the map)
+            if pd.isna(row['label_for_grouping']):
+                if in_event: # End the current event if we hit an invalid label
                     in_event = False
                     current_event['end'] = i - 1
-                    # Calculate average confidence for the bout
+                    current_event['confidence'] = np.mean(current_event.pop('confidences', [0]))
+                    if current_event['end'] >= current_event['start']:
+                        instances.append(current_event)
+                continue
+
+            if not in_event and is_above_thresh:
+                in_event = True
+                current_event = {"video": csv_path.replace(f"_{model_name}_outputs.csv", ".mp4"), 
+                                 "start": i, 
+                                 "label": row['label_for_grouping'], # Use the potentially smoothed label
+                                 "confidences": [row['max_prob']]}
+            elif in_event:
+                # End the event if threshold is not met OR the label changes
+                if not is_above_thresh or row['label_for_grouping'] != current_event['label']:
+                    in_event = False
+                    current_event['end'] = i - 1
                     current_event['confidence'] = np.mean(current_event.pop('confidences', [0]))
                     if current_event['end'] >= current_event['start']:
                         instances.append(current_event)
                     
-                    if is_above_thresh: # Start a new event immediately
+                    # Start a new event immediately if conditions are met
+                    if is_above_thresh:
                         in_event = True
-                        current_event = {"video": csv_path.replace(f"_{model_name}_outputs.csv", ".mp4"), "start": i, "label": row['predicted_label'], "confidences": [row['max_prob']]}
+                        current_event = {"video": csv_path.replace(f"_{model_name}_outputs.csv", ".mp4"), 
+                                         "start": i, 
+                                         "label": row['label_for_grouping'], 
+                                         "confidences": [row['max_prob']]}
                 else: # Still in the same event, just append the confidence
                     current_event['confidences'].append(row['max_prob'])
 
+        # Finalize the last event if the video ends during it
         if in_event and 'start' in current_event:
             current_event['end'] = len(df) - 1
             current_event['confidence'] = np.mean(current_event.pop('confidences', [0]))
@@ -922,6 +974,7 @@ class Project:
         seqs, labels = zip(*shuffled_pairs)
         
         return list(seqs), list(labels)
+        
     def _load_dataset_common(self, name, split):
         """
         Helper to load a dataset, using a Stratified Group Split strategy.

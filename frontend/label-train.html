@@ -266,6 +266,17 @@
 				<!-- Populated by JS -->
 			  </select>
 			</div>
+            
+            <!-- SMOOTHING INPUT FIELD -->
+            <hr>
+            <div class="mb-3">
+              <label for="pl-smoothing-window" class="form-label">
+                Smoothing Window (frames):
+                <i class="bi bi-info-circle" data-bs-toggle="tooltip" data-bs-placement="top" title="Applies a median filter to remove behavior events shorter than a given number of frames. Higher values = more smoothing. (Example: On a 10fps video, a value of 15 will filter out events shorter than ~1.5 seconds). A value of 1 disables smoothing."></i>
+              </label>
+              <input type="number" class="form-control" id="pl-smoothing-window" value="15" min="1" step="2">
+            </div>
+
           <div class="d-grid">
             <button class="btn btn-outline-success" type="button" onclick="startPreLabeling()">
               <i class="bi bi-robot me-2"></i>Pre-Label & Correct Selected Video

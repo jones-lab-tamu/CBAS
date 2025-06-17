@@ -353,7 +353,7 @@ def start_labeling(name: str, video_to_open: str = None, preloaded_instances: li
 
 
 
-def start_labeling_with_preload(dataset_name: str, model_name: str, video_path_to_label: str) -> bool:
+def start_labeling_with_preload(dataset_name: str, model_name: str, video_path_to_label: str, smoothing_window: int) -> bool:
     """
     Runs a quick inference step and then spawns the labeling worker.
     """
@@ -396,7 +396,11 @@ def start_labeling_with_preload(dataset_name: str, model_name: str, video_path_t
         if not csv_path or not os.path.exists(csv_path):
             raise RuntimeError("Inference failed to produce a CSV output file.")
 
-        preloaded_instances, probability_df = dataset.predictions_to_instances_with_confidence(csv_path, model_obj.name)
+        preloaded_instances, probability_df = dataset.predictions_to_instances_with_confidence(
+            csv_path,
+            model_obj.name,
+            smoothing_window=smoothing_window # Pass it to the modified cbas.py function
+        )
         
         eel.spawn(_start_labeling_worker, dataset_name, video_path_to_label, preloaded_instances, probability_df)
         

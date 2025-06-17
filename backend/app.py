@@ -127,8 +127,8 @@ def start_labeling(name, video, instances):
     return label_train_page.start_labeling(name, video, instances)
 
 @eel.expose
-def start_labeling_with_preload(d_name, m_name, path):
-    return label_train_page.start_labeling_with_preload(d_name, m_name, path)
+def start_labeling_with_preload(d_name, m_name, path, smoothing_window):
+    return label_train_page.start_labeling_with_preload(d_name, m_name, path, smoothing_window)
 
 @eel.expose
 def save_session_labels():
