@@ -683,7 +683,19 @@ def add_instance_to_buffer():
             return
 
     behavior_name = gui_state.label_dataset.labels["behaviors"][gui_state.label_type]
-    new_instance = { "video": os.path.relpath(gui_state.label_videos[gui_state.label_vid_index], start=gui_state.proj.path), "start": start_idx, "end": end_idx, "label": behavior_name }
+    
+    # Get the absolute path of the video currently being labeled
+    absolute_video_path = gui_state.label_videos[gui_state.label_vid_index]
+    # Create the path relative to the project's root directory
+    relative_video_path = os.path.relpath(absolute_video_path, start=gui_state.proj.path)
+    
+    new_instance = { 
+        "video": relative_video_path, # Save the new relative path
+        "start": start_idx, 
+        "end": end_idx, 
+        "label": behavior_name 
+    }
+
     gui_state.label_session_buffer.append(new_instance)
     gui_state.label_history.append(new_instance)
     update_counts()
