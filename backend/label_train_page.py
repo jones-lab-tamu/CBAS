@@ -44,10 +44,7 @@ def _video_import_worker(session_name: str, subject_name: str, video_paths: list
     try:
         workthreads.log_message(f"Starting import of {len(video_paths)} videos to session '{session_name}' for subject '{subject_name}'.", "INFO")
 
-        # The session_name is the top-level folder.
         session_dir = os.path.join(gui_state.proj.recordings_dir, session_name)
-
-        # The final destination is now a subfolder named with the user-provided subject_name
         final_dest_dir = os.path.join(session_dir, subject_name)
         
         if os.path.exists(final_dest_dir) and os.listdir(final_dest_dir):
@@ -103,10 +100,9 @@ def tab20_map(val: int) -> int:
     This version includes manual overrides for known problematic (grey/brown) colors
     to ensure good UI contrast against the timeline background.
     """
-    remap = {7: 6, 14: 2, 15: 4}  # Remap grey/brown colors to vibrant ones
+    remap = {7: 6, 14: 2, 15: 4}
     if val in remap:
         return remap[val]
-    # Default distinct color mapping logic
     return (val * 2) if val < 10 else ((val - 10) * 2 + 1)
 
 
@@ -114,37 +110,35 @@ def tab20_map(val: int) -> int:
 # EEL-EXPOSED FUNCTIONS: DATA & CONFIGURATION
 # =================================================================
 
-@eel.expose
+
 def model_exists(model_name: str) -> bool:
     """Checks if a model with the given name exists in the current project."""
     return gui_state.proj and model_name in gui_state.proj.models
 
 
-@eel.expose
+
 def load_dataset_configs() -> dict:
     """Loads configurations for all available datasets."""
     if not gui_state.proj: return {}
     return {name: dataset.config for name, dataset in gui_state.proj.datasets.items()}
 
 
-@eel.expose
+
 def get_available_models() -> list[str]:
     """Returns a sorted list of all model names available in the project."""
     if not gui_state.proj: return []
     return sorted(list(gui_state.proj.models.keys()))
 
 
-@eel.expose
+
 def get_record_tree() -> dict:
     """Fetches the recording directory tree structure for modal dialogs."""
     if not gui_state.proj or not os.path.exists(gui_state.proj.recordings_dir):
         return {}
     tree = {}
     try:
-        # The top-level directories inside 'recordings' are the session names.
         for session_dir in os.scandir(gui_state.proj.recordings_dir):
             if session_dir.is_dir():
-                # The value is a list of the subject/camera directories inside the session.
                 subjects = [subject.name for subject in os.scandir(session_dir.path) if subject.is_dir()]
                 if subjects:
                     tree[session_dir.name] = subjects
@@ -153,7 +147,7 @@ def get_record_tree() -> dict:
     return tree
 
 
-@eel.expose
+
 def get_videos_for_dataset(dataset_name: str) -> list[tuple[str, str]]:
     """Finds all .mp4 files within a dataset's whitelist for 'Label from Scratch' mode."""
     if not gui_state.proj: return []
@@ -177,7 +171,7 @@ def get_videos_for_dataset(dataset_name: str) -> list[tuple[str, str]]:
     return sorted(video_list, key=lambda x: x[1])
 
 
-@eel.expose
+
 def get_inferred_session_dirs(dataset_name: str, model_name: str) -> list[str]:
     """Finds unique sub-directories that contain videos inferred by a specific model."""
     if not gui_state.proj: return []
@@ -198,7 +192,7 @@ def get_inferred_session_dirs(dataset_name: str, model_name: str) -> list[str]:
     return sorted(list(inferred_dirs))
 
 
-@eel.expose
+
 def get_inferred_videos_for_session(session_dir_rel: str, model_name: str) -> list[tuple[str, str]]:
     """Gets a list of inferred videos from a single specified session directory."""
     if not gui_state.proj: return []
@@ -216,7 +210,7 @@ def get_inferred_videos_for_session(session_dir_rel: str, model_name: str) -> li
     return sorted(ready_videos, key=lambda x: x[1])
 
 
-@eel.expose
+
 def get_existing_session_names() -> list[str]:
     """
     Scans the project's recordings directory and returns a sorted list of all
@@ -225,8 +219,6 @@ def get_existing_session_names() -> list[str]:
     if not gui_state.proj or not os.path.isdir(gui_state.proj.recordings_dir):
         return []
     
-    # The session names are the names of the directories
-    # immediately inside the main 'recordings' folder.
     try:
         session_names = [d.name for d in os.scandir(gui_state.proj.recordings_dir) if d.is_dir()]
         return sorted(session_names)
@@ -235,7 +227,7 @@ def get_existing_session_names() -> list[str]:
         return []
 
 
-@eel.expose
+
 def import_videos(session_name: str, subject_name: str, video_paths: list[str]) -> bool:
     """
     (LAUNCHER) Starts the video import process in a background thread.
@@ -260,7 +252,7 @@ def import_videos(session_name: str, subject_name: str, video_paths: list[str]) 
 # EEL-EXPOSED FUNCTIONS: LABELING WORKFLOW & ACTIONS
 # =================================================================
 
-@eel.expose
+
 def get_model_configs() -> dict:
     """Loads configurations for all available models."""
     if not gui_state.proj:
@@ -346,7 +338,7 @@ def _start_labeling_worker(name: str, video_to_open: str = None, preloaded_insta
         eel.showErrorOnLabelTrainPage(f"Failed to start labeling session: {e}")()
 
 
-@eel.expose
+
 def start_labeling(name: str, video_to_open: str = None, preloaded_instances: list = None) -> bool:
     """
     (LAUNCHER) Lightweight function to spawn the labeling worker in the background.
@@ -360,7 +352,7 @@ def start_labeling(name: str, video_to_open: str = None, preloaded_instances: li
         return False
 
 
-@eel.expose
+
 def start_labeling_with_preload(dataset_name: str, model_name: str, video_path_to_label: str) -> bool:
     """
     Runs a quick inference step and then spawns the labeling worker.
@@ -394,7 +386,7 @@ def start_labeling_with_preload(dataset_name: str, model_name: str, video_path_t
         torch_model.load_state_dict(torch.load(model_obj.weights_path, map_location=device, weights_only=True))
         torch_model.eval()
 
-        h5_path = video_path_to_label.replace(".mp4", "_cls.h5")
+        h5_path = os.path.splitext(video_path_to_label)[0] + "_cls.h5"
         if not os.path.exists(h5_path): raise FileNotFoundError(f"HDF5 file not found: {h5_path}")
         
         csv_path = cbas.infer_file(
@@ -417,7 +409,7 @@ def start_labeling_with_preload(dataset_name: str, model_name: str, video_path_t
         return False
 
 
-@eel.expose
+
 def save_session_labels():
     """
     Filters for only human-verified/confirmed instances and saves them.
@@ -453,7 +445,7 @@ def save_session_labels():
     render_image()
 
 
-@eel.expose
+
 def refilter_instances(new_threshold: int):
     """
     Re-filters the session buffer based on a new confidence threshold and re-renders.
@@ -481,7 +473,7 @@ def refilter_instances(new_threshold: int):
 # EEL-EXPOSED FUNCTIONS: IN-SESSION LABELING ACTIONS
 # =================================================================
 
-@eel.expose
+
 def jump_to_frame(frame_number: int):
     """Jumps the video playhead to a specific frame number."""
     if not (gui_state.label_capture and gui_state.label_capture.isOpened()):
@@ -497,7 +489,7 @@ def jump_to_frame(frame_number: int):
         print(f"Invalid frame number received: {frame_number}")
 
 
-@eel.expose
+
 def confirm_selected_instance():
     """
     Toggles the 'confirmed' state of the currently selected instance.
@@ -520,7 +512,7 @@ def confirm_selected_instance():
         render_image()
 
 
-@eel.expose
+
 def handle_click_on_label_image(x: int, y: int):
     """Handles a click on the timeline to scrub to a specific frame."""
     if gui_state.label_capture and gui_state.label_capture.isOpened():
@@ -530,7 +522,7 @@ def handle_click_on_label_image(x: int, y: int):
             render_image()
 
 
-@eel.expose
+
 def next_video(shift: int):
     """Loads the next or previous video in the labeling session's video list."""
     if not gui_state.label_videos:
@@ -555,7 +547,7 @@ def next_video(shift: int):
     update_counts()
 
 
-@eel.expose
+
 def next_frame(shift: int):
     """
     Moves the playhead forward or backward by a number of frames.
@@ -572,7 +564,7 @@ def next_frame(shift: int):
     render_image()
 
 
-@eel.expose
+
 def jump_to_instance(direction: int):
     """Finds the next/previous instance and jumps the playhead."""
     if not gui_state.label_session_buffer:
@@ -611,7 +603,7 @@ def jump_to_instance(direction: int):
         eel.highlightBehaviorRow(None)(); eel.updateConfidenceBadge(None, None)()
 
 
-@eel.expose
+
 def update_instance_boundary(boundary_type: str):
     """
     Directly updates the start or end frame of the currently selected instance.
@@ -657,7 +649,7 @@ def update_instance_boundary(boundary_type: str):
     render_image()
 
 
-@eel.expose
+
 def get_zoom_range_for_click(x_pos: int) -> int:
     """Calculates a new frame index based on a click on the zoom bar."""
     if gui_state.selected_instance_index != -1 and gui_state.selected_instance_index < len(gui_state.label_session_buffer):
@@ -691,13 +683,13 @@ def add_instance_to_buffer():
             return
 
     behavior_name = gui_state.label_dataset.labels["behaviors"][gui_state.label_type]
-    new_instance = { "video": gui_state.label_videos[gui_state.label_vid_index], "start": start_idx, "end": end_idx, "label": behavior_name }
+    new_instance = { "video": os.path.relpath(gui_state.label_videos[gui_state.label_vid_index], start=gui_state.proj.path), "start": start_idx, "end": end_idx, "label": behavior_name }
     gui_state.label_session_buffer.append(new_instance)
     gui_state.label_history.append(new_instance)
     update_counts()
 
 
-@eel.expose
+
 def label_frame(value: int):
     """Handles user keypresses to start, end, or change labels."""
     if gui_state.label_dataset is None or not gui_state.label_videos: return
@@ -729,7 +721,7 @@ def label_frame(value: int):
     render_image()
 
 
-@eel.expose
+
 def delete_instance_from_buffer():
     """Finds and removes an instance from the session buffer at the current frame."""
     if not gui_state.label_session_buffer: return
@@ -748,7 +740,7 @@ def delete_instance_from_buffer():
         render_image(); update_counts()
 
 
-@eel.expose
+
 def pop_instance_from_buffer():
     """Undoes the last-added instance from the session buffer."""
     if not gui_state.label_history: return
@@ -760,14 +752,14 @@ def pop_instance_from_buffer():
     except ValueError:
         print(f"Could not pop {last_added}, not found in buffer.")
 
-@eel.expose
+
 def stage_for_commit():
     """Enters confirmation mode and triggers a re-render showing only staged labels."""
     gui_state.label_confirmation_mode = True
     eel.setConfirmationModeUI(True)
     render_image()
 
-@eel.expose
+
 def cancel_commit_stage():
     """Exits confirmation mode and triggers a re-render of the normal view."""
     gui_state.label_confirmation_mode = False
@@ -778,7 +770,7 @@ def cancel_commit_stage():
 # EEL-EXPOSED FUNCTIONS: DATASET & MODEL MANAGEMENT
 # =================================================================
 
-@eel.expose
+
 def create_augmented_dataset(source_dataset_name: str, new_dataset_name: str):
     """
     (LAUNCHER) Spawns a background worker to create a new dataset with
@@ -791,7 +783,23 @@ def create_augmented_dataset(source_dataset_name: str, new_dataset_name: str):
     print(f"Spawning worker to augment '{source_dataset_name}' into '{new_dataset_name}'")
     eel.spawn(workthreads.augment_dataset_worker, source_dataset_name, new_dataset_name)
 
-@eel.expose
+
+
+def sync_augmented_dataset(source_dataset_name: str, target_dataset_name: str):
+    """
+    (LAUNCHER) Triggers the label synchronization worker. The actual spawning
+    to a background thread is handled inside the worker module to prevent
+    circular import issues.
+    """
+    if not all([gui_state.proj, source_dataset_name, target_dataset_name]):
+        eel.showErrorOnLabelTrainPage("Project not loaded or invalid names provided.")()
+        return
+
+    # This calls the new launcher function we will create in workthreads.py
+    workthreads.start_label_sync(source_dataset_name, target_dataset_name)
+
+
+
 def reload_project_data():
     """
     Triggers a full reload of the current project's data from the disk.
@@ -805,7 +813,33 @@ def reload_project_data():
             return False
     return False
 
-@eel.expose
+def recalculate_dataset_stats(dataset_name: str) -> dict | None: # Add a return type hint
+    """
+    Recalculates a dataset's stats and returns the complete, updated dataset configs.
+    """
+    if not gui_state.proj or dataset_name not in gui_state.proj.datasets:
+        # ... (error handling remains the same) ...
+        return None
+
+    try:
+        workthreads.log_message(f"Recalculating instance counts for '{dataset_name}'...", "INFO")
+        dataset_obj = gui_state.proj.datasets[dataset_name]
+        
+        dataset_obj.update_instance_counts_in_config(gui_state.proj)
+        
+        workthreads.log_message(f"Stats recalculated successfully for '{dataset_name}'.", "INFO")
+        
+        # Instead of calling a refresh function, we now reload the project data
+        # here in the backend and return the fresh data directly.
+        gui_state.proj.reload()
+        return {name: ds.config for name, ds in gui_state.proj.datasets.items()}
+
+    except Exception as e:
+        msg = f"Failed to recalculate stats for '{dataset_name}': {e}"
+        workthreads.log_message(msg, "ERROR")
+        traceback.print_exc()
+        eel.showErrorOnLabelTrainPage(msg)()
+
 def reveal_dataset_files(dataset_name: str):
     """
     Opens the specified dataset's directory in the user's native file explorer.
@@ -828,7 +862,7 @@ def reveal_dataset_files(dataset_name: str):
         print(f"Failed to open file explorer for path '{dataset_path}': {e}")
         eel.showErrorOnLabelTrainPage(f"Could not open the folder. Please navigate there manually:\n{dataset_path}")()
 
-@eel.expose
+
 def create_dataset(name: str, behaviors: list[str], recordings_whitelist: list[str]) -> bool:
     """Creates a new dataset via the project interface."""
     if not gui_state.proj: return False
@@ -839,7 +873,7 @@ def create_dataset(name: str, behaviors: list[str], recordings_whitelist: list[s
     return False
 
 
-@eel.expose
+
 def train_model(name: str, batch_size: str, learning_rate: str, epochs: str, sequence_length: str, training_method: str, patience: str):
     """Queues a training task for the specified dataset."""
     if not gui_state.proj or name not in gui_state.proj.datasets: return
@@ -852,7 +886,7 @@ def train_model(name: str, batch_size: str, learning_rate: str, epochs: str, seq
             batch_size=int(batch_size), learning_rate=float(learning_rate),
             epochs=int(epochs), sequence_length=int(sequence_length),
             training_method=training_method,
-            patience=int(patience)  # Add patience to the task
+            patience=int(patience)
         )
         gui_state.training_thread.queue_task(task)
         eel.updateTrainingStatusOnUI(name, "Training task queued...")()
@@ -860,7 +894,7 @@ def train_model(name: str, batch_size: str, learning_rate: str, epochs: str, seq
         eel.showErrorOnLabelTrainPage("Invalid training parameters provided.")
 
 
-@eel.expose
+
 def start_classification(dataset_name_for_model: str, recordings_whitelist_paths: list[str]):
     """Queues HDF5 files for classification using a specified model."""
     if not gui_state.proj or not gui_state.classify_thread: return

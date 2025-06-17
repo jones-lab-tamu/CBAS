@@ -470,7 +470,47 @@ class Dataset:
         self.config.setdefault("metrics", {}).setdefault(behavior, {})[group] = value
         with open(self.config_path, "w") as file:
             yaml.dump(self.config, file, allow_unicode=True)
+    
+    def update_instance_counts_in_config(self, project: 'Project'):
+        """
+        Recalculates train/test instance counts from labels.yaml and saves them
+        to config.yaml. This is used after syncing or manual changes.
+        """
+        print(f"Updating instance counts for dataset: {self.name}")
+        # We need to re-run the split logic to get the correct counts
+        train_insts, test_insts, _ = project._load_dataset_common(self.name, 0.2)
+        
+        if train_insts is None or test_insts is None:
+            print(f"Warning: Could not load instances to update counts for {self.name}.")
+            return
             
+        from collections import Counter # Local import is fine here
+        
+        train_instance_counts = Counter(inst['label'] for inst in train_insts)
+        test_instance_counts = Counter(inst['label'] for inst in test_insts)
+        train_frame_counts = Counter()
+        for inst in train_insts:
+            train_frame_counts[inst['label']] += (inst['end'] - inst['start'] + 1)
+        test_frame_counts = Counter()
+        for inst in test_insts:
+            test_frame_counts[inst['label']] += (inst['end'] - inst['start'] + 1)
+            
+        # Update the config with the new counts
+        for behavior_name in self.config.get("behaviors", []):
+            train_n_inst = train_instance_counts.get(behavior_name, 0)
+            train_n_frame = train_frame_counts.get(behavior_name, 0)
+            test_n_inst = test_instance_counts.get(behavior_name, 0)
+            test_n_frame = test_frame_counts.get(behavior_name, 0)
+            
+            self.update_metric(behavior_name, "Train #", f"{train_n_inst} ({int(train_n_frame)})")
+            self.update_metric(behavior_name, "Test #", f"{test_n_inst} ({int(test_n_frame)})")
+            # We can reset the performance metrics as they are now stale
+            self.update_metric(behavior_name, "F1 Score", "N/A")
+            self.update_metric(behavior_name, "Recall", "N/A")
+            self.update_metric(behavior_name, "Precision", "N/A")
+            
+        print(f"Successfully updated and saved instance counts for {self.name}.")
+    
     def predictions_to_instances(self, csv_path: str, model_name: str, threshold: float = 0.7) -> list:
         try: df = pd.read_csv(csv_path)
         except FileNotFoundError: return []

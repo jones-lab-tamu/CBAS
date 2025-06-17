@@ -116,7 +116,7 @@ def _download_thumbnail_for_single_camera(camera_obj: cbas.Camera):
 # EEL-EXPOSED FUNCTIONS: CAMERA MANAGEMENT
 # =================================================================
 
-@eel.expose
+
 def download_camera_thumbnails():
     """(LAUNCHER) Initiates the download of thumbnails for all cameras in a background thread."""
     print("Download camera thumbnails requested...")
@@ -124,21 +124,21 @@ def download_camera_thumbnails():
     download_thread.start()
 
 
-@eel.expose
+
 def get_camera_list() -> list[tuple[str, dict]]:
     """Returns a list of (camera_name, camera_settings_dict) for all cameras."""
     if not gui_state.proj: return []
     return [(name, cam.settings_to_dict()) for name, cam in gui_state.proj.cameras.items()]
 
 
-@eel.expose
+
 def get_camera_settings(camera_name: str) -> dict | None:
     """Returns the settings dictionary for a specific camera."""
     if not gui_state.proj: return None
     return gui_state.proj.cameras.get(camera_name, {}).settings_to_dict()
 
 
-@eel.expose
+
 def save_camera_settings(camera_name: str, camera_settings: dict) -> bool:
     """Saves updated settings for a specific camera."""
     if not gui_state.proj or camera_name not in gui_state.proj.cameras:
@@ -150,7 +150,7 @@ def save_camera_settings(camera_name: str, camera_settings: dict) -> bool:
         print(f"Error saving settings for {camera_name}: {e}"); return False
 
 
-@eel.expose
+
 def rename_camera(old_name: str, new_name: str) -> bool:
     """Renames a camera by creating a new one and removing the old one."""
     if not gui_state.proj: return False
@@ -172,7 +172,7 @@ def rename_camera(old_name: str, new_name: str) -> bool:
     return False
 
 
-@eel.expose
+
 def create_camera(camera_name: str, rtsp_url: str) -> bool:
     """Creates a new camera with default settings."""
     if not gui_state.proj: return False
@@ -194,7 +194,7 @@ def create_camera(camera_name: str, rtsp_url: str) -> bool:
 # EEL-EXPOSED FUNCTIONS: RECORDING & STATUS
 # =================================================================
 
-@eel.expose
+
 def get_cbas_status() -> dict:
     """Returns current status of streams and encoding tasks for the UI."""
     streams = list(gui_state.proj.active_recordings.keys()) if gui_state.proj else []
@@ -203,7 +203,7 @@ def get_cbas_status() -> dict:
     return {"streams": streams or False, "encode_file_count": encode_count}
 
 
-@eel.expose
+
 def start_camera_stream(camera_name: str, session_name: str, segment_time: int) -> bool:
     """Starts recording for a specific camera into a structured path."""
     if not gui_state.proj or camera_name not in gui_state.proj.cameras: return False
@@ -212,14 +212,14 @@ def start_camera_stream(camera_name: str, session_name: str, segment_time: int) 
     return camera_obj.start_recording(session_name, segment_time)
 
 
-@eel.expose
+
 def stop_camera_stream(camera_name: str) -> bool:
     """Stops recording for a specific camera."""
     if not gui_state.proj or camera_name not in gui_state.proj.cameras: return False
     return gui_state.proj.cameras[camera_name].stop_recording()
 
 
-@eel.expose
+
 def get_active_streams() -> list[str] | bool:
     """Returns a list of names of actively recording cameras."""
     if not gui_state.proj: return False
@@ -227,7 +227,7 @@ def get_active_streams() -> list[str] | bool:
     return streams or False
 
 
-@eel.expose
+
 def open_camera_live_view(camera_name: str):
     """Opens the camera's RTSP stream in an external player (VLC)."""
     if not gui_state.proj or camera_name not in gui_state.proj.cameras: return

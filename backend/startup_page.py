@@ -15,7 +15,7 @@ import workthreads
 import eel
 
 
-@eel.expose
+
 def create_project(parent_directory: str, project_name: str) -> tuple[bool, dict | None]:
     """
     Creates a new CBAS project directory structure.
@@ -50,7 +50,7 @@ def create_project(parent_directory: str, project_name: str) -> tuple[bool, dict
     return True, project_info
 
 
-@eel.expose
+
 def load_project(path: str) -> tuple[bool, dict | None]:
     """
     Loads an existing CBAS project from a given path.

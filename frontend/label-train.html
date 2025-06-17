@@ -84,6 +84,33 @@
     </div>
   </div>
 
+<!-- Modal for Syncing an Augmented Dataset -->
+<div class="modal" tabindex="-1" id="syncDatasetModal">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Sync Labels for: <span id="sync-target-dataset-name" class="fw-bold"></span></h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p>This will overwrite the current <code>labels.yaml</code> file for the <strong>'<span id="sync-target-dataset-name-body"></span>'</strong> dataset.</p>
+        <p>It will rebuild the labels by:</p>
+        <ol class="small">
+            <li>Copying all the latest labels from the original <strong>'<span id="sync-source-dataset-name"></span>'</strong> dataset.</li>
+            <li>Creating corresponding labels that point to the existing augmented videos (<code>_aug.mp4</code>).</li>
+        </ol>
+        <div class="alert alert-info" role="alert">
+          <i class="bi bi-info-circle-fill me-2"></i>This process is fast and does not re-create any video files. This is the recommended action after you have updated labels in the original source dataset.
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-primary" id="startSyncButton">Sync Labels</button>
+      </div>
+    </div>
+  </div>
+</div>
+
   <!-- Modal for Creating a New Dataset -->
   <div class="modal" tabindex="-1" id="addDataset">
     <div class="modal-dialog modal-dialog-centered">
@@ -178,6 +205,21 @@
             <i class="bi bi-folder-symlink me-2"></i>Show Dataset Files in Explorer
           </button>
         </div>
+		
+		<hr>
+
+		<!-- Section 2: Recalculate stats -->
+		<h6 class="mt-3">Advanced: Recalculate Stats</h6>
+		<p class="small text-muted">Use this button if you have manually edited the <code>labels.yaml</code> file outside of this application. This will re-parse the label file, re-calculate the train/test split counts, and update the numbers shown on the dataset card.</p>
+		<div class="alert alert-info small py-2" role="alert">
+		  <i class="bi bi-info-circle-fill me-2"></i>This does not retrain the model. It only updates the displayed instance counts and resets the F1/Precision/Recall metrics to "N/A".
+		</div>
+		<div class="d-grid gap-2">
+			<button class="btn btn-outline-warning" id="recalculateStatsButton">
+				<i class="bi bi-calculator-fill me-2"></i>Recalculate Instance Counts
+			</button>
+		</div>
+		
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>

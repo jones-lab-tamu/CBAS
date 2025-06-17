@@ -57,6 +57,71 @@ def log_message(message: str, level: str = "INFO"):
 # WORKER THREAD CLASSES
 # =================================================================
 
+def sync_labels_worker(source_dataset_name: str, target_dataset_name: str):
+    """
+    (WORKER) Rebuilds the labels.yaml for an augmented dataset from its source.
+    This is a fast, file-only operation.
+    """
+    try:
+        log_message(f"Starting label sync for '{target_dataset_name}'...", "INFO")
+        source_dataset = gui_state.proj.datasets.get(source_dataset_name)
+        target_dataset = gui_state.proj.datasets.get(target_dataset_name)
+
+        if not source_dataset or not target_dataset:
+            raise ValueError("Could not find source or target dataset.")
+
+        # 1. Re-read the source labels to ensure they are the absolute latest
+        with open(source_dataset.labels_path, 'r') as f:
+            source_labels_data = yaml.safe_load(f)
+
+        # 2. Start with a fresh copy of the source labels
+        new_target_labels = source_labels_data.copy()
+        
+        # 3. Create the list of augmented labels
+        augmented_labels_to_add = []
+        all_source_instances = [inst for behavior_list in source_labels_data["labels"].values() for inst in behavior_list]
+
+        for instance in all_source_instances:
+            new_instance = instance.copy()
+            # Construct the expected augmented video path
+            relative_video_path = new_instance["video"]
+            base_name, ext = os.path.splitext(relative_video_path)
+            augmented_video_rel_path = f"{base_name}_aug{ext}"
+            
+            # Check if the augmented video actually exists before adding the label
+            augmented_video_abs_path = os.path.join(gui_state.proj.path, augmented_video_rel_path)
+            if os.path.exists(augmented_video_abs_path):
+                new_instance["video"] = augmented_video_rel_path
+                augmented_labels_to_add.append(new_instance)
+            else:
+                log_message(f"Skipping sync for missing augmented video: {augmented_video_rel_path}", "WARN")
+
+        # 4. Add the new augmented labels to the target dictionary
+        for inst in augmented_labels_to_add:
+            behavior_name = inst.get("label")
+            if behavior_name in new_target_labels["labels"]:
+                new_target_labels["labels"][behavior_name].append(inst)
+
+        # 5. Overwrite the target labels.yaml with the new, complete data
+        with open(target_dataset.labels_path, "w") as f:
+            yaml.dump(new_target_labels, f, allow_unicode=True)
+
+        # Now that labels.yaml is updated, reload the dataset's internal state
+        # and recalculate the counts in its config.yaml
+        target_dataset.labels = new_target_labels # Update in-memory labels
+        target_dataset.update_instance_counts_in_config(gui_state.proj)
+
+        log_message(f"Successfully synced labels from '{source_dataset_name}' to '{target_dataset_name}'.", "INFO")
+        
+        # Refresh the UI, which will now read the updated config.yaml
+        eel.refreshAllDatasets()()
+
+    except Exception as e:
+        log_message(f"Label sync failed: {e}", "ERROR")
+        import traceback
+        traceback.print_exc()
+        eel.showErrorOnLabelTrainPage(f"Label sync failed: {e}")()
+
 def augment_dataset_worker(source_dataset_name: str, new_dataset_name: str):
     """
     (WORKER) Creates a new dataset by creating augmented video files.
@@ -653,7 +718,21 @@ class VideoFileWatcher(FileSystemEventHandler):
 # GLOBAL THREAD MANAGEMENT FUNCTIONS
 # =================================================================
 
-@eel.expose
+
+def sync_augmented_dataset(source_dataset_name: str, target_dataset_name: str):
+    """
+    (LAUNCHER) Spawns a background worker to re-sync the labels of an augmented
+    dataset from its original source dataset.
+    """
+    if not all([gui_state.proj, source_dataset_name, target_dataset_name]):
+        eel.showErrorOnLabelTrainPage("Project not loaded or invalid names provided.")()
+        return
+
+    print(f"Spawning worker to sync labels from '{source_dataset_name}' to '{target_dataset_name}'")
+    # We will create this worker function next
+    eel.spawn(workthreads.sync_labels_worker, source_dataset_name, target_dataset_name)
+
+
 def start_threads():
     """Initializes and starts all background worker threads."""
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -676,7 +755,7 @@ def start_threads():
     print("All background threads started.")
 
 
-@eel.expose
+
 def start_recording_watcher():
     """Initializes and starts the file system watcher."""
     if not gui_state.proj or not os.path.exists(gui_state.proj.recordings_dir): return
@@ -706,3 +785,78 @@ def stop_threads():
                 log_message(f"{name}Thread stopped.", "INFO")
             except Exception as e:
                 log_message(f"Error stopping {name}Thread: {e}", "ERROR")
+                
+# =================================================================
+# LABEL SYNCING FUNCTIONS
+# =================================================================
+
+def start_label_sync(source_dataset_name: str, target_dataset_name: str):
+    """
+    (LAUNCHER) Spawns the label synchronization worker in a background thread.
+    This function is called from other modules to safely start the process.
+    """
+    log_message(f"Spawning worker to sync labels from '{source_dataset_name}' to '{target_dataset_name}'", "INFO")
+    eel.spawn(sync_labels_worker, source_dataset_name, target_dataset_name)
+
+
+def sync_labels_worker(source_dataset_name: str, target_dataset_name: str):
+    """
+    (WORKER) Rebuilds the labels.yaml for an augmented dataset from its source.
+    This is a fast, file-only operation.
+    """
+    try:
+        log_message(f"Starting label sync for '{target_dataset_name}'...", "INFO")
+        source_dataset = gui_state.proj.datasets.get(source_dataset_name)
+        target_dataset = gui_state.proj.datasets.get(target_dataset_name)
+
+        if not source_dataset or not target_dataset:
+            raise ValueError("Could not find source or target dataset for sync.")
+
+        # 1. Re-read the source labels to ensure they are the absolute latest
+        with open(source_dataset.labels_path, 'r') as f:
+            source_labels_data = yaml.safe_load(f)
+
+        # 2. Start with a fresh copy of the source labels for the new target
+        new_target_labels = source_labels_data.copy()
+        
+        # 3. Create the list of augmented labels by re-mapping video paths
+        augmented_labels_to_add = []
+        all_source_instances = [inst for behavior_list in source_labels_data.get("labels", {}).values() for inst in behavior_list]
+
+        for instance in all_source_instances:
+            new_instance = instance.copy()
+            relative_video_path = new_instance.get("video", "")
+            if not relative_video_path:
+                continue
+
+            base_name, ext = os.path.splitext(relative_video_path)
+            augmented_video_rel_path = f"{base_name}_aug{ext}"
+            
+            # Check if the augmented video file actually exists before adding its label
+            augmented_video_abs_path = os.path.join(gui_state.proj.path, augmented_video_rel_path)
+            if os.path.exists(augmented_video_abs_path):
+                new_instance["video"] = augmented_video_rel_path
+                augmented_labels_to_add.append(new_instance)
+            else:
+                log_message(f"Skipping sync for missing augmented video: {augmented_video_rel_path}", "WARN")
+
+        # 4. Add the new augmented labels to the target dictionary
+        for inst in augmented_labels_to_add:
+            behavior_name = inst.get("label")
+            if behavior_name in new_target_labels.get("labels", {}):
+                new_target_labels["labels"][behavior_name].append(inst)
+
+        # 5. Overwrite the target labels.yaml with the new, complete data
+        with open(target_dataset.labels_path, "w") as f:
+            yaml.dump(new_target_labels, f, allow_unicode=True)
+
+        log_message(f"Successfully synced labels from '{source_dataset_name}' to '{target_dataset_name}'.", "INFO")
+        
+        # Refresh the UI to show any changes in instance counts
+        eel.refreshAllDatasets()()
+
+    except Exception as e:
+        log_message(f"Label sync failed: {e}", "ERROR")
+        import traceback
+        traceback.print_exc()
+        eel.showErrorOnLabelTrainPage(f"Label sync failed: {e}")()

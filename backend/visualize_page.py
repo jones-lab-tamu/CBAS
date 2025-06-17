@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 import re
 import traceback
 
-@eel.expose
+
 def get_recording_tree() -> list:
     """
     Builds and returns a nested list representing the hierarchy of classified recordings.
@@ -105,7 +105,7 @@ def _generate_actograms_task(root: str, sub_dir: str, model: str, behaviors: lis
 # EEL-EXPOSED FUNCTIONS (Launchers and Direct Actions)
 # =================================================================
 
-@eel.expose
+
 def generate_actograms(root: str, sub_dir: str, model: str, behaviors: list, framerate: str,
                        binsize_from_gui: str, start: str, threshold: str, lightcycle: str,
                        plot_acrophase: bool, task_id: int):
@@ -127,7 +127,7 @@ def generate_actograms(root: str, sub_dir: str, model: str, behaviors: list, fra
         plot_acrophase, task_id
     )
 
-@eel.expose
+
 def generate_and_save_data(output_directory: str, root: str, sub_dir: str, model: str, behaviors: list, framerate: str,
                            binsize_from_gui: str, start: str, threshold: str):
     """

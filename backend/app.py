@@ -3,49 +3,243 @@ Main entry point for the CBAS application backend.
 
 This script is responsible for:
 1.  Initializing and starting all background worker threads.
-2.  Starting a web server using Bottle and Gevent-WebSocket to communicate
-    with the Electron frontend.
-3.  Exposing Python functions to be called from the frontend JavaScript.
+2.  Starting a web server using Bottle and Gevent-WebSocket.
+3.  Exposing all Python functions to be called from the frontend JavaScript.
 """
-
-# --- Suppress the specific DeprecationWarning from pkg_resources ---
 import warnings
 warnings.filterwarnings("ignore", message="pkg_resources is deprecated as an API")
 
-# Standard library imports
 import os
 import sys
 import socket
 import torch
 import threading
 
-# Local application imports
 import eel
 import workthreads
-
-# The following modules are imported to ensure their @eel.expose decorators
-# are registered with the Eel library upon startup.
 import startup_page
 import record_page
 import label_train_page
 import visualize_page
 import gui_state
 
+# =================================================================
+# EEL EXPOSED FUNCTIONS - THE SINGLE SOURCE OF TRUTH FOR THE API
+# =================================================================
+
+# --- Startup Page Functions ---
+@eel.expose
+def create_project(parent_dir, name):
+    return startup_page.create_project(parent_dir, name)
+
+@eel.expose
+def load_project(path):
+    return startup_page.load_project(path)
+
+# --- Record Page Functions ---
+@eel.expose
+def download_camera_thumbnails():
+    return record_page.download_camera_thumbnails()
+
+@eel.expose
+def get_camera_list():
+    return record_page.get_camera_list()
+
+@eel.expose
+def get_camera_settings(name):
+    return record_page.get_camera_settings(name)
+
+@eel.expose
+def save_camera_settings(name, settings):
+    return record_page.save_camera_settings(name, settings)
+
+@eel.expose
+def rename_camera(old_name, new_name):
+    return record_page.rename_camera(old_name, new_name)
+
+@eel.expose
+def create_camera(name, url):
+    return record_page.create_camera(name, url)
+
+@eel.expose
+def get_cbas_status():
+    return record_page.get_cbas_status()
+
+@eel.expose
+def start_camera_stream(name, session, time):
+    return record_page.start_camera_stream(name, session, time)
+
+@eel.expose
+def stop_camera_stream(name):
+    return record_page.stop_camera_stream(name)
+
+@eel.expose
+def get_active_streams():
+    return record_page.get_active_streams()
+
+@eel.expose
+def open_camera_live_view(name):
+    return record_page.open_camera_live_view(name)
+
+# --- Label/Train Page Functions ---
+@eel.expose
+def model_exists(name):
+    return label_train_page.model_exists(name)
+
+@eel.expose
+def load_dataset_configs():
+    return label_train_page.load_dataset_configs()
+
+@eel.expose
+def get_available_models():
+    return label_train_page.get_available_models()
+
+@eel.expose
+def get_record_tree():
+    return label_train_page.get_record_tree()
+
+@eel.expose
+def get_videos_for_dataset(name):
+    return label_train_page.get_videos_for_dataset(name)
+
+@eel.expose
+def get_inferred_session_dirs(d_name, m_name):
+    return label_train_page.get_inferred_session_dirs(d_name, m_name)
+
+@eel.expose
+def get_inferred_videos_for_session(s_dir, m_name):
+    return label_train_page.get_inferred_videos_for_session(s_dir, m_name)
+
+@eel.expose
+def get_existing_session_names():
+    return label_train_page.get_existing_session_names()
+    
+@eel.expose
+def import_videos(s_name, sub_name, paths):
+    return label_train_page.import_videos(s_name, sub_name, paths)
+
+@eel.expose
+def get_model_configs():
+    return label_train_page.get_model_configs()
+
+@eel.expose
+def start_labeling(name, video, instances):
+    return label_train_page.start_labeling(name, video, instances)
+
+@eel.expose
+def start_labeling_with_preload(d_name, m_name, path):
+    return label_train_page.start_labeling_with_preload(d_name, m_name, path)
+
+@eel.expose
+def save_session_labels():
+    return label_train_page.save_session_labels()
+
+@eel.expose
+def refilter_instances(threshold):
+    return label_train_page.refilter_instances(threshold)
+
+@eel.expose
+def jump_to_frame(frame_num):
+    return label_train_page.jump_to_frame(frame_num)
+
+@eel.expose
+def confirm_selected_instance():
+    return label_train_page.confirm_selected_instance()
+
+@eel.expose
+def handle_click_on_label_image(x, y):
+    return label_train_page.handle_click_on_label_image(x, y)
+
+@eel.expose
+def next_video(shift):
+    return label_train_page.next_video(shift)
+
+@eel.expose
+def next_frame(shift):
+    return label_train_page.next_frame(shift)
+
+@eel.expose
+def jump_to_instance(direction):
+    return label_train_page.jump_to_instance(direction)
+
+@eel.expose
+def update_instance_boundary(b_type):
+    return label_train_page.update_instance_boundary(b_type)
+
+@eel.expose
+def get_zoom_range_for_click(x_pos):
+    return label_train_page.get_zoom_range_for_click(x_pos)
+
+@eel.expose
+def label_frame(value):
+    return label_train_page.label_frame(value)
+
+@eel.expose
+def delete_instance_from_buffer():
+    return label_train_page.delete_instance_from_buffer()
+
+@eel.expose
+def pop_instance_from_buffer():
+    return label_train_page.pop_instance_from_buffer()
+
+@eel.expose
+def stage_for_commit():
+    return label_train_page.stage_for_commit()
+
+@eel.expose
+def cancel_commit_stage():
+    return label_train_page.cancel_commit_stage()
+
+@eel.expose
+def create_augmented_dataset(source, new):
+    return label_train_page.create_augmented_dataset(source, new)
+
+@eel.expose
+def sync_augmented_dataset(source, target):
+    return label_train_page.sync_augmented_dataset(source, target)
+
+@eel.expose
+def reload_project_data():
+    return label_train_page.reload_project_data()
+
+@eel.expose
+def reveal_dataset_files(name):
+    return label_train_page.reveal_dataset_files(name)
+
+@eel.expose
+def create_dataset(name, behaviors, whitelist):
+    return label_train_page.create_dataset(name, behaviors, whitelist)
+
+@eel.expose
+def train_model(name, b_size, lr, epochs, seq_len, method, patience):
+    return label_train_page.train_model(name, b_size, lr, epochs, seq_len, method, patience)
+    
+@eel.expose
+def start_classification(name, whitelist):
+    return label_train_page.start_classification(name, whitelist)
+
+@eel.expose
+def recalculate_dataset_stats(name):
+    return label_train_page.recalculate_dataset_stats(name)
+
+# --- Visualize Page Functions ---
+@eel.expose
+def get_recording_tree():
+    return visualize_page.get_recording_tree()
+
+@eel.expose
+def generate_actograms(root, sub, model, behaviors, fr, bs, st, th, lc, pa, task_id):
+    return visualize_page.generate_actograms(root, sub, model, behaviors, fr, bs, st, th, lc, pa, task_id)
+
+@eel.expose
+def generate_and_save_data(out_dir, root, sub, model, behaviors, fr, bs, st, th):
+    return visualize_page.generate_and_save_data(out_dir, root, sub, model, behaviors, fr, bs, st, th)
+
+# =================================================================
+# MAIN APPLICATION LOGIC
+# =================================================================
 
 def find_available_port(start_port=8000, max_tries=100) -> int:
-    """
-    Finds an available network port to avoid conflicts.
-
-    Args:
-        start_port (int): The first port to check.
-        max_tries (int): The number of subsequent ports to check.
-
-    Returns:
-        int: An available port number.
-
-    Raises:
-        IOError: If no free port is found within the given range.
-    """
     for i in range(max_tries):
         port_to_try = start_port + i
         try:
@@ -53,33 +247,21 @@ def find_available_port(start_port=8000, max_tries=100) -> int:
                 s.bind(('', port_to_try))
             return port_to_try
         except OSError:
-            continue  # Port is already in use
+            continue
     raise IOError("No free ports found for Eel application.")
 
-
 def _log_forwarder_task():
-    """
-    Pulls messages from the global log_queue and forwards them to the UI.
-    This runs in a dedicated thread to avoid blocking.
-    """
     while True:
         try:
-            # block=True makes this efficient; it waits until an item is available
             message = gui_state.log_queue.get(block=True)
-            if message is None: # A "poison pill" to stop the thread
+            if message is None:
                 print("Log forwarder thread received stop signal.")
                 break
-            # Use eel.spawn to safely call the frontend from this thread
             eel.spawn(eel.update_log_panel(message))
         except Exception as e:
-            # Don't let the logger crash the main application
             print(f"Error in log forwarder thread: {e}")
 
-
 def main():
-    """Initializes the backend server and waits for the Electron app to connect."""
-
-    # GPU DIAGNOSTIC CODE 
     print("--- PyTorch GPU Diagnostics ---")
     try:
         is_available = torch.cuda.is_available()
@@ -90,48 +272,31 @@ def main():
             print(f"Device name: {torch.cuda.get_device_name(torch.cuda.current_device())}")
         else:
             print("PyTorch cannot find a CUDA-enabled GPU.")
-            print("Possible reasons: NVIDIA drivers not installed, CUDA toolkit mismatch, or unsupported GPU.")
     except Exception as e:
         print(f"An error occurred during GPU diagnostics: {e}")
     print("-----------------------------")
 
-    # Eel needs to know where the 'frontend' folder is to find eel.js
     eel.init('frontend')
-
-    # Start all background processing threads (encoding, training, etc.)
     workthreads.start_threads()
-
-    # Start the thread that forwards log messages to the GUI
     log_forwarder_thread = threading.Thread(target=_log_forwarder_task, daemon=True)
     log_forwarder_thread.start()
-
-    # Find a free port for the web server to run on.
     port = find_available_port()
-
     print(f"Eel server starting on http://localhost:{port}")
     print("This server will wait for the Electron GUI to connect.")
-
     try:
-        # Start the Eel server.
-        # This is the final, correct configuration for a decoupled Electron app.
         eel.start(
-            'index.html',     # A required placeholder; the page is not actually opened by this call.
-            mode=None,        # CRITICAL: This tells Eel NOT to launch any browser or window.
-            host='localhost', # Listen only on the local machine.
-            port=port,        # The port the server will run on.
-            block=True        # CRITICAL: This keeps the Python script alive until the app is closed.
+            'index.html',
+            mode=None,
+            host='localhost',
+            port=port,
+            block=True
         )
     except (SystemExit, MemoryError, KeyboardInterrupt):
-        # This block will be executed when the Electron app closes, which kills this process.
         print("Shutdown signal received, Python process is terminating.")
     finally:
-        # Send signal to stop the log forwarder thread
         if gui_state.log_queue:
             gui_state.log_queue.put(None)
-        # Ensure worker threads are stopped cleanly on exit.
         workthreads.stop_threads()
 
-
 if __name__ == "__main__":
-    # This ensures the main() function is called only when the script is executed directly.
     main()

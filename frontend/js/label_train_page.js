@@ -109,6 +109,7 @@ const preLabelModalElement = document.getElementById('preLabelModal');
 const importVideosModalElement = document.getElementById('importVideosModal');
 const manageDatasetModalElement = document.getElementById('manageDatasetModal');
 const augmentDatasetModalElement = document.getElementById('augmentDatasetModal');
+const syncDatasetModalElement = document.getElementById('syncDatasetModal');
 
 let addDatasetBsModal = addDatasetModalElement ? new bootstrap.Modal(addDatasetModalElement) : null;
 let trainBsModal = trainModalElement ? new bootstrap.Modal(trainModalElement) : null;
@@ -118,6 +119,7 @@ let preLabelBsModal = preLabelModalElement ? new bootstrap.Modal(preLabelModalEl
 let importVideosBsModal = importVideosModalElement ? new bootstrap.Modal(importVideosModalElement) : null;
 let manageDatasetBsModal = manageDatasetModalElement ? new bootstrap.Modal(manageDatasetModalElement) : null;
 let augmentDatasetBsModal = augmentDatasetModalElement ? new bootstrap.Modal(augmentDatasetModalElement) : null;
+let syncDatasetBsModal = syncDatasetModalElement ? new bootstrap.Modal(syncDatasetModalElement) : null;
 
 // =================================================================
 // ROUTING & UTILITY FUNCTIONS
@@ -141,6 +143,8 @@ function getTextColorForBg(hexColor) {
 function showManageDatasetModal(datasetName) {
     if (!manageDatasetBsModal) return;
     document.getElementById('md-dataset-name').innerText = datasetName;
+
+    // Attach event for the "Show Files" button
     const revealBtn = document.getElementById('revealFilesButton');
     if (revealBtn) {
         revealBtn.onclick = () => {
@@ -148,6 +152,32 @@ function showManageDatasetModal(datasetName) {
             manageDatasetBsModal.hide();
         };
     }
+
+    // Attach event for the new "Recalculate Stats" button
+    const recalcBtn = document.getElementById('recalculateStatsButton');
+    if (recalcBtn) {
+        recalcBtn.onclick = async () => { // Make this function async
+            if (confirm(`Are you sure you want to recalculate stats for '${datasetName}'? ...`)) {
+                
+                // Show a spinner while waiting
+                document.getElementById('cover-spin').style.visibility = 'visible';
+                
+                // Call the Eel function and AWAIT its response
+                const updatedDatasets = await eel.recalculate_dataset_stats(datasetName)();
+                
+                if (updatedDatasets) {
+                    // Pass the new data directly to the rendering function
+                    loadInitialDatasetCards(updatedDatasets);
+                } else {
+                    showErrorOnLabelTrainPage("Failed to get updated stats from the backend.");
+                }
+                
+                document.getElementById('cover-spin').style.visibility = 'hidden';
+                manageDatasetBsModal.hide();
+            }
+        };
+    }
+
     manageDatasetBsModal.show();
 }
 
@@ -188,6 +218,39 @@ function showAugmentModal(datasetName) {
     startBtn.onclick = () => startAugmentation(datasetName, newName);
 
     augmentDatasetBsModal.show();
+}
+
+function showSyncModal(sourceDatasetName, targetDatasetName) {
+    if (!syncDatasetBsModal) return;
+
+    // Populate the modal with the correct dataset names
+    document.getElementById('sync-target-dataset-name').innerText = targetDatasetName;
+    document.getElementById('sync-target-dataset-name-body').innerText = targetDatasetName;
+    document.getElementById('sync-source-dataset-name').innerText = sourceDatasetName;
+    
+    // Attach the onclick event to the button
+    const startBtn = document.getElementById('startSyncButton');
+    startBtn.onclick = () => startSync(sourceDatasetName, targetDatasetName);
+
+    syncDatasetBsModal.show();
+}
+
+async function startSync(sourceDatasetName, targetDatasetName) {
+    if (!sourceDatasetName || !targetDatasetName) return;
+
+    syncDatasetBsModal.hide();
+    document.getElementById('cover-spin').style.visibility = 'visible';
+    update_log_panel(`Syncing labels from '${sourceDatasetName}' to '${targetDatasetName}'...`);
+
+    try {
+        // We'll create this new eel function in the next step
+        await eel.sync_augmented_dataset(sourceDatasetName, targetDatasetName)();
+    } catch (error) {
+        showErrorOnLabelTrainPage("An error occurred while trying to start the sync task: " + error.message);
+    } finally {
+        // Always hide the spinner
+        document.getElementById('cover-spin').style.visibility = 'hidden';
+    }
 }
 
 // =================================================================
@@ -644,8 +707,11 @@ async function refreshAllDatasets() {
     console.log("Refreshing datasets from disk...");
     document.getElementById('cover-spin').style.visibility = 'visible';
     try {
-        await eel.reload_project_data()(); // Python reloads its internal data
-        await loadInitialDatasetCards();   // JavaScript redraws the UI
+        // 1. Tell Python to reload its data.
+        await eel.reload_project_data()();
+        // 2. NOW, call loadInitialDatasetCards with no arguments. It will fetch
+        //    the newly reloaded data from the backend.
+        await loadInitialDatasetCards();
     } catch (error) {
         console.error("Failed to refresh datasets:", error);
         showErrorOnLabelTrainPage("An error occurred while trying to refresh the datasets.");
@@ -910,9 +976,13 @@ async function submitStartClassification() {
 /**
  * Fetches and renders the initial list of dataset cards.
  */
-async function loadInitialDatasetCards() {
+async function loadInitialDatasetCards(datasets = null) {
     try {
-        const datasets = await eel.load_dataset_configs()();
+        // If no data is passed in, fetch it from the backend as before.
+        if (datasets === null) {
+            datasets = await eel.load_dataset_configs()();
+        }
+        
         const container = document.getElementById('dataset-container');
         if (!container) return;
         container.className = 'row g-3';
@@ -952,7 +1022,12 @@ async function loadInitialDatasetCards() {
                 htmlContent += `
                     <div class="col-md-6 col-lg-4">
                         <div class="card shadow h-100">
-                            <div class="card-header bg-dark text-white"><h5 class="card-title mb-0">${datasetName}</h5></div>
+                            <div class="card-header bg-dark text-white">
+                                <h5 class="card-title mb-0">
+                                    ${datasetName}
+                                    ${datasetName.endsWith('_aug') ? '<span class="badge bg-info ms-2">Augmented</span>' : ''}
+                                </h5>
+                            </div>
                             <div class="card-body" style="font-size: 0.85rem;">`;
 
                 if (behaviors.length > 0) {
@@ -997,17 +1072,27 @@ async function loadInitialDatasetCards() {
                     </div>
                     <div id="dataset-status-${datasetName}" class="mt-2 small text-info"></div>
                 </div>`;
-
+                
                 htmlContent += `
                     <div class="card-footer d-flex justify-content-end align-items-center">
                         <button class="btn btn-sm btn-outline-secondary me-auto" type="button" onclick="showManageDatasetModal('${datasetName}')" data-bs-toggle="tooltip" data-bs-placement="top" title="View dataset files on disk">
                             <i class="bi bi-folder2-open"></i> Manage
-                        </button>
-						
-						<button class="btn btn-sm btn-outline-info me-1" type="button" onclick="showAugmentModal('${datasetName}')" data-bs-toggle="tooltip" data-bs-placement="top" title="Create a new dataset with augmented (flipped) videos">
-							<i class="bi bi-images"></i> Augment
-						</button>						
-						
+                        </button>`;
+                
+                if (datasetName.endsWith('_aug')) {
+                    const sourceName = datasetName.replace('_aug', '');
+                    htmlContent += `
+                        <button class="btn btn-sm btn-outline-info me-1" type="button" onclick="showSyncModal('${sourceName}', '${datasetName}')" data-bs-toggle="tooltip" data-bs-placement="top" title="Re-sync labels from the original '${sourceName}' dataset.">
+                            <i class="bi bi-arrow-repeat"></i> Sync from Source
+                        </button>`;
+                } else {
+                    htmlContent += `
+                        <button class="btn btn-sm btn-outline-info me-1" type="button" onclick="showAugmentModal('${datasetName}')" data-bs-toggle="tooltip" data-bs-placement="top" title="Create a new dataset with augmented videos">
+                            <i class="bi bi-images"></i> Augment
+                        </button>`;
+                }
+
+                htmlContent += `
                         <button class="btn btn-sm btn-outline-primary me-1" type="button" onclick="showPreLabelOptions('${datasetName}')" data-bs-toggle="tooltip" data-bs-placement="top" title="Label videos for this dataset">Label</button>
                         <button class="btn btn-sm btn-outline-success me-1" type="button" onclick="showTrainModal('${datasetName}')" data-bs-toggle="tooltip" data-bs-placement="top" title="Train a new model with this dataset's labels">Train</button>`;
                 
