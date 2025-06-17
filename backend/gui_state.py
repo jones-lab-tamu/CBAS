@@ -16,6 +16,7 @@ import pandas as pd
 # modules do not import gui_state at the top level, avoiding circular dependencies.
 import cbas
 import cv2
+import subprocess
 
 # Use TYPE_CHECKING block to import types only for static analysis (e.g., by linters
 # or IDEs), preventing runtime circular import errors with the workthreads module.
@@ -136,3 +137,10 @@ latest_viz_task_id: int = 0
 # GLOBAL LOGGING QUEUE
 # =================================================================
 log_queue: queue.Queue = queue.Queue()
+
+# =================================================================
+# RECORDING PAGE STATE
+# =================================================================
+
+live_preview_process: Union[subprocess.Popen, None] = None
+"""Handle to the FFMPEG process for the currently active live preview."""

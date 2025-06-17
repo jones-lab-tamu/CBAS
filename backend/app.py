@@ -38,8 +38,12 @@ def load_project(path):
 
 # --- Record Page Functions ---
 @eel.expose
-def download_camera_thumbnails():
-    return record_page.download_camera_thumbnails()
+def get_cameras_with_thumbnails():
+    return record_page.get_cameras_with_thumbnails()
+
+@eel.expose
+def get_single_camera_thumbnail(camera_name):
+    return record_page.get_single_camera_thumbnail(camera_name)
 
 @eel.expose
 def get_camera_list():
@@ -78,8 +82,12 @@ def get_active_streams():
     return record_page.get_active_streams()
 
 @eel.expose
-def open_camera_live_view(name):
-    return record_page.open_camera_live_view(name)
+def start_live_preview(camera_name):
+    return record_page.start_live_preview(camera_name)
+
+@eel.expose
+def stop_live_preview():
+    return record_page.stop_live_preview()
 
 # --- Label/Train Page Functions ---
 @eel.expose
