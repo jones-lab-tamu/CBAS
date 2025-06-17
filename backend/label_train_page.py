@@ -31,7 +31,7 @@ import eel
 import sys
 import subprocess
 import threading
-
+import time
 
 # =================================================================
 # HELPER FUNCTIONS
@@ -909,16 +909,52 @@ def train_model(name: str, batch_size: str, learning_rate: str, epochs: str, seq
     except ValueError:
         eel.showErrorOnLabelTrainPage("Invalid training parameters provided.")
 
+# This function is NOT exposed here. It's a helper called by the exposed function in app.py.
+def update_classification_progress(dataset_name, percent):
+    """A helper function to call the JavaScript progress bar update function."""
+    eel.updateDatasetLoadProgress(dataset_name, percent)()
 
+
+def _classification_monitor_worker(dataset_name_for_model: str, files_to_process: list[str]):
+    """(WORKER) Monitors the classification queue and sends progress updates."""
+    total_files = len(files_to_process)
+    if total_files == 0:
+        # If there are no files, just show complete and exit.
+        update_classification_progress(dataset_name_for_model, 100)
+        return
+
+    # Initial status update
+    eel.updateTrainingStatusOnUI(dataset_name_for_model, f"Processing {total_files} files...")()
+
+    while True:
+        time.sleep(1.5)  # Check every 1.5 seconds
+
+        with gui_state.classify_lock:
+            # Check how many of our initial files are still in the main task queue
+            remaining_files_in_queue = [f for f in files_to_process if f in gui_state.classify_tasks]
+            num_remaining = len(remaining_files_in_queue)
+        
+        num_processed = total_files - num_remaining
+        percent_complete = (num_processed / total_files) * 100
+
+        # Update the progress bar on the UI
+        update_classification_progress(dataset_name_for_model, percent_complete)
+
+        if num_remaining == 0:
+            eel.updateTrainingStatusOnUI(dataset_name_for_model, "Inference complete.")()
+            # The progress bar will auto-hide after reaching 100%, so this is the final update.
+            break # Exit the monitor thread
 
 def start_classification(dataset_name_for_model: str, recordings_whitelist_paths: list[str]):
-    """Queues HDF5 files for classification using a specified model."""
+    """
+    Finds HDF5 files to classify, adds them to the main processing queue,
+    and spawns a separate monitor thread to report progress to the UI.
+    """
     if not gui_state.proj or not gui_state.classify_thread: return
     model_to_use = gui_state.proj.models.get(dataset_name_for_model)
     if not model_to_use: return
 
-    gui_state.classify_thread.start_inferring(model_to_use, recordings_whitelist_paths)
-
+    # --- Find all H5 files to process (existing logic) ---
     h5_files_to_classify = []
     for rel_path in recordings_whitelist_paths:
         search_root = os.path.join(gui_state.proj.recordings_dir, rel_path)
@@ -926,14 +962,26 @@ def start_classification(dataset_name_for_model: str, recordings_whitelist_paths
             for dirpath, _, filenames in os.walk(search_root):
                 for filename in filenames:
                     if filename.endswith("_cls.h5"):
-                        h5_files_to_classify.append(os.path.join(dirpath, filename))
-    
+                        full_path = os.path.join(dirpath, filename)
+                        # Ensure the output CSV for this model doesn't already exist
+                        output_csv = full_path.replace("_cls.h5", f"_{dataset_name_for_model}_outputs.csv")
+                        if not os.path.exists(output_csv):
+                            h5_files_to_classify.append(full_path)
+
+    # --- Add files to the main classification queue (existing logic) ---
     if h5_files_to_classify:
+        # Start the classification thread in the backend (if it's not already running a job)
+        gui_state.classify_thread.start_inferring(model_to_use, recordings_whitelist_paths)
+
         with gui_state.classify_lock:
             for h5_file in h5_files_to_classify:
                 if h5_file not in gui_state.classify_tasks:
                     gui_state.classify_tasks.append(h5_file)
         print(f"Queued {len(h5_files_to_classify)} files for classification with '{model_to_use.name}'.")
+
+    # --- Spawn the new monitor worker ---
+    # The monitor is given the list of files it's responsible for.
+    eel.spawn(_classification_monitor_worker, dataset_name_for_model, h5_files_to_classify)
 
 
 # =================================================================

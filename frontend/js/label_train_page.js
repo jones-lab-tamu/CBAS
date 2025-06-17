@@ -8,6 +8,32 @@
 // EEL-EXPOSED & LOG PANEL FUNCTIONS
 // =================================================================
 
+eel.expose(updateDatasetLoadProgress);
+function updateDatasetLoadProgress(datasetName, percent) {
+    const container = document.getElementById(`progress-container-${datasetName}`);
+    const bar = document.getElementById(`progress-bar-${datasetName}`);
+    if (!container || !bar) return;
+
+    if (percent < 0) { // Negative value hides the bar
+        container.style.display = 'none';
+    } else if (percent >= 100) {
+        bar.style.width = '100%';
+        bar.innerText = 'Complete!';
+        // Hide the bar after a short delay
+        setTimeout(() => {
+            container.style.display = 'none';
+            // Reset for next time
+            bar.style.width = '0%';
+            bar.innerText = '';
+        }, 2000);
+    } else {
+        container.style.display = 'block'; // Make sure it's visible
+        const displayPercent = Math.round(percent);
+        bar.style.width = `${displayPercent}%`;
+        bar.innerText = `Processing: ${displayPercent}%`;
+    }
+}
+
 eel.expose(update_augmentation_progress);
 function update_augmentation_progress(percent, label = "Augmenting Dataset...") {
     const overlay = document.getElementById('progress-bar-overlay');
@@ -380,7 +406,7 @@ function updateDatasetLoadProgress(datasetName, percent) {
         container.style.display = 'block';
         const displayPercent = Math.round(percent);
         bar.style.width = `${displayPercent}%`;
-        bar.innerText = `Loading: ${displayPercent}%`;
+        bar.innerText = `Processing: ${displayPercent}%`;
     }
 }
 
@@ -1096,6 +1122,11 @@ async function loadInitialDatasetCards(datasets = null) {
                         <div class="progress-bar progress-bar-striped progress-bar-animated" id="progress-bar-${datasetName}" role="progressbar" style="width: 0%;"></div>
                     </div>
                     <div id="dataset-status-${datasetName}" class="mt-2 small text-info"></div>
+                    
+					<div id="progress-container-${datasetName}" class="progress mt-2" style="height: 20px; display: none;">
+                        <div class="progress-bar progress-bar-striped progress-bar-animated" id="progress-bar-${datasetName}" role="progressbar" style="width: 0%;"></div>
+                    </div>					
+														
                 </div>`;
                 
                 htmlContent += `
