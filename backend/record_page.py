@@ -20,82 +20,75 @@ def _live_preview_worker(camera_name: str, rtsp_url: str, timeout_seconds: int =
     (WORKER) This function runs in a background thread to manage a single
     live preview ffmpeg process and pipe its frames to the UI.
     """
-    
     command = [
         "ffmpeg", "-hide_banner", "-loglevel", "error",
         "-rtsp_transport", "tcp", "-max_delay", "5000000",
         "-i", rtsp_url,
-        "-vf", "fps=10",       # Limit framerate to 10fps to reduce load
+        "-vf", "fps=10",
         "-f", "image2pipe",
         "-c:v", "mjpeg",
         "-"
     ]
     
+    process = None # Use a local variable for the process
     try:
-        # Start the ffmpeg process and assign it to the global state
-        gui_state.live_preview_process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL)
-        print(f"Started live preview process for {camera_name} (PID: {gui_state.live_preview_process.pid})")
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL)
+        gui_state.live_preview_process = process # Assign to global state
+        print(f"Started live preview process for {camera_name} (PID: {process.pid})")
 
         start_time = time.time()
         
-        # Continuously read from the process's stdout
         while True:
-            # Check for timeout
             if time.time() - start_time > timeout_seconds:
                 print(f"Live preview for {camera_name} timed out after {timeout_seconds}s.")
                 break
 
-            # Check if the process has been terminated from outside (e.g., by stop_live_preview)
-            if gui_state.live_preview_process is None or gui_state.live_preview_process.poll() is not None:
-                print(f"Live preview process for {camera_name} terminated.")
+            # Check if the process was terminated from outside
+            if process.poll() is not None:
+                print(f"Live preview process for {camera_name} terminated externally.")
                 break
 
-            # Read raw JPEG data from ffmpeg's stdout. This is a complex but
-            # necessary way to handle piped image data without blocking.
+            # Reading logic (can remain the same)
             buffer = bytearray()
             while True:
-                # Find the start of the JPEG image
                 start_marker_pos = buffer.find(b'\xff\xd8')
                 if start_marker_pos != -1:
                     buffer = buffer[start_marker_pos:]
                     break
-                chunk = gui_state.live_preview_process.stdout.read(1024)
+                chunk = process.stdout.read(1024)
                 if not chunk: break
                 buffer.extend(chunk)
-            
             if not buffer: break
-
             while True:
-                # Find the end of the JPEG image
                 end_marker_pos = buffer.find(b'\xff\xd9')
                 if end_marker_pos != -1:
                     jpg_data = buffer[:end_marker_pos + 2]
                     buffer = buffer[end_marker_pos + 2:]
-                    
-                    # We have a valid frame, send it to the UI
                     blob = base64.b64encode(jpg_data).decode('utf-8')
                     eel.update_live_frame(camera_name, blob)()
-                    break # Break inner loop to wait for next frame
-                
-                chunk = gui_state.live_preview_process.stdout.read(1024)
+                    break
+                chunk = process.stdout.read(1024)
                 if not chunk: break
                 buffer.extend(chunk)
-
             if not chunk: break
         
     except Exception as e:
         print(f"Error in live preview worker for {camera_name}: {e}")
     finally:
-        # --- Cleanup ---
-        if gui_state.live_preview_process and gui_state.live_preview_process.poll() is None:
+        # --- THREAD-SAFE CLEANUP ---
+        # The worker thread is responsible for its own cleanup.
+        if process and process.poll() is None:
             print(f"Terminating live preview process for {camera_name}.")
-            gui_state.live_preview_process.terminate()
+            process.terminate()
             try:
-                gui_state.live_preview_process.wait(timeout=2)
+                process.wait(timeout=2)
             except subprocess.TimeoutExpired:
-                gui_state.live_preview_process.kill()
+                process.kill()
         
-        gui_state.live_preview_process = None
+        # Only clear the global handle if it's still pointing to *this* thread's process
+        if gui_state.live_preview_process is process:
+            gui_state.live_preview_process = None
+
         eel.end_live_preview(camera_name)()
         print(f"Live preview for {camera_name} has ended.")
 
@@ -123,12 +116,13 @@ def start_live_preview(camera_name: str):
 
 def stop_live_preview():
     """
-    Public function to forcefully stop the current live preview process, if any.
+    Public function to signal the current live preview process to terminate.
+    It no longer clears the global handle directly.
     """
     if gui_state.live_preview_process:
-        print("Stopping existing live preview...")
+        print("Signaling existing live preview process to terminate...")
         gui_state.live_preview_process.terminate()
-        gui_state.live_preview_process = None # Clear the global handle
+        # The worker thread's finally block will handle the cleanup.
     return True
 
 

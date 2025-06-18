@@ -146,7 +146,13 @@
           <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
         </div>
         <div class="modal-body">
-          <canvas id="camera-image" width="600px" height="300px"></canvas>
+		  <div id="canvas-container-modal" style="position: relative; width: 600px; margin: auto; margin-bottom: 20px;">
+			  <!-- The original canvas now just holds the background image -->
+			  <canvas id="camera-image" width="600" height="300"></canvas>
+			  <!-- The overlay canvas for drawing the interactive rectangle -->
+			  <canvas id="crop-overlay" width="600" height="300" style="position: absolute; top: 0; left: 0; cursor: crosshair;"></canvas>
+		  </div>
+		  		  
           <p>Camera Name:</p>
           <input type="text" class="form-control" id="cs-name" aria-describedby="directory" placeholder="e.g. cam1"
             style="margin-bottom: 10px" />

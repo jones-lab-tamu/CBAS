@@ -1,5 +1,7 @@
+// In frontend/js/record_page.js
+
 /**
- * @file Manages the Record page UI, including the new in-app live preview feature.
+ * @file Manages the Record page UI, including live preview and the new interactive cropping tool.
  * This version uses a robust request-response model for loading initial data.
  */
 
@@ -40,7 +42,6 @@ function renderLogMessage(message, container) {
     container.appendChild(logEntry);
 }
 
-
 // =================================================================
 // LIVE PREVIEW LOGIC
 // =================================================================
@@ -72,7 +73,6 @@ function update_live_frame(cameraName, base64Val) {
 
 function end_live_preview(cameraName) {
     if (activePreviewCamera && cameraName !== activePreviewCamera) {
-         // A new preview started, so we need to reset the button of the *old* one.
         resetPreviewButton(activePreviewCamera);
     }
     
@@ -83,26 +83,21 @@ function end_live_preview(cameraName) {
 
     resetPreviewButton(cameraName);
     
-    // Fetch a single static thumbnail to replace the live view
     refreshSingleThumbnail(cameraName);
 }
 
 async function toggleLivePreview(cameraName) {
-    // If a different camera is already live, stop it first.
     if (activePreviewCamera && activePreviewCamera !== cameraName) {
         await eel.stop_live_preview()();
     }
 
     if (activePreviewCamera === cameraName) {
-        // If we are clicking the button for the camera that is already live, stop it.
         console.log(`User stopping live preview for ${cameraName}`);
         await eel.stop_live_preview()();
     } else {
-        // Start the new preview.
         console.log(`User starting live preview for ${cameraName}`);
         activePreviewCamera = cameraName;
 
-        // Change button appearance immediately for responsiveness
         const liveViewBtn = document.getElementById(`live-view-btn-${cameraName}`);
         if(liveViewBtn){
             liveViewBtn.classList.remove('btn-outline-light');
@@ -119,12 +114,10 @@ async function toggleLivePreview(cameraName) {
 async function refreshSingleThumbnail(cameraName){
     const camData = allCameraData.find(c => c.name === cameraName);
     if(!camData) return;
-
+    
     try {
-        // Call the NEW, DEDICATED backend function that takes one argument.
         const thumbnailBlob = await eel.get_single_camera_thumbnail(cameraName)();
-        
-        if (thumbnailBlob) {
+        if(thumbnailBlob){
             const canvas = document.getElementById(`camera-${cameraName}`);
             const ctx = canvas.getContext('2d');
             const img = new Image();
@@ -133,13 +126,6 @@ async function refreshSingleThumbnail(cameraName){
                  drawImageOnCanvas(img, ctx, crop.x, crop.y, crop.w, crop.h);
             };
             img.src = `data:image/jpeg;base64,${thumbnailBlob}`;
-        } else {
-             // Fallback if the refresh fails, draw the "no connection" image
-             const canvas = document.getElementById(`camera-${cameraName}`);
-             const ctx = canvas.getContext('2d');
-             const placeholder = new Image();
-             placeholder.onload = () => ctx.drawImage(placeholder, 0, 0, canvas.width, canvas.height);
-             placeholder.src = "assets/noConnection.png";
         }
     } catch(e) {
         console.error(`Failed to refresh single thumbnail for ${cameraName}:`, e);
@@ -165,7 +151,6 @@ function resetPreviewButton(cameraName) {
     }
 }
 
-
 // =================================================================
 // GLOBAL STATE & VARIABLES
 // =================================================================
@@ -173,9 +158,18 @@ function resetPreviewButton(cameraName) {
 let routingInProgress = false;
 let originalCameraNameForSettings = "";
 let modalPreviewImage = new Image();
-let allCameraData = []; // Cache for camera data to avoid re-fetching
+let allCameraData = [];
 
 let addCameraBsModal, statusBsModal, cameraSettingsBsModal, generalErrorBsModal;
+
+// --- STATE FOR INTERACTIVE CROPPING ---
+let cropCanvas, cropCtx, imageCanvas, imageCtx;
+let cropRect = { x: 0, y: 0, w: 0, h: 0 };
+let isDragging = false;
+let isResizing = false;
+let resizeHandle = null;
+let startCoords = { x: 0, y: 0 };
+const handleSize = 8;
 
 // =================================================================
 // UI INTERACTION & EVENT HANDLERS
@@ -320,7 +314,6 @@ async function loadCameras() {
         
         await updateRecordingStatus();
         
-        // Re-initialize tooltips after new HTML is added
         var tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'))
         var tooltipList = tooltipTriggerList.map(function (tooltipTriggerEl) {
             return new bootstrap.Tooltip(tooltipTriggerEl)
@@ -341,7 +334,7 @@ async function loadCameraHTMLCards() {
 
     let htmlContent = "";
     for (const cam of allCameraData) {
-        const isCropped = cam.crop_left_x !== 0 || cam.crop_top_y !== 0 || cam.crop_width !== 1 || cam.crop_height !== 1;
+        const isCropped = cam.crop_left_x != 0 || cam.crop_top_y != 0 || cam.crop_width != 1 || cam.crop_height != 1;
         const displayName = isCropped ? cam.name : `${cam.name} <small class='text-muted'>(uncropped)</small>`;
         
         htmlContent += `
@@ -356,7 +349,7 @@ async function loadCameraHTMLCards() {
                             <button class="btn btn-sm btn-success" onclick="startCamera('${cam.name}')" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Start Recording"><i class="bi bi-camera-video-fill"></i> Start</button>
                         </div>
                         <div id="during-recording-${cam.name}" style="display: none;">
-                             <button id="live-view-btn-recording-${cam.name}" class="btn btn-sm btn-outline-light me-1" onclick="toggleLivePreview('${cam.name}')" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Live Preview"><i class="bi bi-eye-fill"></i></button>
+                            <button id="live-view-btn-recording-${cam.name}" class="btn btn-sm btn-outline-light me-1" onclick="toggleLivePreview('${cam.name}')" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Live Preview"><i class="bi bi-eye-fill"></i></button>
                             <button class="btn btn-sm btn-danger" onclick="stopCamera('${cam.name}')" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Stop Recording"><i class="bi bi-square-fill"></i> Stop</button>
                         </div>
                     </div>
@@ -424,10 +417,11 @@ function drawImageOnCanvas(img, ctx, sx, sy, sw, sh) {
     ctx.drawImage(img, sx, sy, sw, sh, destX, destY, drawW, drawH);
 }
 
-async function loadCameraSettings(cameraName) {
-    const modalCanvas = document.getElementById("camera-image");
-    if (!modalCanvas) return;
+// =================================================================
+// INTERACTIVE CROPPING LOGIC
+// =================================================================
 
+async function loadCameraSettings(cameraName) {
     const settings = allCameraData.find(c => c.name === cameraName);
     if (settings) {
         originalCameraNameForSettings = cameraName;
@@ -435,6 +429,7 @@ async function loadCameraSettings(cameraName) {
         document.getElementById('cs-url').value = settings.rtsp_url;
         document.getElementById('cs-framerate').value = settings.framerate;
         document.getElementById('cs-resolution').value = settings.resolution;
+        
         document.getElementById('cs-cropx').value = settings.crop_left_x;
         document.getElementById('cs-cropy').value = settings.crop_top_y;
         document.getElementById('cs-crop-width').value = settings.crop_width;
@@ -443,10 +438,10 @@ async function loadCameraSettings(cameraName) {
         const mainCanvasImageSrc = document.getElementById(`camera-${cameraName}`)?.getAttribute("cbas_image_source");
         
         modalPreviewImage.onload = () => {
-            const aspectRatio = modalPreviewImage.naturalWidth / modalPreviewImage.naturalHeight;
-            modalCanvas.width = 600;
-            modalCanvas.height = modalCanvas.width / aspectRatio;
-            drawBoundsOnModalCanvas(modalPreviewImage);
+            setupCropCanvas();
+            drawImageOnCropCanvas(modalPreviewImage);
+            updateCropRectFromInputs();
+            drawCropOverlay();
         };
         modalPreviewImage.src = mainCanvasImageSrc || "assets/noConnection.png";
 
@@ -456,25 +451,134 @@ async function loadCameraSettings(cameraName) {
     }
 }
 
-function drawBoundsOnModalCanvas(imageToDraw) {
-    const modalCanvas = document.getElementById("camera-image");
-    if (!modalCanvas || !imageToDraw.complete || imageToDraw.naturalWidth === 0) return;
-    const modalCtx = modalCanvas.getContext("2d");
+function setupCropCanvas() {
+    imageCanvas = document.getElementById("camera-image");
+    imageCtx = imageCanvas.getContext("2d");
+    cropCanvas = document.getElementById("crop-overlay");
+    cropCtx = cropCanvas.getContext("2d");
 
-    let cx = parseFloat(document.getElementById('cs-cropx').value) || 0;
-    let cy = parseFloat(document.getElementById('cs-cropy').value) || 0;
-    let cw = parseFloat(document.getElementById('cs-crop-width').value) || 1;
-    let ch = parseFloat(document.getElementById('cs-crop-height').value) || 1;
+    const container = document.getElementById('canvas-container-modal');
+    imageCanvas.width = container.clientWidth;
+    imageCanvas.height = container.clientHeight;
+    cropCanvas.width = container.clientWidth;
+    cropCanvas.height = container.clientHeight;
+}
 
-    modalCtx.clearRect(0, 0, modalCanvas.width, modalCanvas.height);
-    modalCtx.drawImage(imageToDraw, 0, 0, modalCanvas.width, modalCanvas.height);
-    
-    const sx = cx * modalCanvas.width, sy = cy * modalCanvas.height;
-    const sw = (cw * modalCanvas.width), sh = (ch * modalCanvas.height);
+function drawImageOnCropCanvas(img) {
+    if (!imageCanvas || !img.complete || img.naturalWidth === 0) return;
+    const aspectRatio = img.naturalWidth / img.naturalHeight;
+    const container = document.getElementById('canvas-container-modal');
+    container.style.height = `${container.clientWidth / aspectRatio}px`;
+    setupCropCanvas();
+    imageCtx.drawImage(img, 0, 0, imageCanvas.width, imageCanvas.height);
+}
 
-    modalCtx.strokeStyle = 'rgba(255, 0, 0, 0.9)';
-    modalCtx.lineWidth = 2;
-    modalCtx.strokeRect(sx, sy, sw, sh);
+function drawCropOverlay() {
+    if (!cropCtx) return;
+    cropCtx.clearRect(0, 0, cropCanvas.width, cropCanvas.height);
+
+    cropCtx.fillStyle = "rgba(0, 0, 0, 0.5)";
+    cropCtx.fillRect(0, 0, cropCanvas.width, cropCanvas.height);
+    cropCtx.clearRect(cropRect.x, cropRect.y, cropRect.w, cropRect.h);
+
+    cropCtx.strokeStyle = "rgba(255, 0, 0, 0.9)";
+    cropCtx.lineWidth = 2;
+    cropCtx.strokeRect(cropRect.x, cropRect.y, cropRect.w, cropRect.h);
+
+    drawHandles();
+}
+
+function drawHandles() {
+    const { x, y, w, h } = cropRect;
+    const handles = {
+        tl: { x: x, y: y }, tr: { x: x + w, y: y },
+        bl: { x: x, y: y + h }, br: { x: x + w, y: y + h },
+        t: { x: x + w / 2, y: y }, b: { x: x + w / 2, y: y + h },
+        l: { x: x, y: y + h / 2 }, r: { x: x + w, y: y + h / 2 }
+    };
+    cropCtx.fillStyle = "rgba(255, 0, 0, 0.9)";
+    for (const handle in handles) {
+        cropCtx.fillRect(handles[handle].x - handleSize / 2, handles[handle].y - handleSize / 2, handleSize, handleSize);
+    }
+}
+
+function getHandleAt(mouseX, mouseY) {
+    const { x, y, w, h } = cropRect;
+    const handles = {
+        tl: { x: x, y: y }, tr: { x: x + w, y: y },
+        bl: { x: x, y: y + h }, br: { x: x + w, y: y + h },
+        t: { x: x + w / 2, y: y }, b: { x: x + w / 2, y: y + h },
+        l: { x: x, y: y + h / 2 }, r: { x: x + w, y: y + h / 2 }
+    };
+    for (const handle in handles) {
+        if (Math.abs(mouseX - handles[handle].x) < handleSize && Math.abs(mouseY - handles[handle].y) < handleSize) {
+            return handle;
+        }
+    }
+    return null;
+}
+
+function updateInputsFromCropRect() {
+    if (!cropCanvas) return;
+    document.getElementById('cs-cropx').value = (cropRect.x / cropCanvas.width).toFixed(4);
+    document.getElementById('cs-cropy').value = (cropRect.y / cropCanvas.height).toFixed(4);
+    document.getElementById('cs-crop-width').value = (cropRect.w / cropCanvas.width).toFixed(4);
+    document.getElementById('cs-crop-height').value = (cropRect.h / cropCanvas.height).toFixed(4);
+}
+
+function updateCropRectFromInputs() {
+    if (!cropCanvas) return;
+    cropRect.x = parseFloat(document.getElementById('cs-cropx').value) * cropCanvas.width;
+    cropRect.y = parseFloat(document.getElementById('cs-cropy').value) * cropCanvas.height;
+    cropRect.w = parseFloat(document.getElementById('cs-crop-width').value) * cropCanvas.width;
+    cropRect.h = parseFloat(document.getElementById('cs-crop-height').value) * cropCanvas.height;
+    drawCropOverlay();
+}
+
+function onMouseDown(e) {
+    const { offsetX, offsetY } = e;
+    startCoords = { x: offsetX, y: offsetY };
+    resizeHandle = getHandleAt(offsetX, offsetY);
+    if (resizeHandle) {
+        isResizing = true;
+    } else if (offsetX > cropRect.x && offsetX < cropRect.x + cropRect.w && offsetY > cropRect.y && offsetY < cropRect.y + cropRect.h) {
+        isDragging = true;
+    }
+}
+
+function onMouseMove(e) {
+    const { offsetX, offsetY, movementX, movementY } = e;
+    if (isDragging) {
+        cropRect.x += movementX;
+        cropRect.y += movementY;
+    } else if (isResizing) {
+        if (resizeHandle.includes('l')) { cropRect.x += movementX; cropRect.w -= movementX; }
+        if (resizeHandle.includes('r')) { cropRect.w += movementX; }
+        if (resizeHandle.includes('t')) { cropRect.y += movementY; cropRect.h -= movementY; }
+        if (resizeHandle.includes('b')) { cropRect.h += movementY; }
+    } else {
+        const handle = getHandleAt(offsetX, offsetY);
+        if (handle) {
+            if (handle === 'tl' || handle === 'br') cropCanvas.style.cursor = 'nwse-resize';
+            else if (handle === 'tr' || handle === 'bl') cropCanvas.style.cursor = 'nesw-resize';
+            else if (handle === 't' || handle === 'b') cropCanvas.style.cursor = 'ns-resize';
+            else if (handle === 'l' || handle === 'r') cropCanvas.style.cursor = 'ew-resize';
+        } else if (offsetX > cropRect.x && offsetX < cropRect.x + cropRect.w && offsetY > cropRect.y && offsetY < cropRect.y + cropRect.h) {
+            cropCanvas.style.cursor = 'move';
+        } else {
+            cropCanvas.style.cursor = 'crosshair';
+        }
+    }
+    if (isDragging || isResizing) {
+        drawCropOverlay();
+        updateInputsFromCropRect();
+    }
+}
+
+function onMouseUp(e) {
+    isDragging = false;
+    isResizing = false;
+    resizeHandle = null;
 }
 
 // =================================================================
@@ -482,7 +586,6 @@ function drawBoundsOnModalCanvas(imageToDraw) {
 // =================================================================
 
 document.addEventListener('DOMContentLoaded', () => {
-    // Initialize Bootstrap Components
     const addCameraModalElement = document.getElementById('addCamera');
     const statusModalElement = document.getElementById('statusModal');
     const cameraSettingsModalElement = document.getElementById('cameraSettings');
@@ -493,21 +596,25 @@ document.addEventListener('DOMContentLoaded', () => {
     if (cameraSettingsModalElement) cameraSettingsBsModal = new bootstrap.Modal(cameraSettingsModalElement);
     if (errorModalElement) generalErrorBsModal = new bootstrap.Modal(errorModalElement);
     
-    loadCameras(); // Initial load
-    
+    loadCameras();
     setInterval(updateStatusIcon, 3000);
     
-    // Attach event listeners
     document.getElementById('addCameraButton')?.addEventListener('click', addCameraSubmit);
-    // Bind the refresh button
     document.querySelector('.fab-container-left .fab')?.addEventListener('click', loadCameras);
+    
+    cropCanvas = document.getElementById("crop-overlay");
+    if(cropCanvas) {
+        cropCanvas.addEventListener('mousedown', onMouseDown);
+        cropCanvas.addEventListener('mousemove', onMouseMove);
+        cropCanvas.addEventListener('mouseup', onMouseUp);
+        cropCanvas.addEventListener('mouseleave', () => { isDragging = false; isResizing = false; });
+    }
 
-    const settingIds = ['cs-cropx', 'cs-cropy', 'cs-crop-width', 'cs-crop-height'];
-    settingIds.forEach(id => {
-        document.getElementById(id)?.addEventListener('input', () => drawBoundsOnModalCanvas(modalPreviewImage));
+    const cropInputs = ['cs-cropx', 'cs-cropy', 'cs-crop-width', 'cs-crop-height'];
+    cropInputs.forEach(id => {
+        document.getElementById(id)?.addEventListener('input', updateCropRectFromInputs);
     });
 
-    // Log panel logic
     const logContainer = document.getElementById('log-panel-content');
     if (logContainer) {
         const logHistory = JSON.parse(sessionStorage.getItem('logHistory') || '[]');
@@ -523,7 +630,6 @@ document.addEventListener('DOMContentLoaded', () => {
         const logCollapseElement = document.getElementById('log-panel-collapse');
         const fabLeft = document.querySelector('.fab-container-left');
         const fabRight = document.querySelector('.fab-container-right');
-
         if(logCollapseElement && fabLeft && fabRight){
             const fabUpPosition = `${200 + 45 + 5}px`; 
             const fabDownPosition = '65px';
