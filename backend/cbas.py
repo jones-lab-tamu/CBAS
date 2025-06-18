@@ -412,14 +412,22 @@ class Camera:
         os.makedirs(final_dest_dir, exist_ok=True)
         dest_pattern = os.path.join(final_dest_dir, f"{self.name}_%05d.mp4")
 
-        # Use the stored self.segment_seconds value in BOTH places
+        # NEW, improved ffmpeg command that preserves aspect ratio
         command = [
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-rtsp_transport", "tcp",
             "-i", str(self.rtsp_url), "-r", str(self.framerate),
-            "-filter_complex", f"[0:v]crop=iw*{self.crop_width}:ih*{self.crop_height}:iw*{self.crop_left_x}:ih*{self.crop_top_y},scale={self.resolution}:{self.resolution}[cropped]",
+            
+            # This filter chain is now more complex and robust:
+            # 1. Crop the video first.
+            # 2. Scale it down to fit within a 256x256 box while preserving aspect ratio.
+            # 3. Add padding (black bars) to make the final output exactly 256x256.
+            "-filter_complex", 
+            f"[0:v]crop=iw*{self.crop_width}:ih*{self.crop_height}:iw*{self.crop_left_x}:ih*{self.crop_top_y},"
+            f"scale={self.resolution}:{self.resolution}:force_original_aspect_ratio=decrease,"
+            f"pad={self.resolution}:{self.resolution}:(ow-iw)/2:(oh-ih)/2[cropped]",
+            
             "-map", "[cropped]", "-c:v", "libx264", "-preset", "fast", "-f", "segment",
             "-segment_time", str(self.segment_seconds), "-reset_timestamps", "1",
-            # Ensure this value matches the segment_time variable.
             "-force_key_frames", f"expr:gte(t,n_forced*{self.segment_seconds})", "-y", dest_pattern,
         ]
         
