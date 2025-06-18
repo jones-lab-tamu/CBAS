@@ -70,8 +70,8 @@ def get_cbas_status():
     return record_page.get_cbas_status()
 
 @eel.expose
-def start_camera_stream(name, session, time):
-    return record_page.start_camera_stream(name, session, time)
+def start_camera_stream(name, session): 
+    return record_page.start_camera_stream(name, session) # Call with new signature
 
 @eel.expose
 def stop_camera_stream(name):

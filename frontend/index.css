@@ -312,3 +312,19 @@ kbd {
 #logo-container:hover img#logo-default {
     opacity: 0;
 }
+
+/* =================================================================
+   CAMERA SETTINGS MODAL STYLES
+   ================================================================= */
+/* Targets the specific rows of inputs in the camera settings modal */
+#cameraSettings .row.g-2 {
+    align-items: flex-end; /* Aligns items to the bottom, useful if labels wrap */
+}
+
+#cameraSettings .row.g-2 .col p {
+    margin-bottom: 0.5rem; /* Standard Bootstrap spacing */
+    font-size: 0.9em;      /* Make label text slightly smaller */
+    white-space: nowrap;   /* Prevent the label from wrapping to a new line */
+    overflow: hidden;      /* Hide any part of the text that overflows */
+    text-overflow: ellipsis; /* Add "..." if the text is too long */
+}

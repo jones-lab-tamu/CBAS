@@ -217,9 +217,11 @@ def get_cbas_status() -> dict:
     return {"streams": streams or False, "encode_file_count": encode_count}
 
 
-def start_camera_stream(camera_name: str, session_name: str, segment_time: int) -> bool:
+def start_camera_stream(camera_name: str, session_name: str) -> bool:
     if not gui_state.proj or camera_name not in gui_state.proj.cameras: return False
-    return gui_state.proj.cameras[camera_name].start_recording(session_name, segment_time)
+    camera_obj = gui_state.proj.cameras[camera_name]
+    # Now calls start_recording without the time argument
+    return camera_obj.start_recording(session_name)
 
 
 def stop_camera_stream(camera_name: str) -> bool:

@@ -373,14 +373,18 @@ class Camera:
         self.project = project
         self.name = config.get("name", "Unnamed")
         self.path = os.path.join(self.project.cameras_dir, self.name)
+        # Call update_settings, which now handles the new property
         self.update_settings(config, write_to_disk=False)
 
     def settings_to_dict(self) -> dict:
+        # ADD the new setting to the dictionary
         return {
             "name": self.name, "rtsp_url": self.rtsp_url, "framerate": self.framerate,
             "resolution": self.resolution, "crop_left_x": self.crop_left_x,
             "crop_top_y": self.crop_top_y, "crop_width": self.crop_width, "crop_height": self.crop_height,
+            "segment_seconds": self.segment_seconds,
         }
+
 
     def update_settings(self, settings: dict, write_to_disk: bool = True):
         self.rtsp_url = str(settings.get("rtsp_url", ""))
@@ -390,31 +394,33 @@ class Camera:
         self.crop_top_y = float(settings.get("crop_top_y", 0.0))
         self.crop_width = float(settings.get("crop_width", 1.0))
         self.crop_height = float(settings.get("crop_height", 1.0))
+        # Get the new setting, defaulting to 600 seconds (10 minutes)
+        self.segment_seconds = int(settings.get("segment_seconds", 600))
         if write_to_disk: self.write_settings_to_config()
+
 
     def write_settings_to_config(self):
         with open(os.path.join(self.path, "config.yaml"), "w") as file:
             yaml.dump(self.settings_to_dict(), file, allow_unicode=True)
 
-    def start_recording(self, session_name: str, segment_time: int) -> bool:
+    # The start_recording method now uses its OWN stored segment time
+    def start_recording(self, session_name: str) -> bool:
         if self.name in self.project.active_recordings: return False
 
-        # The session_name is the top-level folder.
-        # Path: .../recordings/Session Name/
         session_path = os.path.join(self.project.recordings_dir, session_name)
-        # Path: .../recordings/Session Name/Camera Name/
         final_dest_dir = os.path.join(session_path, self.name)
-        
         os.makedirs(final_dest_dir, exist_ok=True)
         dest_pattern = os.path.join(final_dest_dir, f"{self.name}_%05d.mp4")
 
+        # Use the stored self.segment_seconds value in BOTH places
         command = [
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-rtsp_transport", "tcp",
             "-i", str(self.rtsp_url), "-r", str(self.framerate),
             "-filter_complex", f"[0:v]crop=iw*{self.crop_width}:ih*{self.crop_height}:iw*{self.crop_left_x}:ih*{self.crop_top_y},scale={self.resolution}:{self.resolution}[cropped]",
             "-map", "[cropped]", "-c:v", "libx264", "-preset", "fast", "-f", "segment",
-            "-segment_time", str(segment_time), "-reset_timestamps", "1",
-            "-force_key_frames", f"expr:gte(t,n_forced*{segment_time})", "-y", dest_pattern,
+            "-segment_time", str(self.segment_seconds), "-reset_timestamps", "1",
+            # Ensure this value matches the segment_time variable.
+            "-force_key_frames", f"expr:gte(t,n_forced*{self.segment_seconds})", "-y", dest_pattern,
         ]
         
         try:

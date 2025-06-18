@@ -1,12 +1,13 @@
 // In frontend/js/record_page.js
 
 /**
- * @file Manages the Record page UI, including live preview and the new interactive cropping tool.
- * This version uses a robust request-response model for loading initial data.
+ * @file Manages the Record page UI, including live preview and interactive cropping.
+ * This file follows a structured order: exposed functions, globals, function definitions,
+ * and finally the DOMContentLoaded initializer to prevent race conditions.
  */
 
 // =================================================================
-// EEL-EXPOSED FUNCTIONS (API for Python to call)
+// 1. EEL-EXPOSED FUNCTIONS (API for Python to call)
 // =================================================================
 
 eel.expose(update_log_panel);
@@ -14,18 +15,36 @@ eel.expose(update_live_frame);
 eel.expose(end_live_preview);
 
 // =================================================================
-// LOG PANEL MANAGEMENT
+// 2. GLOBAL STATE & VARIABLES
+// =================================================================
+
+let routingInProgress = false;
+let originalCameraNameForSettings = "";
+let modalPreviewImage = new Image();
+let allCameraData = [];
+
+let addCameraBsModal, statusBsModal, cameraSettingsBsModal, generalErrorBsModal;
+
+let cropCanvas, cropCtx, imageCanvas, imageCtx;
+let cropRect = { x: 0, y: 0, w: 0, h: 0 };
+let isDragging = false;
+let isResizing = false;
+let resizeHandle = null;
+const handleSize = 8;
+
+let activePreviewCamera = null;
+
+// =================================================================
+// 3. FUNCTION DEFINITIONS
 // =================================================================
 
 function update_log_panel(message) {
     const logContainer = document.getElementById('log-panel-content');
     if (!logContainer) return;
-
     let logHistory = JSON.parse(sessionStorage.getItem('logHistory') || '[]');
     logHistory.push(message);
     while (logHistory.length > 500) logHistory.shift();
     sessionStorage.setItem('logHistory', JSON.stringify(logHistory));
-
     renderLogMessage(message, logContainer);
     logContainer.scrollTop = logContainer.scrollHeight;
 }
@@ -33,40 +52,23 @@ function update_log_panel(message) {
 function renderLogMessage(message, container) {
     const logEntry = document.createElement('div');
     logEntry.className = 'log-message';
-
     if (message.includes('[ERROR]')) logEntry.classList.add('log-level-ERROR');
     else if (message.includes('[WARN]')) logEntry.classList.add('log-level-WARN');
     else logEntry.classList.add('log-level-INFO');
-    
     logEntry.textContent = message;
     container.appendChild(logEntry);
 }
 
-// =================================================================
-// LIVE PREVIEW LOGIC
-// =================================================================
-
-let activePreviewCamera = null; // Holds the name of the camera currently in live preview mode
-
 function update_live_frame(cameraName, base64Val) {
-    if (cameraName !== activePreviewCamera) return; // Ignore frames for non-active previews
-
+    if (cameraName !== activePreviewCamera) return;
     const canvas = document.getElementById(`camera-${cameraName}`);
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     const img = new Image();
-
     img.onload = () => {
         const camData = allCameraData.find(c => c.name === cameraName);
-        if (camData) {
-            const crop = {
-                x: camData.crop_left_x * img.naturalWidth, y: camData.crop_top_y * img.naturalHeight,
-                w: camData.crop_width * img.naturalWidth, h: camData.crop_height * img.naturalHeight
-            };
-            drawImageOnCanvas(img, ctx, crop.x, crop.y, crop.w, crop.h);
-        } else {
-             ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        }
+        const crop = camData ? { x: camData.crop_left_x * img.naturalWidth, y: camData.crop_top_y * img.naturalHeight, w: camData.crop_width * img.naturalWidth, h: camData.crop_height * img.naturalHeight } : { x:0, y:0, w:img.naturalWidth, h:img.naturalHeight};
+        drawImageOnCanvas(img, ctx, crop.x, crop.y, crop.w, crop.h);
     };
     img.src = `data:image/jpeg;base64,${base64Val}`;
 }
@@ -75,14 +77,10 @@ function end_live_preview(cameraName) {
     if (activePreviewCamera && cameraName !== activePreviewCamera) {
         resetPreviewButton(activePreviewCamera);
     }
-    
-    console.log(`Live preview ended for ${cameraName}.`);
     if (cameraName === activePreviewCamera) {
         activePreviewCamera = null;
     }
-
     resetPreviewButton(cameraName);
-    
     refreshSingleThumbnail(cameraName);
 }
 
@@ -90,23 +88,17 @@ async function toggleLivePreview(cameraName) {
     if (activePreviewCamera && activePreviewCamera !== cameraName) {
         await eel.stop_live_preview()();
     }
-
     if (activePreviewCamera === cameraName) {
-        console.log(`User stopping live preview for ${cameraName}`);
         await eel.stop_live_preview()();
     } else {
-        console.log(`User starting live preview for ${cameraName}`);
         activePreviewCamera = cameraName;
-
         const liveViewBtn = document.getElementById(`live-view-btn-${cameraName}`);
         if(liveViewBtn){
             liveViewBtn.classList.remove('btn-outline-light');
             liveViewBtn.classList.add('btn-warning');
             liveViewBtn.innerHTML = '<i class="bi bi-stop-circle-fill"></i>';
-            const tooltip = bootstrap.Tooltip.getInstance(liveViewBtn);
-            if(tooltip) tooltip.setContent({ '.tooltip-inner': 'Stop Preview' });
+            bootstrap.Tooltip.getInstance(liveViewBtn)?.setContent({ '.tooltip-inner': 'Stop Preview' });
         }
-
         await eel.start_live_preview(cameraName)();
     }
 }
@@ -114,7 +106,6 @@ async function toggleLivePreview(cameraName) {
 async function refreshSingleThumbnail(cameraName){
     const camData = allCameraData.find(c => c.name === cameraName);
     if(!camData) return;
-    
     try {
         const thumbnailBlob = await eel.get_single_camera_thumbnail(cameraName)();
         if(thumbnailBlob){
@@ -127,9 +118,7 @@ async function refreshSingleThumbnail(cameraName){
             };
             img.src = `data:image/jpeg;base64,${thumbnailBlob}`;
         }
-    } catch(e) {
-        console.error(`Failed to refresh single thumbnail for ${cameraName}:`, e);
-    }
+    } catch(e) { console.error(`Failed to refresh single thumbnail for ${cameraName}:`, e); }
 }
 
 function resetPreviewButton(cameraName) {
@@ -138,42 +127,16 @@ function resetPreviewButton(cameraName) {
         liveViewBtn.classList.remove('btn-warning');
         liveViewBtn.classList.add('btn-outline-light');
         liveViewBtn.innerHTML = '<i class="bi bi-eye-fill"></i>';
-        const tooltip = bootstrap.Tooltip.getInstance(liveViewBtn);
-        if(tooltip) tooltip.setContent({ '.tooltip-inner': 'Live Preview' });
+        bootstrap.Tooltip.getInstance(liveViewBtn)?.setContent({ '.tooltip-inner': 'Live Preview' });
     }
     const liveViewBtnRec = document.getElementById(`live-view-btn-recording-${cameraName}`);
      if (liveViewBtnRec) {
         liveViewBtnRec.classList.remove('btn-warning');
         liveViewBtnRec.classList.add('btn-outline-light');
         liveViewBtnRec.innerHTML = '<i class="bi bi-eye-fill"></i>';
-        const tooltip = bootstrap.Tooltip.getInstance(liveViewBtnRec);
-        if(tooltip) tooltip.setContent({ '.tooltip-inner': 'Live Preview' });
+        bootstrap.Tooltip.getInstance(liveViewBtnRec)?.setContent({ '.tooltip-inner': 'Live Preview' });
     }
 }
-
-// =================================================================
-// GLOBAL STATE & VARIABLES
-// =================================================================
-
-let routingInProgress = false;
-let originalCameraNameForSettings = "";
-let modalPreviewImage = new Image();
-let allCameraData = [];
-
-let addCameraBsModal, statusBsModal, cameraSettingsBsModal, generalErrorBsModal;
-
-// --- STATE FOR INTERACTIVE CROPPING ---
-let cropCanvas, cropCtx, imageCanvas, imageCtx;
-let cropRect = { x: 0, y: 0, w: 0, h: 0 };
-let isDragging = false;
-let isResizing = false;
-let resizeHandle = null;
-let startCoords = { x: 0, y: 0 };
-const handleSize = 8;
-
-// =================================================================
-// UI INTERACTION & EVENT HANDLERS
-// =================================================================
 
 function routeToRecordPage() { routingInProgress = true; window.location.href = './record.html'; }
 function routeToLabelTrainPage() { routingInProgress = true; window.location.href = './label-train.html'; }
@@ -181,12 +144,8 @@ function routeToVisualizePage() { routingInProgress = true; window.location.href
 
 function showErrorOnRecordPage(message) {
     const el = document.getElementById("error-message");
-    if (el && generalErrorBsModal) {
-        el.innerText = message;
-        generalErrorBsModal.show();
-    } else {
-        alert(message);
-    }
+    if (el && generalErrorBsModal) { el.innerText = message; generalErrorBsModal.show(); }
+    else { alert(message); }
 }
 
 function showAddCameraModal() { addCameraBsModal?.show(); }
@@ -211,18 +170,13 @@ async function addCameraSubmit() {
         document.getElementById('camera-name-modal-input').value = "";
         document.getElementById('rtsp-url-modal-input').value = "";
         await loadCameras();
-    } else {
-        showErrorOnRecordPage(`Failed to create camera '${name}'. It may already exist.`);
-    }
+    } else { showErrorOnRecordPage(`Failed to create camera '${name}'. It may already exist.`); }
 }
 
 async function startCamera(cameraName) {
     const sessionName = document.getElementById('session-name-input').value;
-    if (!sessionName.trim()) {
-        showErrorOnRecordPage('Please enter a Session Name before starting a recording.');
-        return;
-    }
-    await eel.start_camera_stream(cameraName, sessionName, 600)();
+    if (!sessionName.trim()) { showErrorOnRecordPage('Please enter a Session Name before starting a recording.'); return; }
+    await eel.start_camera_stream(cameraName, sessionName)();
     await updateRecordingStatus();
 }
 
@@ -232,18 +186,13 @@ async function stopCamera(cameraName) {
 }
 
 async function startAllCameras() {
-    if (allCameraData.length > 0) {
-        for (const cam of allCameraData) await startCamera(cam.name);
-    } else {
-        alert("No cameras are configured to start.");
-    }
+    if (allCameraData.length > 0) { for (const cam of allCameraData) await startCamera(cam.name); }
+    else { alert("No cameras are configured to start."); }
 }
 
 async function stopAllCameras() {
     const activeStreams = await eel.get_active_streams()() || [];
-    if (activeStreams.length > 0) {
-        for (const name of activeStreams) await stopCamera(name);
-    }
+    if (activeStreams.length > 0) { for (const name of activeStreams) await stopCamera(name); }
 }
 
 async function saveCameraSettings() {
@@ -251,10 +200,10 @@ async function saveCameraSettings() {
     if (!newName.trim()) { showErrorOnRecordPage("Camera name cannot be empty."); return; }
     
     const settings = {
-        "name": newName,
-        "rtsp_url": document.getElementById('cs-url').value,
+        "name": newName, "rtsp_url": document.getElementById('cs-url').value,
         "framerate": parseInt(document.getElementById('cs-framerate').value) || 10,
         "resolution": parseInt(document.getElementById('cs-resolution').value) || 256,
+        "segment_seconds": parseInt(document.getElementById('cs-segment-duration').value) || 600,
         'crop_left_x': parseFloat(document.getElementById('cs-cropx').value) || 0,
         'crop_top_y': parseFloat(document.getElementById('cs-cropy').value) || 0,
         'crop_width': parseFloat(document.getElementById('cs-crop-width').value) || 1,
@@ -271,72 +220,50 @@ async function saveCameraSettings() {
     await loadCameras();
 }
 
-// =================================================================
-// CORE APPLICATION LOGIC
-// =================================================================
-
 async function loadCameras() {
     const container = document.getElementById('camera-container');
     const spinner = document.getElementById('cover-spin');
     if (!container || !spinner) return;
-
     spinner.style.visibility = 'visible';
     container.innerHTML = "";
 
     try {
         allCameraData = await eel.get_cameras_with_thumbnails()();
-        
         if (!allCameraData || allCameraData.length === 0) {
             container.innerHTML = "<div class='col'><p class='text-light text-center mt-3'>No cameras configured. Click the '+' button to add one.</p></div>";
             spinner.style.visibility = 'hidden';
             return;
         }
-
         await loadCameraHTMLCards();
-
         for (const cam of allCameraData) {
             const canvas = document.getElementById(`camera-${cam.name}`);
             const ctx = canvas.getContext('2d');
             const img = new Image();
-
             img.onload = () => {
                 canvas.setAttribute("cbas_image_source", img.src);
                 const crop = { x: cam.crop_left_x * img.naturalWidth, y: cam.crop_top_y * img.naturalHeight, w: cam.crop_width * img.naturalWidth, h: cam.crop_height * img.naturalHeight };
                 drawImageOnCanvas(img, ctx, crop.x, crop.y, crop.w, crop.h);
             };
-
-            if (cam.thumbnail_blob) {
-                img.src = `data:image/jpeg;base64,${cam.thumbnail_blob}`;
-            } else {
-                img.src = "assets/noConnection.png";
-            }
+            if (cam.thumbnail_blob) { img.src = `data:image/jpeg;base64,${cam.thumbnail_blob}`; }
+            else { img.src = "assets/noConnection.png"; }
         }
-        
         await updateRecordingStatus();
-        
-        var tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'))
-        var tooltipList = tooltipTriggerList.map(function (tooltipTriggerEl) {
-            return new bootstrap.Tooltip(tooltipTriggerEl)
-        })
-
+        var tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
+        tooltipTriggerList.map(function (tooltipTriggerEl) { return new bootstrap.Tooltip(tooltipTriggerEl) });
     } catch (error) {
         console.error("Failed to load cameras:", error);
         showErrorOnRecordPage("An error occurred while fetching camera data.");
-    } finally {
-        spinner.style.visibility = 'hidden';
-    }
+    } finally { spinner.style.visibility = 'hidden'; }
 }
 
 async function loadCameraHTMLCards() {
     const container = document.getElementById('camera-container');
     if (!container) return;
     container.innerHTML = "";
-
     let htmlContent = "";
     for (const cam of allCameraData) {
         const isCropped = cam.crop_left_x != 0 || cam.crop_top_y != 0 || cam.crop_width != 1 || cam.crop_height != 1;
         const displayName = isCropped ? cam.name : `${cam.name} <small class='text-muted'>(uncropped)</small>`;
-        
         htmlContent += `
             <div class="col-auto mb-3">
                 <div class="card shadow text-white bg-dark" style="width: 320px;">
@@ -363,7 +290,6 @@ async function updateRecordingStatus() {
     try {
         const activeStreams = await eel.get_active_streams()() || [];
         setRecordAllIcon(activeStreams.length > 0);
-
         for (const cam of allCameraData) {
             const beforeRec = document.getElementById(`before-recording-${cam.name}`);
             const duringRec = document.getElementById(`during-recording-${cam.name}`);
@@ -373,9 +299,7 @@ async function updateRecordingStatus() {
                 duringRec.style.display = isActive ? 'flex' : 'none';
             }
         }
-    } catch(e) {
-        console.error("Could not update recording status:", e);
-    }
+    } catch(e) { console.error("Could not update recording status:", e); }
 }
 
 async function updateStatusIcon() {
@@ -394,7 +318,6 @@ function setRecordAllIcon(isAnyRecording) {
     if (!fab) return;
     const icon = fab.querySelector('i');
     const tooltip = bootstrap.Tooltip.getInstance(fab);
-
     if (isAnyRecording) {
         icon.className = 'bi bi-square-fill';
         fab.setAttribute('onclick', 'stopAllCameras()');
@@ -417,10 +340,7 @@ function drawImageOnCanvas(img, ctx, sx, sy, sw, sh) {
     ctx.drawImage(img, sx, sy, sw, sh, destX, destY, drawW, drawH);
 }
 
-// =================================================================
-// INTERACTIVE CROPPING LOGIC
-// =================================================================
-
+// THIS IS THE MISSING FUNCTION
 async function loadCameraSettings(cameraName) {
     const settings = allCameraData.find(c => c.name === cameraName);
     if (settings) {
@@ -429,7 +349,7 @@ async function loadCameraSettings(cameraName) {
         document.getElementById('cs-url').value = settings.rtsp_url;
         document.getElementById('cs-framerate').value = settings.framerate;
         document.getElementById('cs-resolution').value = settings.resolution;
-        
+        document.getElementById('cs-segment-duration').value = settings.segment_seconds || 600;
         document.getElementById('cs-cropx').value = settings.crop_left_x;
         document.getElementById('cs-cropy').value = settings.crop_top_y;
         document.getElementById('cs-crop-width').value = settings.crop_width;
@@ -451,56 +371,39 @@ async function loadCameraSettings(cameraName) {
     }
 }
 
-function setupCropCanvas() {
-    imageCanvas = document.getElementById("camera-image");
-    imageCtx = imageCanvas.getContext("2d");
-    cropCanvas = document.getElementById("crop-overlay");
-    cropCtx = cropCanvas.getContext("2d");
-
-    const container = document.getElementById('canvas-container-modal');
-    imageCanvas.width = container.clientWidth;
-    imageCanvas.height = container.clientHeight;
-    cropCanvas.width = container.clientWidth;
-    cropCanvas.height = container.clientHeight;
+function onMouseDown(e) {
+    const { offsetX, offsetY } = e;
+    resizeHandle = getHandleAt(offsetX, offsetY);
+    if (resizeHandle) { isResizing = true; } 
+    else if (offsetX > cropRect.x && offsetX < cropRect.x + cropRect.w && offsetY > cropRect.y && offsetY < cropRect.y + cropRect.h) { isDragging = true; }
 }
 
-function drawImageOnCropCanvas(img) {
-    if (!imageCanvas || !img.complete || img.naturalWidth === 0) return;
-    const aspectRatio = img.naturalWidth / img.naturalHeight;
-    const container = document.getElementById('canvas-container-modal');
-    container.style.height = `${container.clientWidth / aspectRatio}px`;
-    setupCropCanvas();
-    imageCtx.drawImage(img, 0, 0, imageCanvas.width, imageCanvas.height);
-}
-
-function drawCropOverlay() {
-    if (!cropCtx) return;
-    cropCtx.clearRect(0, 0, cropCanvas.width, cropCanvas.height);
-
-    cropCtx.fillStyle = "rgba(0, 0, 0, 0.5)";
-    cropCtx.fillRect(0, 0, cropCanvas.width, cropCanvas.height);
-    cropCtx.clearRect(cropRect.x, cropRect.y, cropRect.w, cropRect.h);
-
-    cropCtx.strokeStyle = "rgba(255, 0, 0, 0.9)";
-    cropCtx.lineWidth = 2;
-    cropCtx.strokeRect(cropRect.x, cropRect.y, cropRect.w, cropRect.h);
-
-    drawHandles();
-}
-
-function drawHandles() {
-    const { x, y, w, h } = cropRect;
-    const handles = {
-        tl: { x: x, y: y }, tr: { x: x + w, y: y },
-        bl: { x: x, y: y + h }, br: { x: x + w, y: y + h },
-        t: { x: x + w / 2, y: y }, b: { x: x + w / 2, y: y + h },
-        l: { x: x, y: y + h / 2 }, r: { x: x + w, y: y + h / 2 }
-    };
-    cropCtx.fillStyle = "rgba(255, 0, 0, 0.9)";
-    for (const handle in handles) {
-        cropCtx.fillRect(handles[handle].x - handleSize / 2, handles[handle].y - handleSize / 2, handleSize, handleSize);
+function onMouseMove(e) {
+    const { offsetX, offsetY, movementX, movementY } = e;
+    if (isDragging) {
+        cropRect.x += movementX;
+        cropRect.y += movementY;
+    } else if (isResizing) {
+        if (resizeHandle.includes('l')) { cropRect.x += movementX; cropRect.w -= movementX; }
+        if (resizeHandle.includes('r')) { cropRect.w += movementX; }
+        if (resizeHandle.includes('t')) { cropRect.y += movementY; cropRect.h -= movementY; }
+        if (resizeHandle.includes('b')) { cropRect.h += movementY; }
+    } else {
+        const handle = getHandleAt(offsetX, offsetY);
+        if (handle) {
+            if (handle.includes('n') || handle.includes('s')) cropCanvas.style.cursor = 'ns-resize';
+            else if (handle.includes('e') || handle.includes('w')) cropCanvas.style.cursor = 'ew-resize';
+        } else if (offsetX > cropRect.x && offsetX < cropRect.x + cropRect.w && offsetY > cropRect.y && offsetY < cropRect.y + cropRect.h) {
+            cropCanvas.style.cursor = 'move';
+        } else { cropCanvas.style.cursor = 'crosshair'; }
+    }
+    if (isDragging || isResizing) {
+        drawCropOverlay();
+        updateInputsFromCropRect();
     }
 }
+
+function onMouseUp(e) { isDragging = false; isResizing = false; resizeHandle = null; }
 
 function getHandleAt(mouseX, mouseY) {
     const { x, y, w, h } = cropRect;
@@ -516,6 +419,31 @@ function getHandleAt(mouseX, mouseY) {
         }
     }
     return null;
+}
+
+function drawCropOverlay() {
+    if (!cropCtx) return;
+    cropCtx.clearRect(0, 0, cropCanvas.width, cropCanvas.height);
+    cropCtx.fillStyle = "rgba(0, 0, 0, 0.5)";
+    cropCtx.fillRect(0, 0, cropCanvas.width, cropCanvas.height);
+    cropCtx.clearRect(cropRect.x, cropRect.y, cropRect.w, cropRect.h);
+    cropCtx.strokeStyle = "rgba(255, 0, 0, 0.9)";
+    cropCtx.lineWidth = 2;
+    cropCtx.strokeRect(cropRect.x, cropRect.y, cropRect.w, cropRect.h);
+    drawHandles();
+}
+
+function drawHandles() {
+    if (!cropCtx) return;
+    const { x, y, w, h } = cropRect;
+    const handles = {
+        tl: { x: x, y: y }, tr: { x: x + w, y: y },
+        bl: { x: x, y: y + h }, br: { x: x + w, y: y + h },
+    };
+    cropCtx.fillStyle = "rgba(255, 0, 0, 0.9)";
+    for (const handle in handles) {
+        cropCtx.fillRect(handles[handle].x - handleSize / 2, handles[handle].y - handleSize / 2, handleSize, handleSize);
+    }
 }
 
 function updateInputsFromCropRect() {
@@ -535,54 +463,29 @@ function updateCropRectFromInputs() {
     drawCropOverlay();
 }
 
-function onMouseDown(e) {
-    const { offsetX, offsetY } = e;
-    startCoords = { x: offsetX, y: offsetY };
-    resizeHandle = getHandleAt(offsetX, offsetY);
-    if (resizeHandle) {
-        isResizing = true;
-    } else if (offsetX > cropRect.x && offsetX < cropRect.x + cropRect.w && offsetY > cropRect.y && offsetY < cropRect.y + cropRect.h) {
-        isDragging = true;
-    }
+function setupCropCanvas() {
+    imageCanvas = document.getElementById("camera-image");
+    imageCtx = imageCanvas.getContext("2d");
+    cropCanvas = document.getElementById("crop-overlay");
+    cropCtx = cropCanvas.getContext("2d");
+    const container = document.getElementById('canvas-container-modal');
+    imageCanvas.width = container.clientWidth;
+    imageCanvas.height = container.clientHeight;
+    cropCanvas.width = container.clientWidth;
+    cropCanvas.height = container.clientHeight;
 }
 
-function onMouseMove(e) {
-    const { offsetX, offsetY, movementX, movementY } = e;
-    if (isDragging) {
-        cropRect.x += movementX;
-        cropRect.y += movementY;
-    } else if (isResizing) {
-        if (resizeHandle.includes('l')) { cropRect.x += movementX; cropRect.w -= movementX; }
-        if (resizeHandle.includes('r')) { cropRect.w += movementX; }
-        if (resizeHandle.includes('t')) { cropRect.y += movementY; cropRect.h -= movementY; }
-        if (resizeHandle.includes('b')) { cropRect.h += movementY; }
-    } else {
-        const handle = getHandleAt(offsetX, offsetY);
-        if (handle) {
-            if (handle === 'tl' || handle === 'br') cropCanvas.style.cursor = 'nwse-resize';
-            else if (handle === 'tr' || handle === 'bl') cropCanvas.style.cursor = 'nesw-resize';
-            else if (handle === 't' || handle === 'b') cropCanvas.style.cursor = 'ns-resize';
-            else if (handle === 'l' || handle === 'r') cropCanvas.style.cursor = 'ew-resize';
-        } else if (offsetX > cropRect.x && offsetX < cropRect.x + cropRect.w && offsetY > cropRect.y && offsetY < cropRect.y + cropRect.h) {
-            cropCanvas.style.cursor = 'move';
-        } else {
-            cropCanvas.style.cursor = 'crosshair';
-        }
-    }
-    if (isDragging || isResizing) {
-        drawCropOverlay();
-        updateInputsFromCropRect();
-    }
-}
-
-function onMouseUp(e) {
-    isDragging = false;
-    isResizing = false;
-    resizeHandle = null;
+function drawImageOnCropCanvas(img) {
+    if (!imageCanvas || !img.complete || img.naturalWidth === 0) return;
+    const aspectRatio = img.naturalWidth / img.naturalHeight;
+    const container = document.getElementById('canvas-container-modal');
+    container.style.height = `${container.clientWidth / aspectRatio}px`;
+    setupCropCanvas();
+    imageCtx.drawImage(img, 0, 0, imageCanvas.width, imageCanvas.height);
 }
 
 // =================================================================
-// PAGE INITIALIZATION
+// 4. PAGE INITIALIZATION
 // =================================================================
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -610,23 +513,43 @@ document.addEventListener('DOMContentLoaded', () => {
         cropCanvas.addEventListener('mouseleave', () => { isDragging = false; isResizing = false; });
     }
 
-    const cropInputs = ['cs-cropx', 'cs-cropy', 'cs-crop-width', 'cs-crop-height'];
+    const cropInputs = ['cs-cropx', 'cs-cropy', 'cs-crop-width', 'cs-crop-height', 'cs-segment-duration'];
     cropInputs.forEach(id => {
-        document.getElementById(id)?.addEventListener('input', updateCropRectFromInputs);
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('input', updateCropRectFromInputs);
     });
+
+    const sessionInput = document.getElementById('session-name-input');
+    const editBtn = document.getElementById('edit-session-name-btn');
+    if (sessionInput && editBtn) {
+        sessionInput.addEventListener('blur', () => {
+            if (sessionInput.value.trim() !== '') {
+                sessionInput.readOnly = true;
+                editBtn.style.display = 'block';
+            }
+        });
+        sessionInput.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+                sessionInput.blur();
+            }
+        });
+        editBtn.addEventListener('click', () => {
+            sessionInput.readOnly = false;
+            editBtn.style.display = 'none';
+            sessionInput.focus();
+        });
+    }
 
     const logContainer = document.getElementById('log-panel-content');
     if (logContainer) {
         const logHistory = JSON.parse(sessionStorage.getItem('logHistory') || '[]');
         logHistory.forEach(msg => renderLogMessage(msg, logContainer));
         logContainer.scrollTop = logContainer.scrollHeight;
-        
         document.getElementById('clear-log-btn')?.addEventListener('click', () => {
             logContainer.innerHTML = '';
             sessionStorage.setItem('logHistory', '[]'); 
             update_log_panel('Log cleared.');
         });
-        
         const logCollapseElement = document.getElementById('log-panel-collapse');
         const fabLeft = document.querySelector('.fab-container-left');
         const fabRight = document.querySelector('.fab-container-right');
@@ -646,5 +569,8 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 window.addEventListener("beforeunload", () => {
-    if (!routingInProgress) eel.kill_streams()?.catch(console.error);
+    if (!routingInProgress) {
+        eel.stop_live_preview()();
+        eel.kill_streams()?.catch(console.error);
+    }
 });

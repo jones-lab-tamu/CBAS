@@ -62,7 +62,12 @@
     <div class="card bg-dark text-light shadow-sm">
         <div class="card-body d-flex align-items-center">
             <label for="session-name-input" class="form-label mb-0 me-3 fw-bold fs-5 text-nowrap">Current Session Name:</label>
-            <input type="text" class="form-control" id="session-name-input" placeholder="Enter a name for this recording session...">
+            <div class="input-group">
+                <input type="text" class="form-control" id="session-name-input" placeholder="Enter a name and click away to lock in...">
+                <button class="btn btn-outline-secondary" type="button" id="edit-session-name-btn" style="display: none;">
+                    <i class="bi bi-pencil-fill me-1"></i> Edit
+                </button>
+            </div>
         </div>
     </div>
   </div>
@@ -146,13 +151,10 @@
           <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
         </div>
         <div class="modal-body">
-		  <div id="canvas-container-modal" style="position: relative; width: 600px; margin: auto; margin-bottom: 20px;">
-			  <!-- The original canvas now just holds the background image -->
-			  <canvas id="camera-image" width="600" height="300"></canvas>
-			  <!-- The overlay canvas for drawing the interactive rectangle -->
-			  <canvas id="crop-overlay" width="600" height="300" style="position: absolute; top: 0; left: 0; cursor: crosshair;"></canvas>
-		  </div>
-		  		  
+          <div id="canvas-container-modal" style="position: relative; width: 600px; margin: auto; margin-bottom: 20px;">
+            <canvas id="camera-image" width="600" height="300"></canvas>
+            <canvas id="crop-overlay" width="600" height="300" style="position: absolute; top: 0; left: 0; cursor: crosshair;"></canvas>
+          </div>
           <p>Camera Name:</p>
           <input type="text" class="form-control" id="cs-name" aria-describedby="directory" placeholder="e.g. cam1"
             style="margin-bottom: 10px" />
@@ -160,42 +162,43 @@
           <input type="text" class="form-control" id="cs-url" aria-describedby="directory"
             placeholder="e.g. rtsp://admin:password@192.168.1.2:8554/profile0" style="margin-bottom: 20px" />
 
-          <div class="container" id="">
+          <div class="container">
             <div class="row justify-content-center align-items-center g-2">
               <div class="col">
-                <p>Framerate:</p>
-                <input type="number" class="form-control" id="cs-framerate" aria-describedby="directory"
-                  placeholder="10" />
+                <p>
+                  Record FPS
+                  <i class="bi bi-info-circle" data-bs-toggle="tooltip" data-bs-placement="top" 
+                     title="The framerate (frames per second) for the final saved video file. Lower values save disk space."></i>
+                </p>
+                <input type="number" class="form-control" id="cs-framerate" placeholder="10" />
               </div>
               <div class="col">
-                <p>Left:</p>
-                <input type="number" class="form-control" id="cs-cropx" aria-describedby="directory" placeholder="0"
-                  step=".01" min="0" max="1" />
+                <p>
+                  Analysis Res.
+                  <i class="bi bi-info-circle" data-bs-toggle="tooltip" data-bs-placement="top" 
+                     title="The resolution (in pixels) to which the cropped video is resized for AI analysis. 256 is recommended."></i>
+                </p>
+                <input type="number" class="form-control" id="cs-resolution" placeholder="256" />
               </div>
               <div class="col">
-                <p>Right:</p>
-                <input type="number" class="form-control" id="cs-crop-width" aria-describedby="directory"
-                  placeholder="1" step=".01" min="0" max="1" />
+                <p>
+                  Segment (sec)
+                  <i class="bi bi-info-circle" data-bs-toggle="tooltip" data-bs-placement="top" 
+                     title="The duration of each video segment. The recording will be split into files of this length."></i>
+                </p>
+                <input type="number" class="form-control" id="cs-segment-duration" placeholder="600" step="60" min="60" />
               </div>
             </div>
-            <div class="row justify-content-center align-items-center g-2">
-              <div class="col">
-                <p>Resolution:</p>
-                <input type="number" class="form-control" id="cs-resolution" aria-describedby="directory"
-                  placeholder="256" />
-              </div>
-              <div class="col">
-                <p>Top:</p>
-                <input type="number" class="form-control" id="cs-cropy" aria-describedby="directory" placeholder="0"
-                  step=".01" min="0" max="1" />
-              </div>
-              <div class="col">
-                <p>Bottom:</p>
-                <input type="number" class="form-control" id="cs-crop-height" aria-describedby="directory"
-                  placeholder="1" step=".01" min="0" max="1" />
-              </div>
+
+            <!-- This div holds the now-invisible crop coordinate inputs -->
+            <div id="crop-input-values" style="display: none;">
+              <input type="number" id="cs-cropx" />
+              <input type="number" id="cs-cropy" />
+              <input type="number" id="cs-crop-width" />
+              <input type="number" id="cs-crop-height" />
             </div>
           </div>
+
         </div>
         <div class="modal-footer">
           <button type="button" class="btn btn-secondary" data-bs-dismiss="modal" onclick="saveCameraSettings()">
@@ -208,12 +211,9 @@
 
   <!-- Bottom Right Buttons -->
 	<div class="fab-container-right">
-	  <!-- Create Button -->
 	  <div class="fab" onclick="showAddCameraModal()" data-bs-toggle="tooltip" data-bs-placement="left" title="Add New Camera">
 		<i class="bi bi-plus-lg" style="font-size: 50px"></i>
 	  </div>
-
-    <!-- Record Button -->
 	  <div class="fab" onclick="startAllCameras()" data-bs-toggle="tooltip" data-bs-placement="left" title="Start/Stop All Recordings">
 		<i class="bi bi-camera-video-fill"></i>
 	  </div>
@@ -221,7 +221,6 @@
 
   <!-- Bottom Left Refresh Button -->
 	<div class="fab-container-left">
-	  <!-- Refresh Button -->
 	  <div class="fab" onclick="loadCameras()" data-bs-toggle="tooltip" data-bs-placement="right" title="Refresh Camera Thumbnails">
 		<i class="bi bi-arrow-clockwise" style="font-size: 50px"></i>
 	  </div>
@@ -231,20 +230,14 @@
 
   <div class="progress" id="inference-bar" style="border: 1px solid white"></div>
   
-  <!-- =================================================================
-  LOG PANEL FOOTER
-  ================================================================== -->
+  <!-- LOG PANEL FOOTER -->
   <div class="log-panel-footer">
-    <!-- This is the button that toggles the panel -->
     <div class="d-flex justify-content-end p-2 bg-dark">
-      <!-- Added tooltip attributes -->
       <button class="btn btn-sm btn-outline-secondary me-2" id="clear-log-btn" data-bs-toggle="tooltip" data-bs-placement="top" title="Clear all messages from the log">Clear Log</button>
-      <!-- Added tooltip attributes -->
       <button class="btn btn-sm btn-info" type="button" data-bs-toggle="collapse" data-bs-target="#log-panel-collapse" aria-expanded="false" aria-controls="log-panel-collapse" data-bs-toggle="tooltip" data-bs-placement="top" title="Show/Hide the log panel">
         <i class="bi bi-terminal"></i> View Log
       </button>
     </div>
-    <!-- This is the collapsible panel itself -->
     <div class="collapse" id="log-panel-collapse">
       <div id="log-panel-content">
         <!-- Log messages will be appended here by JavaScript -->
@@ -252,13 +245,13 @@
     </div>
   </div>
 
-
   <!-- Bootstrap JS Bundle -->
   <script src="libs/bootstrap-5.3.3/js/bootstrap.bundle.min.js"></script>
   <!-- Custom Page Logic -->
   <script type="text/javascript" src="js/record_page.js"></script>
   <!-- Tooltip Initializer -->
   <script>
+    // This script must run to activate the tooltips we just added
     document.addEventListener('DOMContentLoaded', function () {
       var tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'))
       var tooltipList = tooltipTriggerList.map(function (tooltipTriggerEl) {
