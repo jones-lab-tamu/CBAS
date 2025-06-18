@@ -533,7 +533,12 @@ function drawImageOnCropCanvas(img) {
 // 4. PAGE INITIALIZATION
 // =================================================================
 
+// =================================================================
+// 4. PAGE INITIALIZATION
+// =================================================================
+
 document.addEventListener('DOMContentLoaded', () => {
+    // --- Initialize Bootstrap Modals ---
     const addCameraModalElement = document.getElementById('addCamera');
     const statusModalElement = document.getElementById('statusModal');
     const cameraSettingsModalElement = document.getElementById('cameraSettings');
@@ -544,9 +549,11 @@ document.addEventListener('DOMContentLoaded', () => {
     if (cameraSettingsModalElement) cameraSettingsBsModal = new bootstrap.Modal(cameraSettingsModalElement);
     if (errorModalElement) generalErrorBsModal = new bootstrap.Modal(errorModalElement);
     
+    // --- Load Initial Data & Start Timers ---
     loadCameras();
     setInterval(updateStatusIcon, 3000);
     
+    // --- Attach Event Listeners ---
     document.getElementById('addCameraButton')?.addEventListener('click', addCameraSubmit);
     document.querySelector('.fab-container-left .fab')?.addEventListener('click', loadCameras);
     
@@ -567,17 +574,31 @@ document.addEventListener('DOMContentLoaded', () => {
     const sessionInput = document.getElementById('session-name-input');
     const editBtn = document.getElementById('edit-session-name-btn');
     if (sessionInput && editBtn) {
+        // LOAD on page start ---
+        const savedSession = localStorage.getItem('lastSessionName');
+        if (savedSession) {
+            sessionInput.value = savedSession;
+            sessionInput.readOnly = true;
+            editBtn.style.display = 'block';
+        }
+
+        // Event when the user clicks away from the input
         sessionInput.addEventListener('blur', () => {
-            if (sessionInput.value.trim() !== '') {
+            const sessionName = sessionInput.value.trim();
+            if (sessionName !== '') {
                 sessionInput.readOnly = true;
                 editBtn.style.display = 'block';
+                // SAVE on blur ---
+                localStorage.setItem('lastSessionName', sessionName);
             }
         });
+
         sessionInput.addEventListener('keydown', (event) => {
             if (event.key === 'Enter') {
                 sessionInput.blur();
             }
         });
+
         editBtn.addEventListener('click', () => {
             sessionInput.readOnly = false;
             editBtn.style.display = 'none';
