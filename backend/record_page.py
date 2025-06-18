@@ -10,6 +10,7 @@ import gui_state
 import cbas
 import threading
 import time
+import workthreads
 
 # =================================================================
 # LIVE PREVIEW MANAGEMENT (NEW)
@@ -259,7 +260,15 @@ def start_camera_stream(camera_name: str, session_name: str) -> bool:
 
 def stop_camera_stream(camera_name: str) -> bool:
     if not gui_state.proj or camera_name not in gui_state.proj.cameras: return False
-    return gui_state.proj.cameras[camera_name].stop_recording()
+    
+    # Call the existing stop method and capture its return value
+    success = gui_state.proj.cameras[camera_name].stop_recording()
+    
+    # If the method returns True, we log the success.
+    if success:
+        workthreads.log_message(f"Recording for camera '{camera_name}' stopped by user.", "INFO")
+        
+    return success
 
 
 def get_active_streams() -> list[str] | bool:
