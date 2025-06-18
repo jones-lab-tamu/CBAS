@@ -1,5 +1,3 @@
-// In frontend/js/record_page.js
-
 /**
  * @file Manages the Record page UI, including live preview and interactive cropping.
  * This file follows a structured order: exposed functions, globals, function definitions,
@@ -37,6 +35,15 @@ let activePreviewCamera = null;
 // =================================================================
 // 3. FUNCTION DEFINITIONS
 // =================================================================
+
+function revealRecordingFolder(cameraName) {
+    const sessionName = document.getElementById('session-name-input').value;
+    if (!sessionName.trim()) {
+        showErrorOnRecordPage('Cannot show folder because session name is not set.');
+        return;
+    }
+    eel.reveal_recording_folder(sessionName, cameraName)();
+}
 
 function update_log_panel(message) {
     const logContainer = document.getElementById('log-panel-content');
@@ -192,7 +199,9 @@ async function startAllCameras() {
 
 async function stopAllCameras() {
     const activeStreams = await eel.get_active_streams()() || [];
-    if (activeStreams.length > 0) { for (const name of activeStreams) await stopCamera(name); }
+    if (activeStreams.length > 0) {
+        for (const name of activeStreams) await stopCamera(name);
+    }
 }
 
 async function saveCameraSettings() {
@@ -231,21 +240,20 @@ async function loadCameras() {
         allCameraData = await eel.get_cameras_with_thumbnails()();
         if (!allCameraData || allCameraData.length === 0) {
             container.innerHTML = "<div class='col'><p class='text-light text-center mt-3'>No cameras configured. Click the '+' button to add one.</p></div>";
-            spinner.style.visibility = 'hidden';
-            return;
-        }
-        await loadCameraHTMLCards();
-        for (const cam of allCameraData) {
-            const canvas = document.getElementById(`camera-${cam.name}`);
-            const ctx = canvas.getContext('2d');
-            const img = new Image();
-            img.onload = () => {
-                canvas.setAttribute("cbas_image_source", img.src);
-                const crop = { x: cam.crop_left_x * img.naturalWidth, y: cam.crop_top_y * img.naturalHeight, w: cam.crop_width * img.naturalWidth, h: cam.crop_height * img.naturalHeight };
-                drawImageOnCanvas(img, ctx, crop.x, crop.y, crop.w, crop.h);
-            };
-            if (cam.thumbnail_blob) { img.src = `data:image/jpeg;base64,${cam.thumbnail_blob}`; }
-            else { img.src = "assets/noConnection.png"; }
+        } else {
+            await loadCameraHTMLCards();
+            for (const cam of allCameraData) {
+                const canvas = document.getElementById(`camera-${cam.name}`);
+                const ctx = canvas.getContext('2d');
+                const img = new Image();
+                img.onload = () => {
+                    canvas.setAttribute("cbas_image_source", img.src);
+                    const crop = { x: cam.crop_left_x * img.naturalWidth, y: cam.crop_top_y * img.naturalHeight, w: cam.crop_width * img.naturalWidth, h: cam.crop_height * img.naturalHeight };
+                    drawImageOnCanvas(img, ctx, crop.x, crop.y, crop.w, crop.h);
+                };
+                if (cam.thumbnail_blob) { img.src = `data:image/jpeg;base64,${cam.thumbnail_blob}`; }
+                else { img.src = "assets/noConnection.png"; }
+            }
         }
         await updateRecordingStatus();
         var tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
@@ -267,7 +275,10 @@ async function loadCameraHTMLCards() {
         htmlContent += `
             <div class="col-auto mb-3">
                 <div class="card shadow text-white bg-dark" style="width: 320px;">
-                    <div class="card-header py-2"><h5 class="card-title mb-0">${displayName}</h5></div>
+                    <div class="card-header py-2 d-flex justify-content-between align-items-center">
+                        <h5 class="card-title mb-0">${displayName}</h5>
+                        <span id="status-dot-${cam.name}" class="badge rounded-pill"> </span>
+                    </div>
                     <canvas id="camera-${cam.name}" width="300" height="225" style="background-color: #343a40; display: block; margin: auto; margin-top:10px;"></canvas>
                     <div class="card-footer d-flex justify-content-center p-2">
                         <div id="before-recording-${cam.name}" style="display: flex;">
@@ -276,7 +287,9 @@ async function loadCameraHTMLCards() {
                             <button class="btn btn-sm btn-success" onclick="startCamera('${cam.name}')" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Start Recording"><i class="bi bi-camera-video-fill"></i> Start</button>
                         </div>
                         <div id="during-recording-${cam.name}" style="display: none;">
-                            <button id="live-view-btn-recording-${cam.name}" class="btn btn-sm btn-outline-light me-1" onclick="toggleLivePreview('${cam.name}')" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Live Preview"><i class="bi bi-eye-fill"></i></button>
+                            <button class="btn btn-sm btn-outline-light me-1" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Settings disabled during recording" disabled><i class="bi bi-crop"></i></button>
+                            <button class="btn btn-sm btn-outline-light me-1" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Live Preview disabled during recording" disabled><i class="bi bi-eye-fill"></i></button>
+                            <button class="btn btn-sm btn-outline-info me-1" onclick="revealRecordingFolder('${cam.name}')" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Show Recording Folder"><i class="bi bi-folder2-open"></i></button>
                             <button class="btn btn-sm btn-danger" onclick="stopCamera('${cam.name}')" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Stop Recording"><i class="bi bi-square-fill"></i> Stop</button>
                         </div>
                     </div>
@@ -290,13 +303,46 @@ async function updateRecordingStatus() {
     try {
         const activeStreams = await eel.get_active_streams()() || [];
         setRecordAllIcon(activeStreams.length > 0);
+
         for (const cam of allCameraData) {
+            const isActive = activeStreams.includes(cam.name);
+            
+            // Toggle visibility of button groups
             const beforeRec = document.getElementById(`before-recording-${cam.name}`);
             const duringRec = document.getElementById(`during-recording-${cam.name}`);
             if (beforeRec && duringRec) {
-                const isActive = activeStreams.includes(cam.name);
                 beforeRec.style.display = isActive ? 'none' : 'flex';
                 duringRec.style.display = isActive ? 'flex' : 'none';
+            }
+
+            // Also update the status dot
+            const statusDot = document.getElementById(`status-dot-${cam.name}`);
+            if (statusDot) {
+                let statusClass = 'bg-secondary';
+                let statusTitle = 'Status Unknown';
+                
+                if (isActive) {
+                    statusClass = 'bg-danger blinking';
+                    statusTitle = 'Camera is Recording';
+                } else {
+                    // Find the original status from the cached data
+                    const originalCamData = allCameraData.find(c => c.name === cam.name);
+                    if (originalCamData && originalCamData.status === 'online') {
+                        statusClass = 'bg-success';
+                        statusTitle = 'Camera Online and Idle';
+                    } else {
+                        statusClass = 'bg-danger';
+                        statusTitle = 'Camera Offline or Bad URL';
+                    }
+                }
+
+                statusDot.className = 'badge rounded-pill ' + statusClass;
+                const tooltip = bootstrap.Tooltip.getInstance(statusDot);
+                if (tooltip) {
+                    tooltip.setContent({ '.tooltip-inner': statusTitle });
+                } else {
+                    statusDot.setAttribute('title', statusTitle);
+                }
             }
         }
     } catch(e) { console.error("Could not update recording status:", e); }
@@ -340,7 +386,6 @@ function drawImageOnCanvas(img, ctx, sx, sy, sw, sh) {
     ctx.drawImage(img, sx, sy, sw, sh, destX, destY, drawW, drawH);
 }
 
-// THIS IS THE MISSING FUNCTION
 async function loadCameraSettings(cameraName) {
     const settings = allCameraData.find(c => c.name === cameraName);
     if (settings) {

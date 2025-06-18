@@ -28,6 +28,11 @@ import gui_state
 # =================================================================
 
 # --- Startup Page Functions ---
+
+@eel.expose
+def reveal_recording_folder(session_name, camera_name):
+    return record_page.reveal_recording_folder(session_name, camera_name)
+
 @eel.expose
 def create_project(parent_dir, name):
     return startup_page.create_project(parent_dir, name)
@@ -246,6 +251,25 @@ def generate_actograms(root, sub, model, behaviors, fr, bs, st, th, lc, pa, task
 @eel.expose
 def generate_and_save_data(out_dir, root, sub, model, behaviors, fr, bs, st, th):
     return visualize_page.generate_and_save_data(out_dir, root, sub, model, behaviors, fr, bs, st, th)
+
+@eel.expose
+def kill_all_processes():
+    """Forcefully terminates all known child processes (recording and preview)."""
+    print("Shutdown signal received from main process. Terminating all child processes...")
+    # Get all active processes from the gui_state
+    active_procs = gui_state.get_all_active_processes()
+    for proc in active_procs:
+        try:
+            if proc and proc.poll() is None: # Check if process is still running
+                proc.terminate()
+                proc.wait(timeout=2) # Wait briefly for it to close
+        except Exception as e:
+            # If wait fails, be more aggressive
+            try:
+                proc.kill()
+            except Exception as kill_e:
+                print(f"Failed to kill process {proc.pid}: {kill_e}")
+    print(f"Terminated {len(active_procs)} processes.")
 
 # =================================================================
 # MAIN APPLICATION LOGIC

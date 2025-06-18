@@ -153,6 +153,33 @@ if (!gotTheLock) {
   // --- Standard Electron lifecycle events ---
   app.on('ready', () => { createPythonProcess(); createWindow(); });
   app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
-  app.on('before-quit', () => { app.isQuitting = true; if (pythonProcess) pythonProcess.kill(); });
+  app.on('before-quit', async (event) => {
+  app.isQuitting = true;
+
+  if (pythonProcess && !pythonProcess.killed) {
+    console.log("Main app is quitting. Signaling Python backend to clean up child processes...");
+    
+    // Prevent the app from closing immediately
+    event.preventDefault(); 
+    
+    try {
+      // Call the new Python function and wait for it to complete.
+      // We need to check if eel is available and connected.
+      if (appWindow && appWindow.webContents) {
+        // Execute a script in the renderer process to call the eel function.
+        // This is a robust way to ensure the call is made.
+        await appWindow.webContents.executeJavaScript('eel.kill_all_processes()();', true);
+        console.log("Python cleanup signal sent successfully.");
+      }
+    } catch (e) {
+      console.error("Could not send cleanup signal to Python:", e);
+    } finally {
+      // After attempting to clean up, kill the Python process and quit.
+      console.log("Terminating Python process and quitting application.");
+      pythonProcess.kill();
+      app.quit();
+    }
+  }
+});
   app.on('activate', () => { if (appWindow === null && !splashWindow) createWindow(); });
 }

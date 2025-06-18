@@ -130,22 +130,55 @@ def stop_live_preview():
 # PUBLIC FUNCTIONS (Called by app.py)
 # =================================================================
 
-def get_cameras_with_thumbnails():
+def reveal_recording_folder(session_name: str, camera_name: str):
+    """Opens the specific folder where a camera is currently recording its segments."""
+    if not all([gui_state.proj, session_name, camera_name]):
+        return
+    
+    folder_path = os.path.join(gui_state.proj.recordings_dir, session_name, camera_name)
+    
+    if not os.path.isdir(folder_path):
+        print(f"Cannot open folder, path does not exist: {folder_path}")
+        eel.showErrorOnRecordPage(f"Recording folder not found for {camera_name} in session {session_name}.")()
+        return
+
+    try:
+        if sys.platform == "win32":
+            os.startfile(folder_path)
+        elif sys.platform == "darwin": # macOS
+            subprocess.run(["open", folder_path])
+        else: # linux
+            subprocess.run(["xdg-open", folder_path])
+    except Exception as e:
+        print(f"Failed to open file explorer for path '{folder_path}': {e}")
+
+def get_cameras_with_thumbnails(cameras_to_process=None):
     """
-    The primary function for the Record page.
-    It gathers all camera data and generates a fresh thumbnail for each,
+    Gathers all camera data and generates a fresh thumbnail and status for each,
     returning a complete payload to the frontend.
     """
     if not gui_state.proj:
         return []
 
     camera_data_list = []
-    for camera in gui_state.proj.cameras.values():
-        thumbnail_blob = _get_thumbnail_blob_for_camera(camera.rtsp_url)
+    # Get the list of actively recording cameras ONCE
+    active_streams = get_active_streams() or []
+
+    if cameras_to_process is None:
+        cameras_to_process = [cam.settings_to_dict() for cam in gui_state.proj.cameras.values()]
+
+    for cam_dict in cameras_to_process:
+        rtsp_url = cam_dict.get('rtsp_url')
+        status, thumbnail_blob = _get_thumbnail_blob_for_camera(rtsp_url)
         
-        camera_data = camera.settings_to_dict()
-        camera_data['thumbnail_blob'] = thumbnail_blob
-        camera_data_list.append(camera_data)
+        updated_cam_data = cam_dict.copy()
+        updated_cam_data['thumbnail_blob'] = thumbnail_blob
+        updated_cam_data['status'] = status
+        
+        # Add a new key to indicate if this camera is recording.
+        updated_cam_data['is_recording'] = cam_dict['name'] in active_streams
+        
+        camera_data_list.append(updated_cam_data)
 
     return camera_data_list
 
@@ -238,7 +271,18 @@ def get_active_streams() -> list[str] | bool:
 # INTERNAL HELPER FUNCTIONS
 # =================================================================
 
-def _get_thumbnail_blob_for_camera(rtsp_url: str) -> str | None:
+def _get_thumbnail_blob_for_camera(rtsp_url: str) -> tuple[str, str | None]:
+    """
+    Internal helper to capture a frame from an RTSP stream.
+    
+    Returns:
+        A tuple containing (status, blob).
+        Status can be 'online', 'offline', or 'error'.
+        Blob is the base64 string or None.
+    """
+    if not rtsp_url:
+        return 'offline', None
+
     command = [
         "ffmpeg", "-hide_banner", "-loglevel", "error",
         "-rtsp_transport", "tcp", "-max_delay", "5000000",
@@ -249,15 +293,19 @@ def _get_thumbnail_blob_for_camera(rtsp_url: str) -> str | None:
         "-"
     ]
     try:
-        process = subprocess.run(command, capture_output=True, timeout=20)
+        process = subprocess.run(command, capture_output=True, timeout=15) # Reduced timeout for faster feedback
+        
         if process.returncode == 0 and process.stdout:
-            return base64.b64encode(process.stdout).decode("utf-8")
+            blob = base64.b64encode(process.stdout).decode("utf-8")
+            return 'online', blob
         else:
-            print(f"FFMPEG failed for {rtsp_url}. Error: {process.stderr.decode('utf-8', errors='ignore').strip()}")
-            return None
+            error_message = process.stderr.decode('utf-8', errors='ignore').strip()
+            print(f"FFMPEG failed for {rtsp_url}. Error: {error_message}")
+            return 'offline', None
+            
     except subprocess.TimeoutExpired:
         print(f"FFMPEG process timed out for stream: {rtsp_url}")
-        return None
+        return 'offline', None
     except Exception as e:
         print(f"An exception occurred getting thumbnail for {rtsp_url}: {e}")
-        return None
+        return 'error', None
