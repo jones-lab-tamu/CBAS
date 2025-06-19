@@ -72,9 +72,20 @@
     </div>
   </div>
 
-  <div class="container align-items-center justify-content-center mt-4">
+  <!-- Main content area wrapper -->
+  <div class="container align-items-center justify-content-center mt-4" id="camera-container-wrapper">
+    <!-- NEW: Progress bar and label will go here -->
+    <div id="thumbnail-progress-container" class="mb-4" style="display: none; max-width: 1140px; margin-left: auto; margin-right: auto;">
+        <p id="thumbnail-progress-label" class="text-center text-light mb-1">Fetching thumbnails...</p>
+        <div class="progress" style="height: 20px;">
+            <div id="thumbnail-progress-bar" class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 0%;" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">0%</div>
+        </div>
+    </div>
+    <!-- The camera cards will be injected here -->
     <div class="row" id="camera-container"></div>
   </div>
+
+  <div id="content-spacer"></div>
 
 	<div class="modal" tabindex="-1" id="addCamera">
 	  <div class="modal-dialog modal-dialog-centered">
@@ -190,7 +201,6 @@
               </div>
             </div>
 
-            <!-- This div holds the now-invisible crop coordinate inputs -->
             <div id="crop-input-values" style="display: none;">
               <input type="number" id="cs-cropx" />
               <input type="number" id="cs-cropy" />
@@ -227,8 +237,6 @@
 	</div>
 
   <div id="cover-spin"></div>
-
-  <div class="progress" id="inference-bar" style="border: 1px solid white"></div>
   
   <!-- LOG PANEL FOOTER -->
   <div class="log-panel-footer">
@@ -251,7 +259,6 @@
   <script type="text/javascript" src="js/record_page.js"></script>
   <!-- Tooltip Initializer -->
   <script>
-    // This script must run to activate the tooltips we just added
     document.addEventListener('DOMContentLoaded', function () {
       var tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'))
       var tooltipList = tooltipTriggerList.map(function (tooltipTriggerEl) {

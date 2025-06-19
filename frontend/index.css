@@ -328,3 +328,39 @@ kbd {
     overflow: hidden;      /* Hide any part of the text that overflows */
     text-overflow: ellipsis; /* Add "..." if the text is too long */
 }
+
+/* =================================================================
+   CONTENT SPACER FOR FIXED FOOTER
+   ================================================================= */
+/* This creates space at the bottom of the content so it doesn't get
+   hidden behind the fixed log panel footer. */
+
+#content-spacer {
+    transition: height 0.35s ease-in-out; /* Smooth animation */
+}
+
+#content-spacer.footer-visible {
+    height: 55px; /* Matches the height of the minimized log bar + a little extra */
+}
+
+#content-spacer.log-panel-visible {
+    /* Height of minimized bar (55) + height of expanded panel (200) */
+    height: 255px; 
+}
+
+/* =================================================================
+   RECORD PAGE LAYOUT REFINEMENTS
+   ================================================================= */
+
+/* This targets the main container for the camera cards on the record page */
+#camera-container.row {
+    /* Center the grid horizontally on the page */
+    justify-content: center;
+
+    /* Prevent the grid from becoming excessively wide on large monitors */
+    max-width: 1140px; /* A standard 'large' container width */
+
+    /* This is crucial for centering a max-width block element */
+    margin-left: auto;
+    margin-right: auto;
+}

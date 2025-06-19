@@ -373,11 +373,9 @@ class Camera:
         self.project = project
         self.name = config.get("name", "Unnamed")
         self.path = os.path.join(self.project.cameras_dir, self.name)
-        # Call update_settings, which now handles the new property
         self.update_settings(config, write_to_disk=False)
 
     def settings_to_dict(self) -> dict:
-        # ADD the new setting to the dictionary
         return {
             "name": self.name, "rtsp_url": self.rtsp_url, "framerate": self.framerate,
             "resolution": self.resolution, "crop_left_x": self.crop_left_x,
@@ -390,12 +388,11 @@ class Camera:
         self.rtsp_url = str(settings.get("rtsp_url", ""))
         self.framerate = int(settings.get("framerate", 10))
         self.resolution = int(settings.get("resolution", 256))
+        self.segment_seconds = int(settings.get("segment_seconds", 600))
         self.crop_left_x = float(settings.get("crop_left_x", 0.0))
         self.crop_top_y = float(settings.get("crop_top_y", 0.0))
         self.crop_width = float(settings.get("crop_width", 1.0))
         self.crop_height = float(settings.get("crop_height", 1.0))
-        # Get the new setting, defaulting to 600 seconds (10 minutes)
-        self.segment_seconds = int(settings.get("segment_seconds", 600))
         if write_to_disk: self.write_settings_to_config()
 
 
@@ -407,6 +404,12 @@ class Camera:
     def start_recording(self, session_name: str) -> bool:
         if self.name in self.project.active_recordings: return False
 
+        # --- NEW LOGIC: Always use high-res profile0 for recordings ---
+        recording_url = self.rtsp_url
+        if recording_url.endswith("/profile1"):
+            recording_url = recording_url.replace("/profile1", "/profile0")
+        # ----------------------------------------------------------------
+
         session_path = os.path.join(self.project.recordings_dir, session_name)
         final_dest_dir = os.path.join(session_path, self.name)
         os.makedirs(final_dest_dir, exist_ok=True)
@@ -414,8 +417,10 @@ class Camera:
 
         # NEW, improved ffmpeg command that preserves aspect ratio
         command = [
-            "ffmpeg", "-hide_banner", "-loglevel", "error", "-rtsp_transport", "tcp",
-            "-i", str(self.rtsp_url), "-r", str(self.framerate),
+            "ffmpeg", "-hide_banner", "-loglevel", "error",
+            "-rtsp_transport", "tcp", # Also force TCP for recordings for max stability
+            "-i", str(recording_url), # Use the modified high-res URL
+
             
             # This filter chain is now more complex and robust:
             # 1. Crop the video first.

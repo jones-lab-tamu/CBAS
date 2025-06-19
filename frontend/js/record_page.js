@@ -11,6 +11,7 @@
 eel.expose(update_log_panel);
 eel.expose(update_live_frame);
 eel.expose(end_live_preview);
+eel.expose(update_thumbnail_progress);
 
 // =================================================================
 // 2. GLOBAL STATE & VARIABLES
@@ -128,6 +129,19 @@ async function refreshSingleThumbnail(cameraName){
     } catch(e) { console.error(`Failed to refresh single thumbnail for ${cameraName}:`, e); }
 }
 
+function update_thumbnail_progress(percent, message) {
+    const container = document.getElementById('thumbnail-progress-container');
+    const bar = document.getElementById('thumbnail-progress-bar');
+    const label = document.getElementById('thumbnail-progress-label');
+    if (!container || !bar || !label) return;
+
+    container.style.display = 'block';
+    label.textContent = message;
+    bar.style.width = `${percent}%`;
+    bar.textContent = `${percent}%`;
+    bar.setAttribute('aria-valuenow', percent);
+}
+
 function resetPreviewButton(cameraName) {
     const liveViewBtn = document.getElementById(`live-view-btn-${cameraName}`);
     if (liveViewBtn) {
@@ -229,11 +243,26 @@ async function saveCameraSettings() {
     await loadCameras();
 }
 
-async function loadCameras() {
+async function loadCameras(forceRefresh = false) {
     const container = document.getElementById('camera-container');
-    const spinner = document.getElementById('cover-spin');
-    if (!container || !spinner) return;
-    spinner.style.visibility = 'visible';
+    const progressContainer = document.getElementById('thumbnail-progress-container');
+    
+    if (!container || !progressContainer) return;
+
+    // --- NEW CACHING LOGIC ---
+    const cachedData = localStorage.getItem('cameraCache');
+    if (cachedData && !forceRefresh) {
+        console.log("Loading camera data from cache.");
+        allCameraData = JSON.parse(cachedData);
+        // If we have cached data, we can render the page instantly
+        // without showing any progress bar.
+        progressContainer.style.display = 'none'; 
+        await renderAllCameraCards();
+        return;
+    }
+
+    // If no cache or forceRefresh is true, proceed with backend fetch
+    progressContainer.style.display = 'block';
     container.innerHTML = "";
 
     try {
@@ -261,7 +290,10 @@ async function loadCameras() {
     } catch (error) {
         console.error("Failed to load cameras:", error);
         showErrorOnRecordPage("An error occurred while fetching camera data.");
-    } finally { spinner.style.visibility = 'hidden'; }
+    } finally {
+        // Hide the progress bar at the very end
+        progressContainer.style.display = 'none';
+    }
 }
 
 async function loadCameraHTMLCards() {
@@ -619,16 +651,30 @@ document.addEventListener('DOMContentLoaded', () => {
         const logCollapseElement = document.getElementById('log-panel-collapse');
         const fabLeft = document.querySelector('.fab-container-left');
         const fabRight = document.querySelector('.fab-container-right');
-        if(logCollapseElement && fabLeft && fabRight){
-            const fabUpPosition = `${200 + 45 + 5}px`; 
+		
+        const contentSpacer = document.getElementById('content-spacer');
+
+        if(logCollapseElement && fabLeft && fabRight && contentSpacer){
+            const fabUpPosition = `${200 + 45 + 20}px`; 
             const fabDownPosition = '65px';
+            
+            // Set initial state
+            contentSpacer.classList.add('footer-visible');
+
             logCollapseElement.addEventListener('show.bs.collapse', () => {
                 fabLeft.style.bottom = fabUpPosition;
                 fabRight.style.bottom = fabUpPosition;
+                // Add more padding when log is open
+                contentSpacer.classList.remove('footer-visible');
+                contentSpacer.classList.add('log-panel-visible');
             });
+
             logCollapseElement.addEventListener('hide.bs.collapse', () => {
                 fabLeft.style.bottom = fabDownPosition;
                 fabRight.style.bottom = fabDownPosition;
+                // Revert to smaller padding when log is closed
+                contentSpacer.classList.remove('log-panel-visible');
+                contentSpacer.classList.add('footer-visible');
             });
         }
     }
