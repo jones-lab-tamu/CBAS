@@ -180,42 +180,58 @@ def get_cameras_with_thumbnails(cameras_to_process=None):
     camera_data_list = []
     active_streams = get_active_streams() or []
     
+    # Determine the list of cameras to process
     if cameras_to_process is None:
         all_camera_configs = sorted([cam.settings_to_dict() for cam in gui_state.proj.cameras.values()], key=lambda x: x.get('name', ''))
     else:
         all_camera_configs = cameras_to_process
 
     total_cameras = len(all_camera_configs)
+    
+    # Return early if there's nothing to do.
+    if total_cameras == 0:
+        eel.update_thumbnail_progress(100, "No cameras configured.")()
+        return []
+
     for i, cam_dict in enumerate(all_camera_configs):
         cam_name = cam_dict.get('name')
         
-        # --- NEW: Send progress update BEFORE fetching ---
+        # Send a progress update to the UI *before* starting the slow ffmpeg command.
         progress = int(((i + 1) / total_cameras) * 100)
         eel.update_thumbnail_progress(progress, f"Fetching {cam_name}... ({i+1}/{total_cameras})")()
         
+        # Now, perform the slow/blocking operation to get the thumbnail.
         rtsp_url = cam_dict.get('rtsp_url')
         status, thumbnail_blob = _get_thumbnail_blob_for_camera(rtsp_url)
         
+        # Add the completed data to our list.
         updated_cam_data = cam_dict.copy()
         updated_cam_data['thumbnail_blob'] = thumbnail_blob
         updated_cam_data['status'] = status
         updated_cam_data['is_recording'] = cam_name in active_streams
         camera_data_list.append(updated_cam_data)
         
-        time.sleep(0.25) # A smaller delay is fine now that the user sees progress.
+        # A small delay to ensure the UI has time to render the update.
+        time.sleep(0.1)
 
-    eel.update_thumbnail_progress(100, "Finished.")() # Signal completion
+    # Send one final update to signal completion.
+    eel.update_thumbnail_progress(100, "Finished.")()
     return camera_data_list
 
 def get_single_camera_thumbnail(camera_name: str) -> str | None:
     """
     Fetches a fresh thumbnail for a single specified camera and returns its blob.
+    This is used for fast, targeted UI updates.
     """
     if not gui_state.proj or camera_name not in gui_state.proj.cameras:
         return None
     
+    # This reuses the existing, resilient helper function.
     rtsp_url = gui_state.proj.cameras[camera_name].rtsp_url
-    return _get_thumbnail_blob_for_camera(rtsp_url)
+    status, thumbnail_blob = _get_thumbnail_blob_for_camera(rtsp_url)
+    
+    # We only need to return the image data itself.
+    return thumbnail_blob
 
 def get_camera_settings(camera_name: str) -> dict | None:
     if not gui_state.proj: return None
@@ -377,7 +393,7 @@ def _get_thumbnail_blob_for_camera(rtsp_url: str) -> tuple[str, str | None]:
     if sys.platform == "win32":
         creation_flags = subprocess.CREATE_NO_WINDOW
 
-    # --- NEW: Retry Logic ---
+    # Retry Logic ---
     max_retries = 2
     for attempt in range(max_retries):
         try:
