@@ -382,18 +382,24 @@ def _get_thumbnail_blob_for_camera(rtsp_url: str) -> tuple[str, str | None]:
 
     command = [
         "ffmpeg", "-hide_banner", "-loglevel", "error",
+        
+        # --- MORE ELEGANT SOLUTION ---
+        # Set a 5-second timeout for the RTSP handshake. This tells ffmpeg
+        # to wait patiently for a slow camera to respond before giving up.
+        # This should fix most first-try connection failures.
+        "-timeout", "5000000", 
+        
         "-rtsp_transport", "tcp",
         "-i", rtsp_url,
         "-vframes", "1",
         "-f", "image2pipe", "-c:v", "mjpeg", "-"
     ]
     
-    # Use the correct creation flags for Windows to prevent console windows
     creation_flags = 0
     if sys.platform == "win32":
         creation_flags = subprocess.CREATE_NO_WINDOW
 
-    # Retry Logic ---
+    # --- Keep the retry loop for maximum robustness ---
     max_retries = 2
     for attempt in range(max_retries):
         try:
@@ -404,20 +410,18 @@ def _get_thumbnail_blob_for_camera(rtsp_url: str) -> tuple[str, str | None]:
                 stdin=subprocess.DEVNULL,
                 creationflags=creation_flags
             )
-            stdout, stderr = process.communicate(timeout=15) # 15-second timeout per attempt
+            stdout, stderr = process.communicate(timeout=15)
 
             if process.returncode == 0 and stdout:
-                # Success on the first (or second) try!
                 print(f"  - CAPTURE SUCCESS for {rtsp_url} on attempt {attempt + 1}.")
                 return 'online', base64.b64encode(stdout).decode("utf-8")
             else:
-                # The process ran but failed.
                 error_message = stderr.decode('utf-8', errors='ignore').strip()
                 print(f"  - FFMPEG failed on attempt {attempt + 1} for {rtsp_url}. Error: {error_message}")
                 if attempt < max_retries - 1:
                     print("    ...retrying in 1 second.")
-                    time.sleep(1) # Wait a second before retrying
-                continue # Go to the next iteration of the loop
+                    time.sleep(1)
+                continue
 
         except subprocess.TimeoutExpired:
             print(f"  - FFMPEG process timed out on attempt {attempt + 1} for stream: {rtsp_url}")
@@ -429,8 +433,6 @@ def _get_thumbnail_blob_for_camera(rtsp_url: str) -> tuple[str, str | None]:
         
         except Exception as e:
             print(f"  - An exception occurred on attempt {attempt + 1} for {rtsp_url}: {e}")
-            # Don't retry on unexpected exceptions
             return 'error', None
 
-    # If the loop finishes without a successful return, it means all retries failed.
     return 'offline', None

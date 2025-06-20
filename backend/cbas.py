@@ -400,58 +400,103 @@ class Camera:
         with open(os.path.join(self.path, "config.yaml"), "w") as file:
             yaml.dump(self.settings_to_dict(), file, allow_unicode=True)
 
-    # The start_recording method now uses its OWN stored segment time
-    def start_recording(self, session_name: str) -> bool:
-        if self.name in self.project.active_recordings: return False
+    # In /root/backend/cbas.py -> class Camera
 
-        # --- NEW LOGIC: Always use high-res profile0 for recordings ---
+    def start_recording(self, session_name: str) -> bool:
+        if self.name in self.project.active_recordings:
+            return False
+
         recording_url = self.rtsp_url
         if recording_url.endswith("/profile1"):
             recording_url = recording_url.replace("/profile1", "/profile0")
-        # ----------------------------------------------------------------
 
         session_path = os.path.join(self.project.recordings_dir, session_name)
         final_dest_dir = os.path.join(session_path, self.name)
         os.makedirs(final_dest_dir, exist_ok=True)
         dest_pattern = os.path.join(final_dest_dir, f"{self.name}_%05d.mp4")
 
-        # NEW, improved ffmpeg command that preserves aspect ratio
+        if torch.cuda.is_available():
+            video_codec = "h264_nvenc"
+            preset = "p1"
+        else:
+            video_codec = "libx264"
+            preset = "fast"
+
+
+        # Calculate a sane Group of Pictures (GOP) size. This forces a keyframe
+        # at a regular interval (e.g., every 2 seconds for a 10fps video).
+        # This provides the segmenter with plenty of opportunities to make clean cuts.
+        gop_size = self.framerate * 2
+
         command = [
             "ffmpeg", "-hide_banner", "-loglevel", "error",
-            "-rtsp_transport", "tcp", # Also force TCP for recordings for max stability
-            "-i", str(recording_url), # Use the modified high-res URL
-
+            "-rtsp_transport", "tcp",
+            "-i", str(recording_url),
             
-            # This filter chain is now more complex and robust:
-            # 1. Crop the video first.
-            # 2. Scale it down to fit within a 256x256 box while preserving aspect ratio.
-            # 3. Add padding (black bars) to make the final output exactly 256x256.
             "-filter_complex", 
             f"[0:v]crop=iw*{self.crop_width}:ih*{self.crop_height}:iw*{self.crop_left_x}:ih*{self.crop_top_y},"
             f"scale={self.resolution}:{self.resolution}:force_original_aspect_ratio=decrease,"
             f"pad={self.resolution}:{self.resolution}:(ow-iw)/2:(oh-ih)/2[cropped]",
             
-            "-map", "[cropped]", "-c:v", "libx264", "-preset", "fast", "-f", "segment",
-            "-segment_time", str(self.segment_seconds), "-reset_timestamps", "1",
-            "-force_key_frames", f"expr:gte(t,n_forced*{self.segment_seconds})", "-y", dest_pattern,
+            "-map", "[cropped]",
+            "-c:v", video_codec,
+            "-preset", preset,
+            
+            # Add the GOP size flag to ensure regular keyframes.
+            "-g", str(gop_size),
+            
+            # Disable scene change detection to enforce a strict GOP interval.
+            "-sc_threshold", "0",
+            
+            # Use the segment muxer.
+            "-f", "segment",
+            
+            # Set the duration of each segment.
+            "-segment_time", str(self.segment_seconds),
+            
+            # Reset timestamps for each new segment file.
+            "-reset_timestamps", "1",
+            
+            # Explicitly set the container format for each segment.
+            "-segment_format", "mp4",
+            
+            # The faulty '-force_key_frames' expression has been REMOVED.
+            
+            "-y", dest_pattern,
         ]
+        
         
         try:
             process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             self.project.active_recordings[self.name] = process
             return True
         except Exception as e:
-            print(f"Failed to start ffmpeg for {self.name}: {e}"); return False
+            print(f"Failed to start ffmpeg for {self.name}: {e}")
+            return False
 
     def stop_recording(self) -> bool:
+        """
+        Stops the recording process for this camera if it is active.
+        """
         if self.name in self.project.active_recordings:
+            # Pop the process from the dictionary of active recordings
             process = self.project.active_recordings.pop(self.name)
+            
             try:
-                process.stdin.write(b'q\n'); process.stdin.flush()
+                # Politely ask ffmpeg to quit by sending 'q' to its stdin
+                process.stdin.write(b'q\n')
+                process.stdin.flush()
+                # Wait for the process to terminate gracefully
                 process.communicate(timeout=10)
             except (subprocess.TimeoutExpired, Exception):
-                process.terminate(); process.wait(timeout=5)
+                # If it doesn't respond, terminate it forcefully
+                process.terminate()
+                process.wait(timeout=5)
+            
+            # Return True to indicate the stream was successfully stopped
             return True
+        
+        # Return False if there was no active stream to stop
         return False
 
 
