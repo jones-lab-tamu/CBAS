@@ -47,8 +47,22 @@ def get_cameras_with_thumbnails():
     return record_page.get_cameras_with_thumbnails()
 
 @eel.expose
+def update_image_src_from_python(camera_name, base64_val):
+    """
+    A Python-callable bridge to trigger the JavaScript updateImageSrc function.
+    This is necessary because the @eel.expose decorator for JS functions is conceptual;
+    the real mechanism is Python calling a JS function via the websocket.
+    """
+    eel.updateImageSrc(camera_name, base64_val)()
+
+@eel.expose
 def get_single_camera_thumbnail(camera_name):
     return record_page.get_single_camera_thumbnail(camera_name)
+
+@eel.expose
+def stop_all_camera_streams():
+    # This function will call a new helper in record_page.py
+    return record_page.stop_all_camera_streams()
 
 @eel.expose
 def get_camera_list():

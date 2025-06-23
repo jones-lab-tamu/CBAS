@@ -1,55 +1,146 @@
 import os
+import sys
 import base64
 import subprocess
+import time
 import shutil
-import sys
-import yaml
-import cv2
+from datetime import datetime
+import threading
+
 import eel
+import gevent
+# We use the standard subprocess module for stability
+# and gevent for concurrency management.
+
 import gui_state
 import cbas
-import threading
-import time
 import workthreads
 
 # =================================================================
-# LIVE PREVIEW MANAGEMENT (NEW)
+# Thumbnail Fetching Logic
 # =================================================================
 
-def _live_preview_worker(camera_name: str, rtsp_url: str, timeout_seconds: int = 30):
+def fetch_frame(rtsp_url: str, frame_location: str):
     """
-    (WORKER) This function runs in a background thread to manage a single
-    live preview ffmpeg process and pipe its frames to the UI.
+    Saves a single frame from an RTSP stream to a file.
+    This version uses a highly optimized ffmpeg command for speed and reliability.
     """
+    if os.path.exists(frame_location):
+        try:
+            os.remove(frame_location)
+        except OSError as e:
+            print(f"Error removing existing thumbnail {frame_location}: {e}")
+
     command = [
-        "ffmpeg", "-hide_banner", "-loglevel", "error",
-        "-rtsp_transport", "tcp", "-max_delay", "5000000",
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel", "error",
+        "-rtsp_transport", "tcp",
+        "-timeout", "5000000", 
         "-i", rtsp_url,
-        "-vf", "fps=10",
-        "-f", "image2pipe",
-        "-c:v", "mjpeg",
-        "-"
+        "-vframes", "1",
+        "-y", frame_location
     ]
     
-    process = None # Use a local variable for the process
+    creation_flags = 0
+    if sys.platform == "win32":
+        creation_flags = subprocess.CREATE_NO_WINDOW
+
+    max_retries = 2
+    for attempt in range(max_retries):
+        try:
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                stdin=subprocess.DEVNULL,
+                creationflags=creation_flags
+            )
+            _, stderr = process.communicate(timeout=15) 
+
+            if process.returncode == 0 and os.path.exists(frame_location) and os.path.getsize(frame_location) > 1000:
+                return # Success!
+
+            error_output = stderr.decode('utf-8', 'ignore').strip()
+            print(f"--- FFMPEG THUMBNAIL ATTEMPT {attempt + 1} FAILED for {rtsp_url} ---\n{error_output}\n--- END ERROR ---")
+            
+            if attempt < max_retries - 1:
+                gevent.sleep(1)
+            
+        except Exception as e:
+            print(f"Exception during thumbnail fetch for {rtsp_url} on attempt {attempt + 1}: {e}")
+            if attempt < max_retries - 1:
+                gevent.sleep(1)
+
+def get_cameras_with_thumbnails():
+    """
+    Returns camera settings and spawns a STAGGERED, asynchronous task
+    to fetch thumbnails and update the UI progressively.
+    """
+    if not gui_state.proj:
+        return []
+
+    initial_camera_list = sorted([cam.settings_to_dict() for cam in gui_state.proj.cameras.values()], key=lambda x: x.get('name', ''))
+    
+    def fetch_and_update_all_in_background():
+        cameras_to_fetch = [(cam['name'], cam['rtsp_url']) for cam in initial_camera_list]
+        
+        def on_fetch_complete(camera_name):
+            frame_location = os.path.join(gui_state.proj.cameras_dir, camera_name, "frame.jpg")
+            encoded_string = None
+            if os.path.exists(frame_location) and os.path.getsize(frame_location) > 1000:
+                try:
+                    with open(frame_location, "rb") as image_file:
+                        encoded_string = base64.b64encode(image_file.read()).decode('utf-8')
+                except Exception as e:
+                    print(f"Could not read/encode thumbnail for {camera_name}: {e}")
+            
+            eel.updateImageSrc(camera_name, encoded_string)()
+            
+        for name, url in cameras_to_fetch:
+            frame_path = os.path.join(gui_state.proj.cameras_dir, name, "frame.jpg")
+            job = gevent.spawn(fetch_frame, url, frame_path)
+            job.link(lambda g, n=name: on_fetch_complete(n))
+            gevent.sleep(0.15) 
+
+    eel.spawn(fetch_and_update_all_in_background)
+    return initial_camera_list
+
+
+# =================================================================
+# v3 Live Preview and Modern Functions
+# =================================================================
+
+# --- START OF MODIFIED SECTION ---
+def _live_preview_worker(
+    camera_name: str, rtsp_url: str,
+    crop_w: float, crop_h: float, crop_x: float, crop_y: float,
+    timeout_seconds: int = 30
+):
+    """
+    Worker function that generates a live, CROPPED preview stream.
+    """
+    # Build the filter string to include cropping.
+    filter_str = (
+        f"crop=iw*{crop_w}:ih*{crop_h}:iw*{crop_x}:ih*{crop_y},"
+        f"fps=10"
+    )
+
+    command = [
+        "ffmpeg", "-hide_banner", "-loglevel", "error", 
+        "-rtsp_transport", "tcp", "-max_delay", "5000000", 
+        "-i", rtsp_url, 
+        "-vf", filter_str,  # Use the new filter string
+        "-f", "image2pipe", "-c:v", "mjpeg", "-"
+    ]
+    process = None
     try:
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL)
-        gui_state.live_preview_process = process # Assign to global state
-        print(f"Started live preview process for {camera_name} (PID: {process.pid})")
-
+        gui_state.live_preview_process = process
         start_time = time.time()
-        
         while True:
-            if time.time() - start_time > timeout_seconds:
-                print(f"Live preview for {camera_name} timed out after {timeout_seconds}s.")
-                break
-
-            # Check if the process was terminated from outside
-            if process.poll() is not None:
-                print(f"Live preview process for {camera_name} terminated externally.")
-                break
-
-            # Reading logic (can remain the same)
+            if time.time() - start_time > timeout_seconds: break
+            if process.poll() is not None: break
             buffer = bytearray()
             while True:
                 start_marker_pos = buffer.find(b'\xff\xd8')
@@ -72,190 +163,70 @@ def _live_preview_worker(camera_name: str, rtsp_url: str, timeout_seconds: int =
                 if not chunk: break
                 buffer.extend(chunk)
             if not chunk: break
-        
     except Exception as e:
         print(f"Error in live preview worker for {camera_name}: {e}")
     finally:
-        # --- THREAD-SAFE CLEANUP ---
-        # The worker thread is responsible for its own cleanup.
         if process and process.poll() is None:
-            print(f"Terminating live preview process for {camera_name}.")
             process.terminate()
-            try:
-                process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                process.kill()
-        
-        # Only clear the global handle if it's still pointing to *this* thread's process
-        if gui_state.live_preview_process is process:
-            gui_state.live_preview_process = None
-
+            try: process.wait(timeout=2)
+            except subprocess.TimeoutExpired: process.kill()
+        if gui_state.live_preview_process is process: gui_state.live_preview_process = None
         eel.end_live_preview(camera_name)()
-        print(f"Live preview for {camera_name} has ended.")
-
 
 def start_live_preview(camera_name: str):
     """
-    (LAUNCHER) Stops any existing live preview and starts a new one for the
-    specified camera in a background thread.
+    Starts the live preview by getting the camera's crop settings and
+    passing them to the worker thread.
     """
-    stop_live_preview() # Ensure any old process is killed first
+    stop_live_preview()
+    if not gui_state.proj or camera_name not in gui_state.proj.cameras: return False
     
-    if not gui_state.proj or camera_name not in gui_state.proj.cameras:
-        return False
-        
     cam = gui_state.proj.cameras[camera_name]
     
+    # Pass all required settings to the worker thread.
     preview_thread = threading.Thread(
-        target=_live_preview_worker,
-        args=(camera_name, cam.rtsp_url),
+        target=_live_preview_worker, 
+        args=(
+            cam.name, cam.rtsp_url, 
+            cam.crop_width, cam.crop_height, 
+            cam.crop_left_x, cam.crop_top_y
+        ),
         daemon=True
     )
     preview_thread.start()
     return True
-
+# --- END OF MODIFIED SECTION ---
 
 def stop_live_preview():
-    """
-    Public function to signal the current live preview process to terminate.
-    It no longer clears the global handle directly.
-    """
     if gui_state.live_preview_process:
-        print("Signaling existing live preview process to terminate...")
         gui_state.live_preview_process.terminate()
-        # The worker thread's finally block will handle the cleanup.
     return True
 
-
-# =================================================================
-# PUBLIC FUNCTIONS (Called by app.py)
-# =================================================================
-
 def reveal_recording_folder(session_name: str, camera_name: str):
-    """Opens the specific folder where a camera is currently recording its segments."""
-    if not all([gui_state.proj, session_name, camera_name]):
-        return
-    
+    if not all([gui_state.proj, session_name, camera_name]): return
     folder_path = os.path.join(gui_state.proj.recordings_dir, session_name, camera_name)
-    
     if not os.path.isdir(folder_path):
-        print(f"Cannot open folder, path does not exist: {folder_path}")
         eel.showErrorOnRecordPage(f"Recording folder not found for {camera_name} in session {session_name}.")()
         return
-
     try:
-        if sys.platform == "win32":
-            os.startfile(folder_path)
-        elif sys.platform == "darwin": # macOS
-            subprocess.run(["open", folder_path])
-        else: # linux
-            subprocess.run(["xdg-open", folder_path])
+        if sys.platform == "win32": os.startfile(folder_path)
+        elif sys.platform == "darwin": subprocess.run(["open", folder_path])
+        else: subprocess.run(["xdg-open", folder_path])
     except Exception as e:
         print(f"Failed to open file explorer for path '{folder_path}': {e}")
-
-def _get_thumbnail_and_update_list(camera_dict, output_list, semaphore):
-    """(HELPER FOR THREADING) Gets a single thumbnail and appends to a list."""
-    try:
-        rtsp_url = camera_dict.get('rtsp_url')
-        status, thumbnail_blob = _get_thumbnail_blob_for_camera(rtsp_url)
-        
-        updated_cam_data = camera_dict.copy()
-        updated_cam_data['thumbnail_blob'] = thumbnail_blob
-        updated_cam_data['status'] = status
-        
-        active_streams = get_active_streams() or []
-        updated_cam_data['is_recording'] = camera_dict.get('name') in active_streams
-        
-        output_list.append(updated_cam_data)
-    finally:
-        semaphore.release()
-
-def get_cameras_with_thumbnails(cameras_to_process=None):
-    """
-    Gathers camera data sequentially and sends progress updates to the frontend.
-    """
-    if not gui_state.proj:
-        return []
-
-    camera_data_list = []
-    active_streams = get_active_streams() or []
-    
-    # Determine the list of cameras to process
-    if cameras_to_process is None:
-        all_camera_configs = sorted([cam.settings_to_dict() for cam in gui_state.proj.cameras.values()], key=lambda x: x.get('name', ''))
-    else:
-        all_camera_configs = cameras_to_process
-
-    total_cameras = len(all_camera_configs)
-    
-    # Return early if there's nothing to do.
-    if total_cameras == 0:
-        eel.update_thumbnail_progress(100, "No cameras configured.")()
-        return []
-
-    for i, cam_dict in enumerate(all_camera_configs):
-        cam_name = cam_dict.get('name')
-        
-        # Send a progress update to the UI *before* starting the slow ffmpeg command.
-        progress = int(((i + 1) / total_cameras) * 100)
-        eel.update_thumbnail_progress(progress, f"Fetching {cam_name}... ({i+1}/{total_cameras})")()
-        
-        # Now, perform the slow/blocking operation to get the thumbnail.
-        rtsp_url = cam_dict.get('rtsp_url')
-        status, thumbnail_blob = _get_thumbnail_blob_for_camera(rtsp_url)
-        
-        # Add the completed data to our list.
-        updated_cam_data = cam_dict.copy()
-        updated_cam_data['thumbnail_blob'] = thumbnail_blob
-        updated_cam_data['status'] = status
-        updated_cam_data['is_recording'] = cam_name in active_streams
-        camera_data_list.append(updated_cam_data)
-        
-        # A small delay to ensure the UI has time to render the update.
-        time.sleep(0.1)
-
-    # Send one final update to signal completion.
-    eel.update_thumbnail_progress(100, "Finished.")()
-    return camera_data_list
-
-def get_single_camera_thumbnail(camera_name: str) -> str | None:
-    """
-    Fetches a fresh thumbnail for a single specified camera and returns its blob.
-    This is used for fast, targeted UI updates.
-    """
-    if not gui_state.proj or camera_name not in gui_state.proj.cameras:
-        return None
-    
-    # This reuses the existing, resilient helper function.
-    rtsp_url = gui_state.proj.cameras[camera_name].rtsp_url
-    status, thumbnail_blob = _get_thumbnail_blob_for_camera(rtsp_url)
-    
-    # We only need to return the image data itself.
-    return thumbnail_blob
 
 def get_camera_settings(camera_name: str) -> dict | None:
     if not gui_state.proj: return None
     cam = gui_state.proj.cameras.get(camera_name)
     return cam.settings_to_dict() if cam else None
 
-
 def save_camera_settings(camera_name: str, camera_settings: dict) -> bool:
-    """
-    Saves settings. If the name has changed, it will call the robust
-    rename function first.
-    """
     if not gui_state.proj: return False
-    
     new_name = camera_settings.get("name")
     if not new_name or not new_name.strip(): return False
-
-    # If the name is different, we must perform a rename operation first.
     if new_name != camera_name:
         if not rename_camera(camera_name, new_name):
-            # The rename function will handle showing an error.
             return False
-    
-    # Now, save the settings to the (potentially new) camera object.
     if new_name in gui_state.proj.cameras:
         try:
             gui_state.proj.cameras[new_name].update_settings(camera_settings)
@@ -263,62 +234,35 @@ def save_camera_settings(camera_name: str, camera_settings: dict) -> bool:
         except Exception as e:
             print(f"Error saving settings for {new_name}: {e}")
             return False
-    
     return False
 
-
 def rename_camera(old_name: str, new_name: str) -> bool:
-    """
-    Robustly renames a camera, its folder, its config file, and the
-    in-memory project state.
-    """
     if not all([gui_state.proj, old_name, new_name.strip()]): return False
     if old_name not in gui_state.proj.cameras: return False
     if new_name in gui_state.proj.cameras:
         eel.showErrorOnRecordPage(f"A camera named '{new_name}' already exists.")()
         return False
-
     print(f"Renaming camera '{old_name}' to '{new_name}'")
-    # 1. Get the old camera object and its path
     old_cam_obj = gui_state.proj.cameras[old_name]
     old_cam_path = old_cam_obj.path
     new_cam_path = os.path.join(gui_state.proj.cameras_dir, new_name)
-
     try:
-        # 2. Stop any processes associated with the old camera
         stop_camera_stream(old_name)
         stop_live_preview()
-
-        # 3. Remove the old camera object from the project's in-memory dictionary
         del gui_state.proj.cameras[old_name]
-        
-        # 4. Rename the folder on disk
         shutil.move(old_cam_path, new_cam_path)
-
-        # 5. Read the config, update the name, and create a NEW camera object
         config_path = os.path.join(new_cam_path, "config.yaml")
         if os.path.exists(config_path):
-            with open(config_path, 'r') as f:
-                config = yaml.safe_load(f)
-            
+            with open(config_path, 'r') as f: config = yaml.safe_load(f)
             config['name'] = new_name
-            # Write the updated config back to the file
-            with open(config_path, 'w') as f:
-                yaml.dump(config, f, allow_unicode=True)
-            
-            # 6. Create a new Camera instance and add it to the project state
+            with open(config_path, 'w') as f: yaml.dump(config, f, allow_unicode=True)
             new_cam_obj = cbas.Camera(config, gui_state.proj)
             gui_state.proj.cameras[new_name] = new_cam_obj
-            
-            print(f"Successfully renamed and updated state for '{new_name}'")
             return True
         else:
-            # This is an error case, the config file should exist
             raise FileNotFoundError("config.yaml not found in renamed folder.")
-
     except Exception as e:
         print(f"Error renaming camera: {e}")
-        # Attempt to revert state if something went wrong
         if old_name not in gui_state.proj.cameras:
             gui_state.proj.cameras[old_name] = old_cam_obj
         if not os.path.exists(old_cam_path) and os.path.exists(new_cam_path):
@@ -326,13 +270,20 @@ def rename_camera(old_name: str, new_name: str) -> bool:
         eel.showErrorOnRecordPage(f"Could not rename camera: {e}")()
         return False
 
+def stop_all_camera_streams() -> bool:
+    if not gui_state.proj or not gui_state.proj.active_recordings: return False
+    camera_names_to_stop = list(gui_state.proj.active_recordings.keys())
+    print(f"Received request to stop all streams. Targeting: {camera_names_to_stop}")
+    for name in camera_names_to_stop:
+        stop_camera_stream(name)
+        time.sleep(0.1)
+    return True
 
 def create_camera(camera_name: str, rtsp_url: str) -> bool:
     if not gui_state.proj or not camera_name.strip() or not rtsp_url.strip(): return False
     settings = { "rtsp_url": rtsp_url, "framerate": 10, "resolution": 256, "crop_left_x": 0.0, "crop_top_y": 0.0, "crop_width": 1.0, "crop_height": 1.0, }
     new_cam = gui_state.proj.create_camera(camera_name, settings)
     return new_cam is not None
-
 
 def get_cbas_status() -> dict:
     if not gui_state.proj or not gui_state.encode_lock: return {"streams": False, "encode_file_count": 0}
@@ -341,98 +292,18 @@ def get_cbas_status() -> dict:
         encode_count = len(gui_state.encode_tasks)
     return {"streams": streams or False, "encode_file_count": encode_count}
 
-
 def start_camera_stream(camera_name: str, session_name: str) -> bool:
     if not gui_state.proj or camera_name not in gui_state.proj.cameras: return False
     camera_obj = gui_state.proj.cameras[camera_name]
-    # Now calls start_recording without the time argument
     return camera_obj.start_recording(session_name)
-
 
 def stop_camera_stream(camera_name: str) -> bool:
     if not gui_state.proj or camera_name not in gui_state.proj.cameras: return False
-    
-    # Call the existing stop method and capture its return value
     success = gui_state.proj.cameras[camera_name].stop_recording()
-    
-    # If the method returns True, we log the success.
     if success:
         workthreads.log_message(f"Recording for camera '{camera_name}' stopped by user.", "INFO")
-        
     return success
-
 
 def get_active_streams() -> list[str] | bool:
     if not gui_state.proj: return False
     return list(gui_state.proj.active_recordings.keys()) or False
-
-
-# =================================================================
-# INTERNAL HELPER FUNCTIONS
-# =================================================================
-
-def _get_thumbnail_blob_for_camera(rtsp_url: str) -> tuple[str, str | None]:
-    """
-    A resilient helper to capture a frame. It will automatically retry once
-    if the initial connection fails, which can resolve issues with cameras
-    that are slow to initialize their streams.
-    """
-    if not rtsp_url:
-        return 'offline', None
-
-    command = [
-        "ffmpeg", "-hide_banner", "-loglevel", "error",
-        
-        # --- MORE ELEGANT SOLUTION ---
-        # Set a 5-second timeout for the RTSP handshake. This tells ffmpeg
-        # to wait patiently for a slow camera to respond before giving up.
-        # This should fix most first-try connection failures.
-        "-timeout", "5000000", 
-        
-        "-rtsp_transport", "tcp",
-        "-i", rtsp_url,
-        "-vframes", "1",
-        "-f", "image2pipe", "-c:v", "mjpeg", "-"
-    ]
-    
-    creation_flags = 0
-    if sys.platform == "win32":
-        creation_flags = subprocess.CREATE_NO_WINDOW
-
-    # --- Keep the retry loop for maximum robustness ---
-    max_retries = 2
-    for attempt in range(max_retries):
-        try:
-            process = subprocess.Popen(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                stdin=subprocess.DEVNULL,
-                creationflags=creation_flags
-            )
-            stdout, stderr = process.communicate(timeout=15)
-
-            if process.returncode == 0 and stdout:
-                print(f"  - CAPTURE SUCCESS for {rtsp_url} on attempt {attempt + 1}.")
-                return 'online', base64.b64encode(stdout).decode("utf-8")
-            else:
-                error_message = stderr.decode('utf-8', errors='ignore').strip()
-                print(f"  - FFMPEG failed on attempt {attempt + 1} for {rtsp_url}. Error: {error_message}")
-                if attempt < max_retries - 1:
-                    print("    ...retrying in 1 second.")
-                    time.sleep(1)
-                continue
-
-        except subprocess.TimeoutExpired:
-            print(f"  - FFMPEG process timed out on attempt {attempt + 1} for stream: {rtsp_url}")
-            if process: process.kill()
-            if attempt < max_retries - 1:
-                print("    ...retrying in 1 second.")
-                time.sleep(1)
-            continue
-        
-        except Exception as e:
-            print(f"  - An exception occurred on attempt {attempt + 1} for {rtsp_url}: {e}")
-            return 'error', None
-
-    return 'offline', None
