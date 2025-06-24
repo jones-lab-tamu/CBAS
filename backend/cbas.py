@@ -269,7 +269,6 @@ class Camera:
         os.makedirs(final_dest_dir, exist_ok=True)
         dest_pattern = os.path.join(final_dest_dir, f"{self.name}_%05d.mp4")
 
-        # This command is built as a single string for shell=True
         filter_string = (
             f"crop=iw*{self.crop_width}:ih*{self.crop_height}:iw*{self.crop_left_x}:ih*{self.crop_top_y},"
             f"scale={self.resolution}:{self.resolution}:force_original_aspect_ratio=decrease,"
@@ -277,31 +276,44 @@ class Camera:
         )
         gop_size = self.framerate * 2
 
-        command_string = (
-            f'ffmpeg -hide_banner -loglevel error -rtsp_transport tcp -i "{recording_url}" '
-            f'-vf "{filter_string}" -c:v libx264 -preset ultrafast -g {gop_size} -sc_threshold 0 '
-            f'-f segment -segment_time {self.segment_seconds} -reset_timestamps 1 -segment_format mp4 '
-            f'-y "{dest_pattern}"'
-        )
+        # --- START OF THE DEFINITIVE FIX ---
+        command = [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel", "error",
+            "-rtsp_transport", "tcp",
+            "-i", str(recording_url),
+            "-vf", filter_string,
+            "-c:v", "libx264",
+            "-preset", "ultrafast",
+            "-g", str(gop_size),
+            "-sc_threshold", "0",
+            "-f", "segment",
+            "-segment_time", str(self.segment_seconds),
+            "-segment_atclocktime", "1", # Force segment finalization on clock time
+            "-reset_timestamps", "1",
+            "-strftime", "0", # Use the %05d pattern, not date/time
+            "-movflags", "+frag_keyframe+empty_moov",
+            "-y",
+            dest_pattern,
+        ]
+        # --- END OF THE DEFINITIVE FIX ---
         
         try:
-            print(f"Starting recording for {self.name} with command: {command_string}")
+            print(f"Starting recording for {self.name} with command: {' '.join(command)}")
             
-            # --- THE FINAL FIX: Replicate v2's process launch method ---
-            # Use gevent's Popen with shell=True. This is the key.
             creation_flags = 0
             if sys.platform == "win32":
                 creation_flags = subprocess.CREATE_NO_WINDOW
 
             process = Popen(
-                command_string, 
+                command, 
                 stdin=PIPE, 
-                stdout=PIPE, # We pipe to read/discard later if needed
+                stdout=PIPE,
                 stderr=PIPE,
-                shell=True,
+                shell=False,
                 creationflags=creation_flags
             )
-            # --- END OF FIX ---
 
             self.project.active_recordings[self.name] = process
             return True

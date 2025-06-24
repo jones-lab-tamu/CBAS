@@ -1,6 +1,5 @@
 /**
  * @file Manages the Record page UI, including live preview and interactive cropping.
- * This file's logic is designed to work with the v2-stable-style backend architecture.
  */
 
 // =================================================================
@@ -10,7 +9,6 @@
 eel.expose(update_log_panel);
 eel.expose(update_live_frame);
 eel.expose(end_live_preview);
-eel.expose(update_thumbnail_progress);
 eel.expose(updateImageSrc);
 
 // =================================================================
@@ -54,16 +52,25 @@ function waitForEelConnection() {
     });
 }
 
+// --- START OF NEW SECTION ---
+function revealRecordingFolder(sessionName, cameraName) {
+    if (!sessionName || !cameraName) {
+        showErrorOnRecordPage("Cannot open folder without a session and camera name.");
+        return;
+    }
+    eel.reveal_recording_folder(sessionName, cameraName)();
+}
+// --- END OF NEW SECTION ---
+
 function updateImageSrc(cameraName, base64Val) {
     const spinner = document.getElementById(`spinner-${cameraName}`);
     const canvas = document.getElementById(`camera-${cameraName}`);
-    
     if (!canvas || !spinner) return;
-    
+
     const wasCached = sessionStorage.getItem(`thumbnail_${cameraName}`) !== null;
-    if (!wasCached || !base64Val) {
-         if (camerasToFetchCount > 0) {
-            camerasFetchedCount++;
+    if (!wasCached) {
+        camerasFetchedCount++;
+        if (camerasToFetchCount > 0) {
             const percent = (camerasFetchedCount / camerasToFetchCount) * 100;
             update_thumbnail_progress(percent, `Connecting... (${camerasFetchedCount}/${camerasToFetchCount})`);
         }
@@ -87,6 +94,7 @@ function updateImageSrc(cameraName, base64Val) {
         } else {
             drawImageScaled(img, ctx, 0, 0, img.width, img.height);
         }
+        updateRecordingStatus();
     };
 
     if (base64Val) {
@@ -99,8 +107,6 @@ function updateImageSrc(cameraName, base64Val) {
     } else {
         img.src = "assets/noConnection.png"; 
     }
-    // After an image source is set (or fails), update the status dots.
-    updateRecordingStatus();
 }
 
 function clearThumbnailCache() {
@@ -158,52 +164,79 @@ function update_live_frame(cameraName, base64Val) {
 }
 
 function end_live_preview(cameraName) {
-    if (activePreviewCamera && cameraName !== activePreviewCamera) {
-        resetPreviewButton(activePreviewCamera);
-    }
     if (cameraName === activePreviewCamera) {
         activePreviewCamera = null;
     }
     resetPreviewButton(cameraName);
-
-    const canvas = document.getElementById(`camera-${cameraName}`);
-    if (!canvas) return;
-
-    const staticSrc = canvas.getAttribute('cbas_image_source');
-
-    if (staticSrc) {
-        const img = new Image();
-        img.onload = () => {
-            const ctx = canvas.getContext('2d');
-            const camSettings = allCameraData.find(c => c.name === cameraName);
-            if(camSettings){
-                const cropX = camSettings.crop_left_x * img.width;
-                const cropY = camSettings.crop_top_y * img.height;
-                const cropW = camSettings.crop_width * img.width;
-                const cropH = camSettings.crop_height * img.height;
-                drawImageScaled(img, ctx, cropX, cropY, cropW, cropH);
-            }
-        };
-        img.src = staticSrc;
-    }
+    const spinner = document.getElementById(`spinner-${cameraName}`);
+    if (spinner) spinner.style.display = 'block';
+    eel.get_single_camera_thumbnail(cameraName)();
 }
 
 async function toggleLivePreview(cameraName) {
-    if (activePreviewCamera && activePreviewCamera !== cameraName) {
-        await eel.stop_live_preview()();
+    const previouslyActive = activePreviewCamera;
+    const clickedIsActive = (previouslyActive === cameraName);
+
+    if (previouslyActive) {
+        await eel.stop_live_preview()(); 
     }
-    if (activePreviewCamera === cameraName) {
-        await eel.stop_live_preview()();
-    } else {
+
+    if (!clickedIsActive) {
         activePreviewCamera = cameraName;
-        const liveViewBtn = document.getElementById(`live-view-btn-${cameraName}`);
-        if(liveViewBtn){
-            liveViewBtn.classList.remove('btn-outline-light');
-            liveViewBtn.classList.add('btn-warning');
-            liveViewBtn.innerHTML = '<i class="bi bi-stop-circle-fill"></i>';
-            bootstrap.Tooltip.getInstance(liveViewBtn)?.setContent({ '.tooltip-inner': 'Stop Preview' });
-        }
+        setPreviewButtonActive(cameraName);
         await eel.start_live_preview(cameraName)();
+    } else {
+        activePreviewCamera = null;
+    }
+}
+
+function setPreviewButtonActive(cameraName) {
+    const liveViewBtn = document.getElementById(`live-view-btn-${cameraName}`);
+    if(liveViewBtn){
+        liveViewBtn.classList.remove('btn-outline-light');
+        liveViewBtn.classList.add('btn-warning');
+        liveViewBtn.innerHTML = '<i class="bi bi-stop-circle-fill"></i>';
+        bootstrap.Tooltip.getInstance(liveViewBtn)?.setContent({ '.tooltip-inner': 'Stop Preview' });
+    }
+}
+
+function resetPreviewButton(cameraName) {
+    const liveViewBtn = document.getElementById(`live-view-btn-${cameraName}`);
+    if (liveViewBtn) {
+        liveViewBtn.classList.remove('btn-warning');
+        liveViewBtn.classList.add('btn-outline-light');
+        liveViewBtn.innerHTML = '<i class="bi bi-eye-fill"></i>';
+        bootstrap.Tooltip.getInstance(liveViewBtn)?.setContent({ '.tooltip-inner': 'Live Preview' });
+    }
+    const liveViewBtnRec = document.getElementById(`live-view-btn-recording-${cameraName}`);
+     if (liveViewBtnRec) {
+        liveViewBtnRec.classList.remove('btn-warning');
+        liveViewBtnRec.classList.add('btn-outline-light');
+        liveViewBtnRec.innerHTML = '<i class="bi bi-eye-fill"></i>';
+        bootstrap.Tooltip.getInstance(liveViewBtnRec)?.setContent({ '.tooltip-inner': 'Live Preview' });
+    }
+}
+
+
+// The main toggle function is now robust against race conditions.
+async function toggleLivePreview(cameraName) {
+    const previouslyActive = activePreviewCamera;
+    const clickedActive = (previouslyActive === cameraName);
+
+    // If any preview is running, tell it to stop.
+    if (previouslyActive) {
+        await eel.stop_live_preview()(); 
+        // We let the end_live_preview callback handle resetting the UI for the old camera.
+    }
+
+    // If the user clicked a new camera (not the one that was already active), start it.
+    if (!clickedActive) {
+        activePreviewCamera = cameraName;
+        setPreviewButtonActive(cameraName);
+        await eel.start_live_preview(cameraName)();
+    } else {
+        // If the user clicked the camera that was already active, we just want to stop it.
+        activePreviewCamera = null;
     }
 }
 
@@ -283,6 +316,7 @@ async function stopAllCameras() {
     await updateRecordingStatus();
 }
 
+// --- START OF SIMPLIFIED AND CORRECTED SECTION ---
 async function saveCameraSettings() {
     const newName = document.getElementById('cs-name').value;
     if (!newName.trim()) { showErrorOnRecordPage("Camera name cannot be empty."); return; }
@@ -312,32 +346,17 @@ async function saveCameraSettings() {
 
     await eel.save_camera_settings(newName, settings)();
 
-    const camIndex = allCameraData.findIndex(c => c.name === originalCameraNameForSettings || c.name === newName);
-    if(camIndex !== -1) {
-        allCameraData[camIndex] = settings;
-    }
-
+    // The only action required is to clear the cache for this specific camera.
     sessionStorage.removeItem(`thumbnail_${originalCameraNameForSettings}`);
     sessionStorage.removeItem(`thumbnail_${newName}`);
     
-    await eel.get_cameras_with_thumbnails()();
-    
-    await loadCameraHTMLCards();
-    
-    for (const cam of allCameraData) {
-        if (cam.name !== newName) {
-            const cachedSrc = sessionStorage.getItem(`thumbnail_${cam.name}`);
-            if (cachedSrc) {
-                const base64Val = cachedSrc.split(',')[1];
-                updateImageSrc(cam.name, base64Val);
-            }
-        }
-    }
-    
-    await updateRecordingStatus();
+    // Now, call the main load function. It will be fast because all other
+    // cameras are still cached. It will only fetch the one we just edited.
+    await loadCameras();
     
     document.getElementById('cover-spin').style.visibility = 'hidden';
 }
+// --- END OF SIMPLIFIED AND CORRECTED SECTION ---
 
 async function loadCameras(forceRefresh = false) {
     if (forceRefresh) {
@@ -350,32 +369,36 @@ async function loadCameras(forceRefresh = false) {
     container.innerHTML = "";
     
     try {
-        camerasToFetchCount = 0;
         camerasFetchedCount = 0;
         
-        allCameraData = await eel.get_cameras_with_thumbnails()();
+        allCameraData = await eel.get_camera_list()(); 
         
         if (!allCameraData || allCameraData.length === 0) {
             container.innerHTML = "<div class='col'><p class='text-light text-center mt-3'>No cameras configured.</p></div>";
+            camerasToFetchCount = 0;
             update_thumbnail_progress(100, "No cameras configured.");
             return;
         }
 
         await loadCameraHTMLCards();
         
-        for (const cam of allCameraData) {
+        const camerasToFetch = [];
+        allCameraData.forEach(cam => {
             const cachedSrc = sessionStorage.getItem(`thumbnail_${cam.name}`);
             if (cachedSrc) {
                 const base64Val = cachedSrc.split(',')[1];
                 updateImageSrc(cam.name, base64Val);
             } else {
-                camerasToFetchCount++;
+                camerasToFetch.push(cam.name);
             }
-        }
+        });
         
-        update_thumbnail_progress(0, `Connecting... (0/${camerasToFetchCount})`);
+        camerasToFetchCount = camerasToFetch.length;
         
-        if (camerasToFetchCount === 0) {
+        if (camerasToFetchCount > 0) {
+            update_thumbnail_progress(0, `Connecting... (0/${camerasToFetchCount})`);
+            eel.fetch_specific_thumbnails(camerasToFetch)();
+        } else {
             update_thumbnail_progress(100, "All thumbnails loaded from cache.");
         }
 
@@ -399,6 +422,7 @@ async function loadCameraHTMLCards() {
         const isCropped = cam.crop_left_x != 0 || cam.crop_top_y != 0 || cam.crop_width != 1 || cam.crop_height != 1;
         const displayName = isCropped ? cam.name : `${cam.name} <small class='text-muted'>(uncropped)</small>`;
         
+        // --- START OF MODIFIED SECTION ---
         htmlContent += `
             <div class="col-auto mb-3">
                 <div class="card shadow text-white bg-dark" style="width: 320px;">
@@ -422,18 +446,23 @@ async function loadCameraHTMLCards() {
                         </div>
                         <div id="during-recording-${cam.name}" style="display: none;">
                             <button class="btn btn-sm btn-outline-light me-1" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Settings disabled during recording" disabled><i class="bi bi-crop"></i></button>
-                            <button id="live-view-btn-recording-${cam.name}" class="btn btn-sm btn-outline-light me-1" onclick="toggleLivePreview('${cam.name}')" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Live Preview"><i class="bi bi-eye-fill"></i></button>
-                            <button class="btn btn-sm btn-outline-info me-1" onclick="revealRecordingFolder('${cam.name}')" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Show Recording Folder"><i class="bi bi-folder2-open"></i></button>
+                            
+                            <!-- THE FIX: Add the 'disabled' attribute to this button -->
+                            <button id="live-view-btn-recording-${cam.name}" class="btn btn-sm btn-outline-light me-1" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Live Preview disabled during recording" disabled><i class="bi bi-eye-fill"></i></button>
+                            
+                            <!-- THE FIX: Pass the session name to the reveal function -->
+                            <button class="btn btn-sm btn-outline-info me-1" onclick="revealRecordingFolder(document.getElementById('session-name-input').value, '${cam.name}')" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Show Recording Folder"><i class="bi bi-folder2-open"></i></button>
+                            
                             <button class="btn btn-sm btn-danger" onclick="stopCamera('${cam.name}')" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Stop Recording"><i class="bi bi-square-fill"></i> Stop</button>
                         </div>
                     </div>
                 </div>
             </div>`;
+        // --- END OF MODIFIED SECTION ---
     }
     container.innerHTML = htmlContent;
 }
 
-// --- START OF MODIFIED SECTION (Smart Status Dot Logic) ---
 async function updateRecordingStatus() {
     try {
         const activeStreams = await eel.get_active_streams()() || [];
@@ -449,16 +478,15 @@ async function updateRecordingStatus() {
                 let statusTitle = '';
 
                 if (isActive) {
-                    statusClass = 'bg-primary blinking'; // Blue for recording
+                    statusClass = 'bg-primary blinking';
                     statusTitle = 'Camera is Recording';
                 } else {
-                    // Check if the placeholder image is showing
                     const currentSrc = canvas.getAttribute("cbas_image_source");
                     if (currentSrc && currentSrc.includes("assets/noConnection.png")) {
-                        statusClass = 'bg-secondary'; // Gray for offline
+                        statusClass = 'bg-secondary';
                         statusTitle = 'Camera Offline';
                     } else {
-                        statusClass = 'bg-success'; // Green for online and idle
+                        statusClass = 'bg-success';
                         statusTitle = 'Camera Online and Idle';
                     }
                 }
@@ -472,7 +500,6 @@ async function updateRecordingStatus() {
                 }
             }
             
-            // This part of the logic remains the same
             const beforeRec = document.getElementById(`before-recording-${cam.name}`);
             const duringRec = document.getElementById(`during-recording-${cam.name}`);
             if (beforeRec && duringRec) {
@@ -482,7 +509,6 @@ async function updateRecordingStatus() {
         }
     } catch(e) { console.error("Could not update recording status:", e); }
 }
-// --- END OF MODIFIED SECTION ---
 
 async function updateStatusIcon() {
     const icon = document.getElementById("status-camera-icon");
@@ -490,7 +516,6 @@ async function updateStatusIcon() {
     try {
         const status = await eel.get_cbas_status()();
         const isStreaming = status && status.streams && status.streams.length > 0;
-        // The main status icon should still use red for at-a-glance "something is active"
         icon.style.color = isStreaming ? "red" : "white";
         isStreaming ? icon.classList.add("blinking") : icon.classList.remove("blinking");
     } catch(e) {/* fail silently */}
@@ -539,7 +564,7 @@ async function loadCameraSettings(cameraName) {
     }
 }
 
-// ... (rest of the file remains unchanged) ...
+// ... (rest of file is unchanged)
 function onMouseDown(e) {
     const { offsetX, offsetY } = e;
     resizeHandle = getHandleAt(offsetX, offsetY);

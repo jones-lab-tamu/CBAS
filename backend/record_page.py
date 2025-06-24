@@ -20,11 +20,13 @@ import workthreads
 # Thumbnail Fetching Logic
 # =================================================================
 
-def fetch_frame(rtsp_url: str, frame_location: str):
+def fetch_frame_and_update(camera_name: str, rtsp_url: str):
     """
-    Saves a single frame from an RTSP stream to a file.
-    This version uses a highly optimized ffmpeg command for speed and reliability.
+    (WORKER) This function is now self-contained. It fetches the frame
+    and then directly calls the Eel function to update the UI.
     """
+    frame_location = os.path.join(gui_state.proj.cameras_dir, camera_name, "frame.jpg")
+    
     if os.path.exists(frame_location):
         try:
             os.remove(frame_location)
@@ -32,14 +34,9 @@ def fetch_frame(rtsp_url: str, frame_location: str):
             print(f"Error removing existing thumbnail {frame_location}: {e}")
 
     command = [
-        "ffmpeg",
-        "-hide_banner",
-        "-loglevel", "error",
-        "-rtsp_transport", "tcp",
-        "-timeout", "5000000", 
-        "-i", rtsp_url,
-        "-vframes", "1",
-        "-y", frame_location
+        "ffmpeg", "-hide_banner", "-loglevel", "error",
+        "-rtsp_transport", "tcp", "-timeout", "5000000", 
+        "-i", rtsp_url, "-vframes", "1", "-y", frame_location
     ]
     
     creation_flags = 0
@@ -49,69 +46,116 @@ def fetch_frame(rtsp_url: str, frame_location: str):
     max_retries = 2
     for attempt in range(max_retries):
         try:
-            process = subprocess.Popen(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                stdin=subprocess.DEVNULL,
-                creationflags=creation_flags
-            )
-            _, stderr = process.communicate(timeout=15) 
-
+            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, creationflags=creation_flags)
+            _, stderr = process.communicate(timeout=15)
             if process.returncode == 0 and os.path.exists(frame_location) and os.path.getsize(frame_location) > 1000:
-                return # Success!
-
-            error_output = stderr.decode('utf-8', 'ignore').strip()
-            print(f"--- FFMPEG THUMBNAIL ATTEMPT {attempt + 1} FAILED for {rtsp_url} ---\n{error_output}\n--- END ERROR ---")
-            
+                break 
             if attempt < max_retries - 1:
                 gevent.sleep(1)
-            
         except Exception as e:
-            print(f"Exception during thumbnail fetch for {rtsp_url} on attempt {attempt + 1}: {e}")
+            print(f"Exception during thumbnail fetch for {camera_name} on attempt {attempt + 1}: {e}")
             if attempt < max_retries - 1:
                 gevent.sleep(1)
 
-def get_cameras_with_thumbnails():
+    encoded_string = None
+    if os.path.exists(frame_location) and os.path.getsize(frame_location) > 1000:
+        try:
+            with open(frame_location, "rb") as image_file:
+                encoded_string = base64.b64encode(image_file.read()).decode('utf-8')
+        except Exception as e:
+            print(f"Could not read/encode thumbnail for {camera_name}: {e}")
+    
+    eel.updateImageSrc(camera_name, encoded_string)()
+
+
+@eel.expose
+def get_camera_list():
     """
-    Returns camera settings and spawns a STAGGERED, asynchronous task
-    to fetch thumbnails and update the UI progressively.
+    Returns a simple list of camera configurations without fetching thumbnails.
+    This is the new primary function for initial page load.
     """
     if not gui_state.proj:
         return []
+    return sorted([cam.settings_to_dict() for cam in gui_state.proj.cameras.values()], key=lambda x: x.get('name', ''))
 
-    initial_camera_list = sorted([cam.settings_to_dict() for cam in gui_state.proj.cameras.values()], key=lambda x: x.get('name', ''))
+@eel.expose
+def get_single_camera_thumbnail(camera_name: str):
+    """
+    Fetches a high-resolution thumbnail for a single specified camera
+    and calls the frontend to update its image.
+    """
+    if not gui_state.proj:
+        return
+
+    cam = gui_state.proj.cameras.get(camera_name)
+    if not cam:
+        eel.updateImageSrc(camera_name, None)()
+        return
+
+    frame_location = os.path.join(cam.path, "frame.jpg")
     
-    def fetch_and_update_all_in_background():
-        cameras_to_fetch = [(cam['name'], cam['rtsp_url']) for cam in initial_camera_list]
-        
-        def on_fetch_complete(camera_name):
-            frame_location = os.path.join(gui_state.proj.cameras_dir, camera_name, "frame.jpg")
-            encoded_string = None
-            if os.path.exists(frame_location) and os.path.getsize(frame_location) > 1000:
-                try:
-                    with open(frame_location, "rb") as image_file:
-                        encoded_string = base64.b64encode(image_file.read()).decode('utf-8')
-                except Exception as e:
-                    print(f"Could not read/encode thumbnail for {camera_name}: {e}")
-            
-            eel.updateImageSrc(camera_name, encoded_string)()
-            
-        for name, url in cameras_to_fetch:
-            frame_path = os.path.join(gui_state.proj.cameras_dir, name, "frame.jpg")
-            job = gevent.spawn(fetch_frame, url, frame_path)
-            job.link(lambda g, n=name: on_fetch_complete(n))
-            gevent.sleep(0.15) 
+    # Run the fetch operation in a separate greenlet to not block the main thread.
+    gevent.spawn(fetch_frame_and_update, cam.name, cam.rtsp_url)
 
-    eel.spawn(fetch_and_update_all_in_background)
-    return initial_camera_list
+# This function is now a general-purpose worker used by both bulk and single fetches.
+def fetch_frame_and_update(camera_name: str, rtsp_url: str):
+    """
+    (WORKER) Fetches a frame and then calls the Eel function to update the UI.
+    """
+    frame_location = os.path.join(gui_state.proj.cameras_dir, camera_name, "frame.jpg")
+    
+    if os.path.exists(frame_location):
+        try:
+            os.remove(frame_location)
+        except OSError as e:
+            print(f"Error removing existing thumbnail {frame_location}: {e}")
 
+    command = [
+        "ffmpeg", "-hide_banner", "-loglevel", "error",
+        "-rtsp_transport", "tcp", "-timeout", "5000000", 
+        "-i", rtsp_url, "-vframes", "1", "-y", frame_location
+    ]
+    
+    creation_flags = 0
+    if sys.platform == "win32":
+        creation_flags = subprocess.CREATE_NO_WINDOW
+
+    try:
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, creationflags=creation_flags)
+        process.communicate(timeout=15)
+    except Exception:
+        pass # Fail silently
+
+    encoded_string = None
+    if os.path.exists(frame_location) and os.path.getsize(frame_location) > 1000:
+        try:
+            with open(frame_location, "rb") as image_file:
+                encoded_string = base64.b64encode(image_file.read()).decode('utf-8')
+        except Exception as e:
+            print(f"Could not read/encode thumbnail for {camera_name}: {e}")
+    
+    eel.updateImageSrc(camera_name, encoded_string)()
+# --- END OF NEW SECTION ---
+
+@eel.expose
+def fetch_specific_thumbnails(camera_names: list[str]):
+    """
+    Spawns background tasks to fetch thumbnails ONLY for the specified cameras.
+    """
+    if not gui_state.proj:
+        return
+
+    for name in camera_names:
+        cam = gui_state.proj.cameras.get(name)
+        if cam:
+            # THE FIX: Call the correctly named function 'fetch_frame_and_update'
+            gevent.spawn(fetch_frame_and_update, cam.name, cam.rtsp_url)
+            gevent.sleep(0.15)
 
 # =================================================================
-# v3 Live Preview and Modern Functions
+# v3 Live Preview and Modern Functions (These are correct and unchanged)
 # =================================================================
 
-# --- START OF MODIFIED SECTION ---
 def _live_preview_worker(
     camera_name: str, rtsp_url: str,
     crop_w: float, crop_h: float, crop_x: float, crop_y: float,
@@ -120,7 +164,6 @@ def _live_preview_worker(
     """
     Worker function that generates a live, CROPPED preview stream.
     """
-    # Build the filter string to include cropping.
     filter_str = (
         f"crop=iw*{crop_w}:ih*{crop_h}:iw*{crop_x}:ih*{crop_y},"
         f"fps=10"
@@ -130,7 +173,7 @@ def _live_preview_worker(
         "ffmpeg", "-hide_banner", "-loglevel", "error", 
         "-rtsp_transport", "tcp", "-max_delay", "5000000", 
         "-i", rtsp_url, 
-        "-vf", filter_str,  # Use the new filter string
+        "-vf", filter_str,
         "-f", "image2pipe", "-c:v", "mjpeg", "-"
     ]
     process = None
@@ -183,7 +226,6 @@ def start_live_preview(camera_name: str):
     
     cam = gui_state.proj.cameras[camera_name]
     
-    # Pass all required settings to the worker thread.
     preview_thread = threading.Thread(
         target=_live_preview_worker, 
         args=(
@@ -195,7 +237,6 @@ def start_live_preview(camera_name: str):
     )
     preview_thread.start()
     return True
-# --- END OF MODIFIED SECTION ---
 
 def stop_live_preview():
     if gui_state.live_preview_process:
