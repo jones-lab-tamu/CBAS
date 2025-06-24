@@ -429,8 +429,19 @@ class TrainingThread(threading.Thread):
             
             eel.updateDatasetLoadProgress(task.name, 100)() # Signal completion
             log_message(f"Dataset '{task.name}' loaded successfully.", "INFO")
+ 
             if not train_ds or len(train_ds) == 0:
-                raise ValueError("Dataset is empty or failed to load.")
+                # Check if the test set is NOT empty. This is the key condition.
+                if test_ds and len(test_ds) > 0:
+                    error_message = (
+                        f"Training failed for '{task.name}' because the training set is empty. "
+                        "This typically happens when only one video has been labeled, forcing the entire video "
+                        "into the test set. Please label a second video or use the 'Augment' feature."
+                    )
+                    raise ValueError(error_message)
+                else:
+                    # The original error for a truly empty dataset
+                    raise ValueError("Dataset is empty or failed to load.")
         except Exception as e:
             log_message(f"Critical error loading dataset {task.name}: {e}", "ERROR")
             eel.updateTrainingStatusOnUI(task.name, f"Error loading dataset: {e}")()
