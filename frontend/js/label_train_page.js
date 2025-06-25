@@ -1358,6 +1358,3 @@ window.addEventListener("keydown", (event) => {
     }
     if (handled) event.preventDefault();
 });
-
-window.addEventListener("unload", () => { if (!routingInProgress) eel.kill_streams()?.catch(console.error); });
-window.onbeforeunload = () => { if (!routingInProgress) eel.kill_streams()?.catch(console.error); };

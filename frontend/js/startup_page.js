@@ -143,18 +143,3 @@ document.addEventListener('DOMContentLoaded', () => {
     document.querySelector('#createModal .btn-primary')?.addEventListener('click', handleCreateProjectSubmit);
 
 });
-
-
-// --- Page Unload Listeners ---
-// These attempt to call a Python function to clean up FFMPEG streams if the
-// user closes the window unexpectedly.
-window.addEventListener("unload", () => {
-    if (!routingInProgress) {
-        eel.kill_streams()?.().catch(err => console.error("Error on unload:", err));
-    }
-});
-window.onbeforeunload = () => {
-    if (!routingInProgress) {
-        eel.kill_streams()?.().catch(err => console.error("Error on beforeunload:", err));
-    }
-};

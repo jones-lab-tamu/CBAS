@@ -395,10 +395,3 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     });
 });
-
-window.addEventListener("unload", () => {
-    if (!routingInProgress) { eel.kill_streams()?.().catch(err => console.error(err)); }
-});
-window.onbeforeunload = () => {
-    if (!routingInProgress) { eel.kill_streams()?.().catch(err => console.error(err)); }
-};

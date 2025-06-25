@@ -43,6 +43,10 @@ def reveal_recording_folder(session_name, camera_name):
     return record_page.reveal_recording_folder(session_name, camera_name)
 
 @eel.expose
+def delete_camera(name):
+    return record_page.delete_camera(name)
+
+@eel.expose
 def get_camera_list():
     return record_page.get_camera_list()
 

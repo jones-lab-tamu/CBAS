@@ -52,7 +52,6 @@ function waitForEelConnection() {
     });
 }
 
-// --- START OF NEW SECTION ---
 function revealRecordingFolder(sessionName, cameraName) {
     if (!sessionName || !cameraName) {
         showErrorOnRecordPage("Cannot open folder without a session and camera name.");
@@ -60,7 +59,6 @@ function revealRecordingFolder(sessionName, cameraName) {
     }
     eel.reveal_recording_folder(sessionName, cameraName)();
 }
-// --- END OF NEW SECTION ---
 
 function updateImageSrc(cameraName, base64Val) {
     const spinner = document.getElementById(`spinner-${cameraName}`);
@@ -316,7 +314,6 @@ async function stopAllCameras() {
     await updateRecordingStatus();
 }
 
-// --- START OF SIMPLIFIED AND CORRECTED SECTION ---
 async function saveCameraSettings() {
     const newName = document.getElementById('cs-name').value;
     if (!newName.trim()) { showErrorOnRecordPage("Camera name cannot be empty."); return; }
@@ -356,7 +353,6 @@ async function saveCameraSettings() {
     
     document.getElementById('cover-spin').style.visibility = 'hidden';
 }
-// --- END OF SIMPLIFIED AND CORRECTED SECTION ---
 
 async function loadCameras(forceRefresh = false) {
     if (forceRefresh) {
@@ -422,7 +418,6 @@ async function loadCameraHTMLCards() {
         const isCropped = cam.crop_left_x != 0 || cam.crop_top_y != 0 || cam.crop_width != 1 || cam.crop_height != 1;
         const displayName = isCropped ? cam.name : `${cam.name} <small class='text-muted'>(uncropped)</small>`;
         
-        // --- START OF MODIFIED SECTION ---
         htmlContent += `
             <div class="col-auto mb-3">
                 <div class="card shadow text-white bg-dark" style="width: 320px;">
@@ -441,16 +436,19 @@ async function loadCameraHTMLCards() {
                     <div class="card-footer d-flex justify-content-center p-2">
                         <div id="before-recording-${cam.name}" style="display: flex;">
                             <button class="btn btn-sm btn-outline-light me-1" onclick="loadCameraSettings('${cam.name}')" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Settings/Crop"><i class="bi bi-crop"></i></button>
+                            
+                            <!-- ================== NEW BUTTON ADDED HERE ================== -->
+                            <button class="btn btn-sm btn-outline-danger me-1" onclick="deleteCamera('${cam.name}')" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Delete Camera"><i class="bi bi-trash-fill"></i></button>
+                            <!-- =========================================================== -->
+
                             <button id="live-view-btn-${cam.name}" class="btn btn-sm btn-outline-light me-1" onclick="toggleLivePreview('${cam.name}')" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Live Preview"><i class="bi bi-eye-fill"></i></button>
                             <button class="btn btn-sm btn-success" onclick="startCamera('${cam.name}')" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Start Recording"><i class="bi bi-camera-video-fill"></i> Start</button>
                         </div>
                         <div id="during-recording-${cam.name}" style="display: none;">
                             <button class="btn btn-sm btn-outline-light me-1" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Settings disabled during recording" disabled><i class="bi bi-crop"></i></button>
                             
-                            <!-- THE FIX: Add the 'disabled' attribute to this button -->
                             <button id="live-view-btn-recording-${cam.name}" class="btn btn-sm btn-outline-light me-1" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Live Preview disabled during recording" disabled><i class="bi bi-eye-fill"></i></button>
                             
-                            <!-- THE FIX: Pass the session name to the reveal function -->
                             <button class="btn btn-sm btn-outline-info me-1" onclick="revealRecordingFolder(document.getElementById('session-name-input').value, '${cam.name}')" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Show Recording Folder"><i class="bi bi-folder2-open"></i></button>
                             
                             <button class="btn btn-sm btn-danger" onclick="stopCamera('${cam.name}')" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Stop Recording"><i class="bi bi-square-fill"></i> Stop</button>
@@ -458,9 +456,26 @@ async function loadCameraHTMLCards() {
                     </div>
                 </div>
             </div>`;
-        // --- END OF MODIFIED SECTION ---
     }
     container.innerHTML = htmlContent;
+}
+
+async function deleteCamera(cameraName) {
+    // Confirmation dialog is crucial for a destructive action
+    if (confirm(`Are you sure you want to permanently delete the camera '${cameraName}'?\nThis action cannot be undone.`)) {
+        try {
+            const success = await eel.delete_camera(cameraName)();
+            if (success) {
+                // Refresh the camera list to show the change
+                await loadCameras();
+            } else {
+                showErrorOnRecordPage(`Failed to delete camera '${cameraName}'. It might be currently recording.`);
+            }
+        } catch (e) {
+            console.error("Error calling delete_camera:", e);
+            showErrorOnRecordPage("An error occurred while trying to delete the camera.");
+        }
+    }
 }
 
 async function updateRecordingStatus() {
@@ -564,7 +579,6 @@ async function loadCameraSettings(cameraName) {
     }
 }
 
-// ... (rest of file is unchanged)
 function onMouseDown(e) {
     const { offsetX, offsetY } = e;
     resizeHandle = getHandleAt(offsetX, offsetY);
@@ -807,12 +821,5 @@ document.addEventListener('DOMContentLoaded', async () => {
                 contentSpacer.classList.add('footer-visible');
             });
         }
-    }
-});
-
-window.addEventListener("beforeunload", () => {
-    if (!routingInProgress) {
-        eel.stop_live_preview()();
-        eel.stop_all_camera_streams()?.catch(console.error);
     }
 });

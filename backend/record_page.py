@@ -323,6 +323,41 @@ def stop_all_camera_streams() -> bool:
         time.sleep(0.1)
     return True
 
+def delete_camera(camera_name: str) -> bool:
+    """
+    Deletes a camera's configuration folder and removes it from the project state.
+    """
+    if not gui_state.proj or camera_name not in gui_state.proj.cameras:
+        workthreads.log_message(f"Attempted to delete non-existent camera '{camera_name}'.", "WARN")
+        return False
+
+    # Prevent deleting a camera that is currently recording
+    if camera_name in gui_state.proj.active_recordings:
+        workthreads.log_message(f"Cannot delete camera '{camera_name}' while it is recording.", "ERROR")
+        return False
+        
+    workthreads.log_message(f"Deleting camera '{camera_name}'...", "INFO")
+    
+    try:
+        # Get the camera object to find its path
+        camera_to_delete = gui_state.proj.cameras[camera_name]
+        camera_path = camera_to_delete.path
+        
+        # Remove the camera from the in-memory project state
+        del gui_state.proj.cameras[camera_name]
+        
+        # Delete the entire camera folder from the disk
+        if os.path.isdir(camera_path):
+            shutil.rmtree(camera_path)
+        
+        workthreads.log_message(f"Camera '{camera_name}' and its directory have been deleted.", "INFO")
+        return True
+    except Exception as e:
+        workthreads.log_message(f"An error occurred while deleting camera '{camera_name}': {e}", "ERROR")
+        # Attempt to reload the project to restore a consistent state
+        gui_state.proj.reload()
+        return False
+
 def create_camera(camera_name: str, rtsp_url: str) -> bool:
     if not gui_state.proj or not camera_name.strip() or not rtsp_url.strip(): return False
     workthreads.log_message(f"Creating new camera: '{camera_name}'", "INFO")

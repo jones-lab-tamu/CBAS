@@ -153,32 +153,32 @@ if (!gotTheLock) {
   // --- Standard Electron lifecycle events ---
   app.on('ready', () => { createPythonProcess(); createWindow(); });
   app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
-  app.on('before-quit', async (event) => {
+  app.on('before-quit', () => {
   app.isQuitting = true;
 
   if (pythonProcess && !pythonProcess.killed) {
-    console.log("Main app is quitting. Signaling Python backend to clean up child processes...");
+    console.log("Main app is quitting. Terminating Python backend and its entire process tree...");
+
+    // On Windows, the /T flag terminates the specified process and any child processes.
+    // The /F flag forcefully terminates the process.
+    // This is the most reliable way to ensure all ffmpeg.exe instances are killed.
+    child_process.exec(`taskkill /pid ${pythonProcess.pid} /T /F`, (error, stdout, stderr) => {
+        if (error) {
+            console.error(`taskkill error: ${error.message}`);
+            // Fallback to the original method if taskkill fails for some reason
+            pythonProcess.kill();
+            return;
+        }
+        if (stderr) {
+            console.error(`taskkill stderr: ${stderr}`);
+            return;
+        }
+        console.log(`taskkill stdout: ${stdout}`);
+        console.log("Python process tree terminated successfully.");
+    });
     
-    // Prevent the app from closing immediately
-    event.preventDefault(); 
-    
-    try {
-      // Call the new Python function and wait for it to complete.
-      // We need to check if eel is available and connected.
-      if (appWindow && appWindow.webContents) {
-        // Execute a script in the renderer process to call the eel function.
-        // This is a robust way to ensure the call is made.
-        await appWindow.webContents.executeJavaScript('eel.kill_all_processes()();', true);
-        console.log("Python cleanup signal sent successfully.");
-      }
-    } catch (e) {
-      console.error("Could not send cleanup signal to Python:", e);
-    } finally {
-      // After attempting to clean up, kill the Python process and quit.
-      console.log("Terminating Python process and quitting application.");
-      pythonProcess.kill();
-      app.quit();
-    }
+    // Clear the reference
+    pythonProcess = null;
   }
 });
   app.on('activate', () => { if (appWindow === null && !splashWindow) createWindow(); });
