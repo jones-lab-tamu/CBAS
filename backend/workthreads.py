@@ -46,9 +46,15 @@ def log_message(message: str, level: str = "INFO"):
     also prints it to the console for developer debugging.
     """
     timestamp = datetime.now().strftime('%H:%M:%S')
-    # The format [LEVEL] is specifically used by the frontend for color-coding.
     formatted_message = f"[{timestamp}] [{level}] {message}"
-    print(formatted_message) # Keep console logging for developers
+    
+    # Use a lock to make the print statement atomic and thread-safe
+    if gui_state.print_lock:
+        with gui_state.print_lock:
+            print(formatted_message)
+    else:
+        print(formatted_message) # Fallback if lock not initialized
+    
     if gui_state.log_queue:
         gui_state.log_queue.put(formatted_message)
 
@@ -56,6 +62,25 @@ def log_message(message: str, level: str = "INFO"):
 # =================================================================
 # WORKER THREAD CLASSES
 # =================================================================
+
+def _recording_monitor_worker():
+    """
+    (WORKER) A daemon thread that periodically checks if the ffmpeg recording
+    processes are still running. If a process has terminated unexpectedly,
+    it cleans up the application's internal state.
+    """
+    while True:
+        # Check every 5 seconds
+        time.sleep(5)
+        
+        if gui_state.proj and gui_state.proj.active_recordings:
+            # Iterate over a copy of the items to allow safe modification
+            for name, (proc, start_time) in list(gui_state.proj.active_recordings.items()):
+                # poll() returns None if the process is running, otherwise the exit code
+                if proc.poll() is not None:
+                    log_message(f"Recording process for '{name}' terminated unexpectedly (exit code: {proc.returncode}).", "WARN")
+                    # Remove the dead process from the active list
+                    del gui_state.proj.active_recordings[name]
 
 def sync_labels_worker(source_dataset_name: str, target_dataset_name: str):
     """
@@ -223,7 +248,7 @@ def augment_dataset_worker(source_dataset_name: str, new_dataset_name: str):
         eel.spawn(eel.update_augmentation_progress(-1))
 
 class EncodeThread(threading.Thread):
-    """A background thread that continuously processes video encoding tasks."""
+    """A background thread that continuously processes video encoding tasks serially."""
     def __init__(self, device_str: str):
         super().__init__()
         self.device = torch.device(device_str)
@@ -240,6 +265,7 @@ class EncodeThread(threading.Thread):
 
             if file_to_encode:
                 log_message(f"Starting encoding for: {os.path.basename(file_to_encode)}", "INFO")
+                # Use a stream if available for CUDA operations
                 if self.cuda_stream:
                     with torch.cuda.stream(self.cuda_stream):
                         out_file = cbas.encode_file(self.encoder, file_to_encode)
@@ -719,42 +745,53 @@ def plot_report_list_metric(reports: list, metric: str, behaviors: list, out_dir
 # =================================================================
 
 class VideoFileWatcher(FileSystemEventHandler):
-    """A watchdog handler that queues newly created video files for encoding."""
+    """
+    A watchdog handler that queues newly created video files for encoding
+    after a short delay to prevent I/O contention and ensure the file is complete.
+    """
+    def __init__(self):
+        super().__init__()
+        self.pending_files_lock = threading.Lock()
+        self.pending_files = {} # {filepath: time_detected}
+        self.timer_thread = threading.Thread(target=self._process_pending_files, daemon=True)
+        self.timer_thread.start()
+        # A 10-second "cool-down" period after a file is created.
+        self.DELAY_SECONDS = 10
+
     def on_created(self, event):
-        if event.is_directory or not event.src_path.endswith('.mp4'): return
+        if event.is_directory or not event.src_path.endswith('.mp4'):
+            return
 
         video_path = event.src_path
-        log_message(f"Watcher detected new file: {os.path.basename(video_path)}", "INFO")
-
-        # Check if the camera name from the file path is in the active recording list.
-        # If it's not an active stream, it's a manual copy/import, so we do nothing.
-        try:
-            # e.g., "C:\...\Mouse 1_00000.mp4" -> "Mouse 1"
-            camera_name = os.path.basename(video_path).rsplit('_', 1)[0]
-            # gui_state.proj might not exist on initial startup, so check it.
-            if not gui_state.proj or camera_name not in gui_state.proj.active_recordings:
-                log_message(f"Ignoring file '{os.path.basename(video_path)}' as it's not from an active recording stream.", "INFO")
-                return
-        except (IndexError, AttributeError):
-             # If parsing fails or proj isn't loaded, safely exit.
-            return
         
-        dirname, basename = os.path.split(video_path)
-        try:
-            name_part, num_str = os.path.splitext(basename)[0].rsplit('_', 1)
-            current_seg_num = int(num_str)
-        except (ValueError, IndexError) as e:
-            log_message(f"Could not parse segment number from {basename}: {e}", "WARN"); return
+        # Immediately stage the newly created file for delayed processing.
+        with self.pending_files_lock:
+            if video_path not in self.pending_files:
+                self.pending_files[video_path] = time.time()
+                log_message(f"Watcher staged '{os.path.basename(video_path)}' for delayed encoding.", "INFO")
 
-        if current_seg_num > 0:
-            prev_seg_num_str = str(current_seg_num - 1).zfill(len(num_str))
-            prev_file = os.path.join(dirname, f"{name_part}_{prev_seg_num_str}.mp4")
+    def _process_pending_files(self):
+        """
+        This method runs in a separate thread. It periodically checks the
+        list of pending files and queues them for encoding if enough time has passed.
+        """
+        while True:
+            time.sleep(5) # Check every 5 seconds
             
-            if os.path.exists(prev_file):
+            files_to_queue_now = []
+            with self.pending_files_lock:
+                current_time = time.time()
+                for file_path, detected_time in list(self.pending_files.items()):
+                    if (current_time - detected_time) > self.DELAY_SECONDS:
+                        files_to_queue_now.append(file_path)
+                        del self.pending_files[file_path]
+
+            if files_to_queue_now:
                 with gui_state.encode_lock:
-                    if prev_file not in gui_state.encode_tasks:
-                        gui_state.encode_tasks.append(prev_file)
-                        log_message(f"Watcher queued for encoding: '{os.path.basename(prev_file)}'", "INFO")
+                    for f in files_to_queue_now:
+                        if f not in gui_state.encode_tasks:
+                            gui_state.encode_tasks.append(f)
+                            log_message(f"Queued for encoding: '{os.path.basename(f)}'", "INFO")
 
 
 # =================================================================
@@ -796,7 +833,6 @@ def start_threads():
     gui_state.classify_thread.start()
     
     print("All background threads started.")
-
 
 
 def start_recording_watcher():

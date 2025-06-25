@@ -263,13 +263,20 @@ class Camera:
             return False
 
         recording_url = self.profile0_url
-
         print(f"[{self.name}] Using high-quality stream '{recording_url}' for recording.")
         
         session_path = os.path.join(self.project.recordings_dir, session_name)
         final_dest_dir = os.path.join(session_path, self.name)
         os.makedirs(final_dest_dir, exist_ok=True)
+        
+        playlist_file = os.path.join(final_dest_dir, f"{self.name}_playlist.m3u8")
         dest_pattern = os.path.join(final_dest_dir, f"{self.name}_%05d.mp4")
+
+        # ======================= NEW: FFMPEG ERROR LOGGING =======================
+        # Create a dedicated log file for this ffmpeg process's error stream.
+        # This will capture the true reason for any crash.
+        ffmpeg_log_path = os.path.join(final_dest_dir, f"{self.name}_ffmpeg_err.log")
+        # =========================================================================
 
         filter_string = (
             f"crop=iw*{self.crop_width}:ih*{self.crop_height}:iw*{self.crop_left_x}:ih*{self.crop_top_y},"
@@ -280,22 +287,33 @@ class Camera:
         command = [
             'ffmpeg',
             '-hide_banner',
-            '-loglevel', 'error',
+            # We can use a more verbose loglevel now that it's going to a file
+            '-loglevel', 'warning', 
+            
+            # Input stream options
             '-rtsp_transport', 'tcp',
+            '-timeout', '15000000',
+            '-stream_loop', '-1',
             '-i', recording_url,
-            '-r', str(self.framerate),
+            
+            # Video processing options
             '-vf', filter_string,
+            '-r', str(self.framerate),
             '-an',
             '-c:v', 'libx264',
             '-preset', 'ultrafast',
             '-pix_fmt', 'yuv420p',
-            '-f', 'segment',
-            '-segment_time', str(self.segment_seconds),
-            '-segment_format', 'mp4',
-            '-reset_timestamps', '1',
-            '-strftime', '0',
+            '-g', str(self.framerate * 2),
+            '-sc_threshold', '0',
+
+            # HLS Muxer options
+            '-f', 'hls',
+            '-hls_time', str(self.segment_seconds),
+            '-hls_list_size', '0', 
+            '-hls_flags', 'delete_segments+program_date_time',
+            '-hls_segment_filename', dest_pattern,
             '-y',
-            dest_pattern
+            playlist_file
         ]
         
         try:
@@ -305,25 +323,29 @@ class Camera:
             if sys.platform == "win32":
                 creation_flags = subprocess.CREATE_NO_WINDOW
 
+            # ======================= MODIFIED Popen CALL =======================
+            # Open the log file in append mode
+            ffmpeg_log_file = open(ffmpeg_log_path, "a")
+
             process = Popen(
                 command, 
                 stdin=PIPE, 
                 stdout=DEVNULL,
-                stderr=DEVNULL,
+                stderr=ffmpeg_log_file, # Redirect stderr to our dedicated log file
                 shell=False,
                 creationflags=creation_flags
             )
+            # ===================================================================
 
-            self.project.active_recordings[self.name] = (process, time.time()) # Store the process and the current timestamp
+            self.project.active_recordings[self.name] = (process, time.time())
             return True
         except Exception as e:
             print(f"Failed to start ffmpeg for {self.name}: {e}")
             return False
-
             
     def stop_recording(self) -> bool:
         if self.name in self.project.active_recordings:
-            process, _ = self.project.active_recordings.pop(self.name) # Unpack the tuple, ignoring the timestamp
+            process, _ = self.project.active_recordings.pop(self.name)
             try:
                 if process.stdin:
                     process.stdin.write(b'q')
@@ -333,7 +355,28 @@ class Camera:
             except Exception as e:
                 print(f"Error while stopping process for {self.name}: {e}. Killing process.")
                 process.kill()
-            
+
+            # After stopping, find the very last created video file and queue it.
+            # This ensures the final piece of the recording is always processed.
+            try:
+                # Check if a session name has been set
+                if self.project.current_session_name:
+                    camera_folder = os.path.join(self.project.recordings_dir, self.project.current_session_name, self.name)
+                    if os.path.isdir(camera_folder):
+                        # Find all .mp4 files and get the one with the latest modification time.
+                        video_files = [os.path.join(camera_folder, f) for f in os.listdir(camera_folder) if f.endswith('.mp4')]
+                        if video_files:
+                            latest_file = max(video_files, key=os.path.getmtime)
+                            with gui_state.encode_lock:
+                                if latest_file not in gui_state.encode_tasks:
+                                    gui_state.encode_tasks.append(latest_file)
+                                    from workthreads import log_message # Local import to avoid circular dependency
+                                    log_message(f"Queued final segment on stop: '{os.path.basename(latest_file)}'", "INFO")
+            except Exception as e:
+                # Use a local import here too to be safe
+                from workthreads import log_message
+                log_message(f"Could not queue final segment for {self.name}: {e}", "ERROR")
+
             return True
         return False
 
@@ -517,6 +560,7 @@ class Project:
         for subdir in [self.cameras_dir, self.recordings_dir, self.models_dir, self.datasets_dir]:
             os.makedirs(subdir, exist_ok=True)
         self.active_recordings: dict[str, tuple[subprocess.Popen, float]] = {} # Store process and start time
+        self.current_session_name: str
         self._load_cameras()
         self._load_recordings()
         self._load_models()

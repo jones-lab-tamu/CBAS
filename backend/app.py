@@ -323,6 +323,12 @@ def main():
 
     eel.init('frontend')
     workthreads.start_threads()
+    
+    # Start the new recording monitor daemon thread
+    monitor_thread = threading.Thread(target=workthreads._recording_monitor_worker, daemon=True)
+    monitor_thread.start()
+    print("Recording monitor thread started.")
+    
     log_forwarder_thread = threading.Thread(target=_log_forwarder_task, daemon=True)
     log_forwarder_thread.start()
     port = find_available_port()

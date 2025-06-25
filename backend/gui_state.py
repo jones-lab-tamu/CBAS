@@ -60,6 +60,8 @@ label_col_map: Union['Colormap', None] = None # <-- Fix: Add quotes
 # BACKGROUND THREADS & TASK QUEUES
 # =================================================================
 
+print_lock: Union[threading.Lock, None] = threading.Lock()
+
 # --- Encoding Thread ---
 encode_thread: Union['EncodeThread', None] = None # <-- Fix: Add quotes
 encode_lock: Union[threading.Lock, None] = None
