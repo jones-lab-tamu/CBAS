@@ -32,6 +32,8 @@ let activePreviewCamera = null;
 
 let camerasToFetchCount = 0;
 let camerasFetchedCount = 0;
+let activeStreamsInfo = {}; // Will store { camName: startTime, ... }
+let recordingTimerInterval = null;
 
 // =================================================================
 // 3. FUNCTION DEFINITIONS
@@ -50,6 +52,63 @@ function waitForEelConnection() {
             }
         }, 100);
     });
+}
+
+function updateRecordingTimers() {
+    // This function will only run if there are active streams
+    if (Object.keys(activeStreamsInfo).length === 0) {
+        clearInterval(recordingTimerInterval);
+        recordingTimerInterval = null;
+        return;
+    }
+
+    const now = Date.now() / 1000; // Get current time in seconds
+
+    for (const cameraName in activeStreamsInfo) {
+        const timerElement = document.getElementById(`timer-${cameraName}`);
+        if (timerElement) {
+            const startTime = activeStreamsInfo[cameraName];
+            const elapsedTime = now - startTime;
+
+            if (elapsedTime < 0) continue;
+
+            const hours = Math.floor(elapsedTime / 3600);
+            const minutes = Math.floor((elapsedTime % 3600) / 60);
+            const seconds = Math.floor(elapsedTime % 60);
+
+            let displayTime;
+            let tooltipTime = `${hours}h ${minutes}m ${seconds}s`; // Full, precise time for tooltip
+
+            // Change format for very long recordings
+            if (hours < 100) {
+                // For recordings under 100 hours, use HH:MM:SS
+                displayTime = 
+                    String(hours).padStart(2, '0') + ':' +
+                    String(minutes).padStart(2, '0') + ':' +
+                    String(seconds).padStart(2, '0');
+            } else {
+                // For recordings over 100 hours, switch to a more compact Day/Hour format
+                const days = Math.floor(hours / 24);
+                const remainingHours = hours % 24;
+                displayTime = `${days}d ${String(remainingHours).padStart(2, '0')}h`;
+            }
+            
+            // Update both the visible text and the hover-over tooltip
+            timerElement.textContent = displayTime;
+
+            // Update the tooltip to always show the precise time on hover
+            const tooltip = bootstrap.Tooltip.getInstance(timerElement);
+            if (tooltip) {
+                tooltip.setContent({ '.tooltip-inner': tooltipTime });
+            } else {
+                // If tooltip not initialized, set the title attribute and initialize it
+                timerElement.setAttribute('data-bs-toggle', 'tooltip');
+                timerElement.setAttribute('data-bs-placement', 'top');
+                timerElement.setAttribute('title', tooltipTime);
+                new bootstrap.Tooltip(timerElement);
+            }
+        }
+    }
 }
 
 function revealRecordingFolder(sessionName, cameraName) {
@@ -414,10 +473,11 @@ async function loadCameraHTMLCards() {
     if (!container) return;
     container.innerHTML = "";
     let htmlContent = "";
+
     for (const cam of allCameraData) {
         const isCropped = cam.crop_left_x != 0 || cam.crop_top_y != 0 || cam.crop_width != 1 || cam.crop_height != 1;
         const displayName = isCropped ? cam.name : `${cam.name} <small class='text-muted'>(uncropped)</small>`;
-        
+
         htmlContent += `
             <div class="col-auto mb-3">
                 <div class="card shadow text-white bg-dark" style="width: 320px;">
@@ -425,7 +485,7 @@ async function loadCameraHTMLCards() {
                         <h5 class="card-title mb-0">${displayName}</h5>
                         <span id="status-dot-${cam.name}" class="badge rounded-pill bg-secondary" title="Status Unknown"> </span>
                     </div>
-                    
+
                     <div class="d-flex justify-content-center align-items-center" style="height: 225px; background-color: #343a40; margin: 10px auto; width: 300px;">
                         <div class="spinner-border text-light" role="status" id="spinner-${cam.name}">
                             <span class="visually-hidden">Loading...</span>
@@ -433,30 +493,56 @@ async function loadCameraHTMLCards() {
                         <canvas id="camera-${cam.name}" width="300" height="225" style="display: none;"></canvas>
                     </div>
 
-                    <div class="card-footer d-flex justify-content-center p-2">
-                        <div id="before-recording-${cam.name}" style="display: flex;">
-                            <button class="btn btn-sm btn-outline-light me-1" onclick="loadCameraSettings('${cam.name}')" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Settings/Crop"><i class="bi bi-crop"></i></button>
-                            
-                            <!-- ================== NEW BUTTON ADDED HERE ================== -->
-                            <button class="btn btn-sm btn-outline-danger me-1" onclick="deleteCamera('${cam.name}')" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Delete Camera"><i class="bi bi-trash-fill"></i></button>
-                            <!-- =========================================================== -->
-
-                            <button id="live-view-btn-${cam.name}" class="btn btn-sm btn-outline-light me-1" onclick="toggleLivePreview('${cam.name}')" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Live Preview"><i class="bi bi-eye-fill"></i></button>
-                            <button class="btn btn-sm btn-success" onclick="startCamera('${cam.name}')" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Start Recording"><i class="bi bi-camera-video-fill"></i> Start</button>
+                    <div class="card-footer p-2">
+                        <!-- STATE 1: IDLE -->
+                        <div id="before-recording-${cam.name}">
+                            <div class="d-flex justify-content-center align-items-center gap-3 flex-wrap">
+                                <div class="btn-group btn-group-sm" role="group">
+                                    <button class="btn btn-outline-light" onclick="loadCameraSettings('${cam.name}')" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Settings/Crop">
+                                        <i class="bi bi-crop"></i>
+                                    </button>
+                                    <button class="btn btn-outline-danger" onclick="deleteCamera('${cam.name}')" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Delete Camera">
+                                        <i class="bi bi-trash-fill"></i>
+                                    </button>
+                                    <button id="live-view-btn-${cam.name}" class="btn btn-outline-light" onclick="toggleLivePreview('${cam.name}')" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Live Preview">
+                                        <i class="bi bi-eye-fill"></i>
+                                    </button>
+                                </div>
+                                <div class="btn-group btn-group-sm" role="group">
+                                    <button class="btn btn-success" onclick="startCamera('${cam.name}')" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Start Recording" style="width: 90px;">
+                                        <i class="bi bi-camera-video-fill"></i> Start
+                                    </button>
+                                </div>
+                            </div>
                         </div>
+
+                        <!-- STATE 2: RECORDING -->
                         <div id="during-recording-${cam.name}" style="display: none;">
-                            <button class="btn btn-sm btn-outline-light me-1" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Settings disabled during recording" disabled><i class="bi bi-crop"></i></button>
-                            
-                            <button id="live-view-btn-recording-${cam.name}" class="btn btn-sm btn-outline-light me-1" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Live Preview disabled during recording" disabled><i class="bi bi-eye-fill"></i></button>
-                            
-                            <button class="btn btn-sm btn-outline-info me-1" onclick="revealRecordingFolder(document.getElementById('session-name-input').value, '${cam.name}')" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Show Recording Folder"><i class="bi bi-folder2-open"></i></button>
-                            
-                            <button class="btn btn-sm btn-danger" onclick="stopCamera('${cam.name}')" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Stop Recording"><i class="bi bi-square-fill"></i> Stop</button>
+                            <div class="d-flex justify-content-center align-items-center gap-2">
+                                <span id="timer-${cam.name}" class="badge bg-primary me-3" style="font-size: 0.8rem;">00:00:00</span>
+                                <div class="btn-group btn-group-sm" role="group">
+                                    <button class="btn btn-outline-light" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Settings disabled during recording" disabled>
+                                        <i class="bi bi-crop"></i>
+                                    </button>
+                                    <button class="btn btn-outline-light" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Live Preview disabled during recording" disabled>
+                                        <i class="bi bi-eye-fill"></i>
+                                    </button>
+                                    <button class="btn btn-outline-info" onclick="revealRecordingFolder(document.getElementById('session-name-input').value, '${cam.name}')" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Show Recording Folder">
+                                        <i class="bi bi-folder2-open"></i>
+                                    </button>
+                                </div>
+                                <div class="btn-group btn-group-sm ms-3" role="group">
+                                    <button class="btn btn-danger" onclick="stopCamera('${cam.name}')" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Stop Recording" style="width: 90px;">
+                                        <i class="bi bi-square-fill"></i> Stop
+                                    </button>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
             </div>`;
     }
+
     container.innerHTML = htmlContent;
 }
 
@@ -515,11 +601,24 @@ async function deleteCamera(cameraName) {
 
 async function updateRecordingStatus() {
     try {
-        const activeStreams = await eel.get_active_streams()() || [];
-        setRecordAllIcon(activeStreams.length > 0);
+        // The backend returns a dictionary: {'cam01': 162534.123, ...} or false
+        const activeStreams = await eel.get_active_streams()() || {};
+        activeStreamsInfo = activeStreams; // Update our global state
 
+        setRecordAllIcon(Object.keys(activeStreams).length > 0);
+
+        // Start the timer if it's not running and there are active streams
+        if (Object.keys(activeStreams).length > 0 && !recordingTimerInterval) {
+            recordingTimerInterval = setInterval(updateRecordingTimers, 1000);
+        } 
+        // Stop the timer if it is running and there are no active streams
+        else if (Object.keys(activeStreams).length === 0 && recordingTimerInterval) {
+            clearInterval(recordingTimerInterval);
+            recordingTimerInterval = null;
+        }
+        
         for (const cam of allCameraData) {
-            const isActive = activeStreams.includes(cam.name);
+            const isActive = cam.name in activeStreams;
             const statusDot = document.getElementById(`status-dot-${cam.name}`);
             const canvas = document.getElementById(`camera-${cam.name}`);
             

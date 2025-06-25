@@ -434,6 +434,9 @@ def stop_camera_stream(camera_name: str) -> bool:
         workthreads.log_message(f"Recording for camera '{camera_name}' stopped by user.", "INFO")
     return success
 
-def get_active_streams() -> list[str] | bool:
-    if not gui_state.proj: return False
-    return list(gui_state.proj.active_recordings.keys()) or False
+def get_active_streams() -> dict | bool:
+    """Returns a dictionary of active streams and their start timestamps."""
+    if not gui_state.proj:
+        return False
+    # Return a dictionary like: {'cam01': 16877345.123, 'cam02': 16877349.456}
+    return {name: start_time for name, (_, start_time) in gui_state.proj.active_recordings.items()} or False

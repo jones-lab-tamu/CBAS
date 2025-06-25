@@ -314,7 +314,7 @@ class Camera:
                 creationflags=creation_flags
             )
 
-            self.project.active_recordings[self.name] = process
+            self.project.active_recordings[self.name] = (process, time.time()) # Store the process and the current timestamp
             return True
         except Exception as e:
             print(f"Failed to start ffmpeg for {self.name}: {e}")
@@ -323,7 +323,7 @@ class Camera:
             
     def stop_recording(self) -> bool:
         if self.name in self.project.active_recordings:
-            process = self.project.active_recordings.pop(self.name)
+            process, _ = self.project.active_recordings.pop(self.name) # Unpack the tuple, ignoring the timestamp
             try:
                 if process.stdin:
                     process.stdin.write(b'q')
@@ -516,7 +516,7 @@ class Project:
         self.datasets_dir = os.path.join(path, "data_sets")
         for subdir in [self.cameras_dir, self.recordings_dir, self.models_dir, self.datasets_dir]:
             os.makedirs(subdir, exist_ok=True)
-        self.active_recordings: dict[str, subprocess.Popen] = {}
+        self.active_recordings: dict[str, tuple[subprocess.Popen, float]] = {} # Store process and start time
         self._load_cameras()
         self._load_recordings()
         self._load_models()
