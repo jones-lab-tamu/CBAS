@@ -726,9 +726,6 @@ class VideoFileWatcher(FileSystemEventHandler):
         video_path = event.src_path
         log_message(f"Watcher detected new file: {os.path.basename(video_path)}", "INFO")
 
-        # =========================================================================
-        # NEW LOGIC TO PREVENT WATCHER FROM ACTING ON IMPORTS
-        # =========================================================================
         # Check if the camera name from the file path is in the active recording list.
         # If it's not an active stream, it's a manual copy/import, so we do nothing.
         try:
@@ -741,9 +738,7 @@ class VideoFileWatcher(FileSystemEventHandler):
         except (IndexError, AttributeError):
              # If parsing fails or proj isn't loaded, safely exit.
             return
-        # =========================================================================
         
-        # This logic now ONLY runs for active, live recordings.
         dirname, basename = os.path.split(video_path)
         try:
             name_part, num_str = os.path.splitext(basename)[0].rsplit('_', 1)

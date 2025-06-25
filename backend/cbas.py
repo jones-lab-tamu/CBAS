@@ -37,18 +37,12 @@ from scipy.signal import medfilt
 # Local application imports
 import classifier_head
 import gui_state
-import gevent
-from gevent.subprocess import Popen, PIPE
+from subprocess import Popen, PIPE, DEVNULL 
 import sys
 
 class InvalidProject(Exception):
     def __init__(self, path):
         super().__init__(f"Path '{path}' is not a valid CBAS project directory.")
-
-# All of the top-level functions (encode_file, infer_file, _create_matplotlib_actogram)
-# and the data model classes (DinoEncoder, Recording, Model, Dataset, Actogram, StandardDataset, BalancedDataset)
-# are part of the v3 improvements and should remain exactly as they are in your provided file.
-# The only change is in the Camera and Project classes.
 
 def encode_file(encoder: nn.Module, path: str, progress_callback=None) -> str | None:
     try:
@@ -117,7 +111,6 @@ def infer_file(file_path: str, model: nn.Module, dataset_name: str, behaviors: l
     return output_file
 
 def _create_matplotlib_actogram(binned_activity, light_cycle_booleans, tau, bin_size_minutes, plot_title, start_hour_offset, plot_acrophase=False, base_color=None):
-    # This entire function is correct as-is.
     bins_per_period = int((tau * 60) / bin_size_minutes)
     if bins_per_period == 0: return None
     padding_bins = int(start_hour_offset * 60 / bin_size_minutes)
@@ -190,7 +183,6 @@ def _create_matplotlib_actogram(binned_activity, light_cycle_booleans, tau, bin_
     return fig
 
 class DinoEncoder(nn.Module):
-    # This is correct.
     def __init__(self, device="cuda"):
         super().__init__()
         self.device = torch.device(device)
@@ -205,7 +197,6 @@ class DinoEncoder(nn.Module):
         return out.last_hidden_state[:, 0, :].reshape(B, S, 768)
 
 class Recording:
-    # This is correct.
     def __init__(self, path: str):
         if not os.path.isdir(path): raise FileNotFoundError(path)
         self.path = path
@@ -276,28 +267,45 @@ class Camera:
         )
         gop_size = self.framerate * 2
 
-        # --- START OF THE DEFINITIVE FIX ---
-        command = [
-            "ffmpeg",
-            "-hide_banner",
-            "-loglevel", "error",
-            "-rtsp_transport", "tcp",
-            "-i", str(recording_url),
-            "-vf", filter_string,
-            "-c:v", "libx264",
-            "-preset", "ultrafast",
-            "-g", str(gop_size),
-            "-sc_threshold", "0",
-            "-f", "segment",
-            "-segment_time", str(self.segment_seconds),
-            "-segment_atclocktime", "1", # Force segment finalization on clock time
-            "-reset_timestamps", "1",
-            "-strftime", "0", # Use the %05d pattern, not date/time
-            "-movflags", "+frag_keyframe+empty_moov",
-            "-y",
-            dest_pattern,
-        ]
-        # --- END OF THE DEFINITIVE FIX ---
+        # command = [
+        #    "ffmpeg",
+        #    "-hide_banner", 
+        #    #"-loglevel", "error",
+           
+        #    # Low-latency input flags
+        #    "-fflags", "+nobuffer+flush_packets",
+        #    "-flags", "low_delay",
+           
+        #    "-rtsp_transport", "tcp",
+        #    "-i", recording_url,
+
+        #    "-vf", filter_string,
+
+        #    "-c:v", "libx264",
+        #    "-preset", "ultrafast",
+        #    "-g", str(gop_size),
+        #    "-sc_threshold", "0",
+
+        #    # Use the segment muxer with options passed correctly
+        #    "-f", "segment",
+        #    "-segment_time", str(self.segment_seconds),
+        #    "-segment_format", "mp4",
+        #    # Pass the fragmentation flags to the segment muxer itself
+        #    "-segment_format_options", "movflags=+frag_keyframe+empty_moov+default_base_moof",
+
+        #    "-reset_timestamps", "1",
+        #    "-strftime", "0",
+        #    '-hls_flags', 'temp_file',
+        #    "-y",
+        #    dest_pattern,
+        # ]
+
+        command = ['ffmpeg', '-loglevel', 'panic', '-rtsp_transport', 'tcp', '-i', recording_url,
+        '-r', str(self.framerate),
+        '-filter_complex', f"[0:v]crop=(iw*{self.crop_width}):(ih*{self.crop_height}):(iw*{self.crop_left_x}):(ih*{self.crop_top_y}),scale={self.resolution}:{self.resolution},pad={self.resolution}:{self.resolution}:(ow-iw)/2:(oh-ih)/2[cropped]",
+        '-map', '[cropped]', '-f', 'segment', '-segment_time', str(self.segment_seconds),
+        '-reset_timestamps', '1',
+        '-hls_flags', 'temp_file', '-y', dest_pattern]
         
         try:
             print(f"Starting recording for {self.name} with command: {' '.join(command)}")
@@ -306,11 +314,12 @@ class Camera:
             if sys.platform == "win32":
                 creation_flags = subprocess.CREATE_NO_WINDOW
 
+            # shell=False, passing the command as a list.
             process = Popen(
                 command, 
                 stdin=PIPE, 
-                stdout=PIPE,
-                stderr=PIPE,
+                stdout=DEVNULL,
+                stderr=DEVNULL,
                 shell=False,
                 creationflags=creation_flags
             )
@@ -320,20 +329,25 @@ class Camera:
         except Exception as e:
             print(f"Failed to start ffmpeg for {self.name}: {e}")
             return False
+
             
     def stop_recording(self) -> bool:
         if self.name in self.project.active_recordings:
             process = self.project.active_recordings.pop(self.name)
             try:
-                # Use communicate for gevent.subprocess
-                process.communicate(input=b'q', timeout=10)
-            except Exception:
+                if process.stdin:
+                    process.stdin.write(b'q')
+                    process.stdin.flush()
+                    process.stdin.close()
+                process.wait(timeout=5)
+            except Exception as e:
+                print(f"Error while stopping process for {self.name}: {e}. Killing process.")
                 process.kill()
+            
             return True
         return False
 
 class Model:
-    # This is correct.
     def __init__(self, path: str):
         self.path = path
         self.name = os.path.basename(path)
@@ -344,7 +358,6 @@ class Model:
         if not os.path.exists(self.weights_path): raise FileNotFoundError(f"Model weights not found: {self.weights_path}")
 
 class Dataset:
-    # This is correct.
     def __init__(self, path: str):
         self.path = path
         self.name = os.path.basename(path)
@@ -359,12 +372,13 @@ class Dataset:
             self.labels = default_labels
         else:
             with open(self.labels_path) as f: self.labels = yaml.safe_load(f)
+            
     def update_metric(self, behavior: str, group: str, value):
         self.config.setdefault("metrics", {}).setdefault(behavior, {})[group] = value
         with open(self.config_path, "w") as file:
             yaml.dump(self.config, file, allow_unicode=True)
+            
     def update_instance_counts_in_config(self, project: 'Project'):
-        # This is correct.
         from collections import Counter
         train_insts, test_insts, _ = project._load_dataset_common(self.name, 0.2)
         if train_insts is None or test_insts is None: return
@@ -386,8 +400,8 @@ class Dataset:
             self.update_metric(behavior_name, "F1 Score", "N/A")
             self.update_metric(behavior_name, "Recall", "N/A")
             self.update_metric(behavior_name, "Precision", "N/A")
+            
     def predictions_to_instances(self, csv_path: str, model_name: str, threshold: float = 0.7) -> list:
-        # This is correct.
         try: df = pd.read_csv(csv_path)
         except FileNotFoundError: return []
         instances, behaviors = [], self.config.get("behaviors", [])
@@ -411,8 +425,8 @@ class Dataset:
             current_event['end'] = len(df) - 1
             if current_event['end'] >= current_event['start']: instances.append(current_event)
         return instances
+        
     def predictions_to_instances_with_confidence(self, csv_path: str, model_name: str, threshold: float = 0.5, smoothing_window: int = 1) -> tuple[list, pd.DataFrame]:
-        # This is correct.
         try: df = pd.read_csv(csv_path)
         except FileNotFoundError: return [], None
         instances, behaviors = [], self.config.get("behaviors", [])
@@ -441,7 +455,6 @@ class Dataset:
         return instances, df
 
 class Actogram:
-    # This is correct.
     def __init__(self, directory: str, model: str, behavior: str, framerate: float, start: float, binsize_minutes: int, threshold: float, lightcycle: str, plot_acrophase: bool = False, base_color: str = None):
         self.directory, self.model, self.behavior = directory, model, behavior
         self.framerate, self.start_hour_on_plot = float(framerate), float(start)
@@ -476,13 +489,11 @@ class Actogram:
             plt.close(fig)
 
 class StandardDataset(torch.utils.data.Dataset):
-    # This is correct.
     def __init__(self, sequences, labels): self.sequences, self.labels = sequences, labels
     def __len__(self): return len(self.sequences)
     def __getitem__(self, idx): return self.sequences[idx], self.labels[idx]
 
 class BalancedDataset(torch.utils.data.Dataset):
-    # This is correct.
     def __init__(self, sequences: list, labels: list, behaviors: list):
         self.behaviors, self.num_behaviors = behaviors, len(behaviors)
         self.buckets = {b: [] for b in self.behaviors}
@@ -491,9 +502,11 @@ class BalancedDataset(torch.utils.data.Dataset):
                 self.buckets[self.behaviors[label.item()]].append(seq)
         self.total_sequences = sum(len(b) for b in self.buckets.values())
         self.counter = 0
+        
     def __len__(self):
         if self.num_behaviors == 0: return 0
         return self.total_sequences + (self.num_behaviors - self.total_sequences % self.num_behaviors) % self.num_behaviors
+        
     def __getitem__(self, idx: int):
         if self.num_behaviors == 0: raise IndexError("No behaviors defined.")
         b_idx = self.counter % self.num_behaviors
@@ -504,7 +517,6 @@ class BalancedDataset(torch.utils.data.Dataset):
         return self.buckets[b_name][sample_idx], torch.tensor(b_idx).long()
 
 class Project:
-    # This is correct.
     def __init__(self, path: str):
         if not os.path.isdir(path): raise InvalidProject(path)
         self.path = path
@@ -519,6 +531,7 @@ class Project:
         self._load_recordings()
         self._load_models()
         self._load_datasets()
+        
     def reload(self):
         print("Project data reload requested. Re-scanning all directories...")
         self._load_cameras()
@@ -526,6 +539,7 @@ class Project:
         self._load_models()
         self._load_datasets()
         print("Project data reloaded successfully.")
+        
     def _load_cameras(self):
         self.cameras = {}
         for cam_dir in [d for d in os.scandir(self.cameras_dir) if d.is_dir()]:
@@ -536,6 +550,7 @@ class Project:
                     if "name" in config:
                         self.cameras[config["name"]] = Camera(config, self)
                 except Exception as e: print(f"Error loading camera config {config_path}: {e}")
+                
     def _load_recordings(self):
         self.recordings = {}
         for day_dir in [d for d in os.scandir(self.recordings_dir) if d.is_dir()]:
@@ -545,9 +560,11 @@ class Project:
                     rec = Recording(session_dir.path)
                     self.recordings[day_dir.name][rec.name] = rec
                 except Exception as e: print(f"Error loading recording {session_dir.path}: {e}")
+                
     def reload_recordings(self):
         print("Reloading recording sessions from disk...")
         self._load_recordings()
+        
     def _load_models(self):
         self.models = {}
         for model_dir in [d for d in os.scandir(self.models_dir) if d.is_dir()]:
@@ -561,12 +578,14 @@ class Project:
                     print(f"Found bundled JonesLabModel at: {bundled_model_path}")
                     self.models["JonesLabModel"] = Model(bundled_model_path)
         except Exception as e: print(f"Warning: Could not load the bundled JonesLabModel: {e}")
+        
     def _load_datasets(self):
         self.datasets = {}
         for ds_dir in [d for d in os.scandir(self.datasets_dir) if d.is_dir()]:
             try: self.datasets[ds_dir.name] = Dataset(ds_dir.path)
             except Exception as e: print(f"Error loading dataset {ds_dir.path}: {e}")
     @staticmethod
+    
     def create_project(parent_directory: str, project_name: str) -> "Project | None":
         project_path = os.path.join(parent_directory, project_name)
         if os.path.exists(project_path):
@@ -579,6 +598,7 @@ class Project:
         except OSError as e:
             print(f"Error creating project directories: {e}")
             return None
+            
     def create_camera(self, name: str, settings: dict) -> Camera | None:
         camera_path = os.path.join(self.cameras_dir, name)
         if os.path.exists(camera_path):
@@ -592,6 +612,7 @@ class Project:
         cam = Camera(settings_with_name, self)
         self.cameras[name] = cam
         return cam
+        
     def create_dataset(self, name: str, behaviors: list[str], recordings_whitelist: list[str]) -> Dataset | None:
         directory = os.path.join(self.datasets_dir, name)
         if os.path.exists(directory):
@@ -608,8 +629,8 @@ class Project:
         ds = Dataset(directory)
         self.datasets[name] = ds
         return ds
+        
     def convert_instances(self, project_root_path: str, insts: list, seq_len: int, behaviors: list, progress_callback=None) -> tuple:
-        # This is correct.
         seqs, labels = [], []
         half_seqlen = seq_len // 2
         instances_by_video = {}
@@ -653,8 +674,8 @@ class Project:
         random.shuffle(shuffled_pairs)
         seqs, labels = zip(*shuffled_pairs)
         return list(seqs), list(labels)
+        
     def _load_dataset_common(self, name, split):
-        # This is correct.
         dataset_path = os.path.join(self.datasets_dir, name)
         if not os.path.isdir(dataset_path): raise FileNotFoundError(dataset_path)
         with open(os.path.join(dataset_path, "labels.yaml"), "r") as f: label_config = yaml.safe_load(f)
@@ -708,8 +729,8 @@ class Project:
             split_idx = int(len(all_insts) * (1 - split))
             return all_insts[:split_idx], all_insts[split_idx:], behaviors
         return train_insts, test_insts, behaviors
+        
     def load_dataset(self, name: str, seed: int = 42, split: float = 0.2, seq_len: int = 15, progress_callback=None) -> tuple:
-        # This is correct.
         random.seed(seed)
         train_insts, test_insts, behaviors = self._load_dataset_common(name, split)
         if train_insts is None: return None, None, None, None
@@ -718,12 +739,14 @@ class Project:
         train_seqs, train_labels = self.convert_instances(self.path, train_insts, seq_len, behaviors, train_prog)
         test_seqs, test_labels = self.convert_instances(self.path, test_insts, seq_len, behaviors, test_prog)
         return BalancedDataset(train_seqs, train_labels, behaviors), StandardDataset(test_seqs, test_labels), train_insts, test_insts
+        
     def load_dataset_for_weighted_loss(self, name, seed=42, split=0.2, seq_len=15, progress_callback=None) -> tuple:
-        # This is correct.
         random.seed(seed)
         train_insts, test_insts, behaviors = self._load_dataset_common(name, split)
         if train_insts is None: return None, None, None, None, None
+        
         def train_prog(p): progress_callback(p*0.5) if progress_callback else None
+        
         def test_prog(p): progress_callback(50 + p*0.5) if progress_callback else None
         train_seqs, train_labels = self.convert_instances(self.path, train_insts, seq_len, behaviors, train_prog)
         if not train_labels: return None, None, None, None, None
@@ -733,23 +756,22 @@ class Project:
         return StandardDataset(train_seqs, train_labels), StandardDataset(test_seqs, test_labels), weights, train_insts, test_insts
 
 def collate_fn(batch):
-    # This is correct.
     dcls, lbls = zip(*batch)
     return torch.stack(dcls), torch.stack(lbls)
+    
 def off_diagonal(x: torch.Tensor) -> torch.Tensor:
-    # This is correct.
     n, m = x.shape
     assert n == m
     return x.flatten()[:-1].view(n - 1, n + 1)[:, 1:].flatten()
+    
 class PerformanceReport:
-    # This is correct.
     def __init__(self, train_report: dict, train_cm: np.ndarray, val_report: dict, val_cm: np.ndarray):
         self.train_report = train_report
         self.train_cm = train_cm
         self.val_report = val_report
         self.val_cm = val_cm
+        
 def train_lstm_model(train_set, test_set, seq_len: int, behaviors: list, cancel_event: threading.Event, batch_size=512, lr=1e-4, epochs=10, device=None, class_weights=None, patience=3) -> tuple:
-    # This is correct.
     if len(train_set) == 0: return None, None, -1
     if device is None: device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     train_loader = torch.utils.data.DataLoader(train_set, batch_size, shuffle=True, collate_fn=collate_fn, num_workers=0, pin_memory=(device.type == 'cuda'), drop_last=True)

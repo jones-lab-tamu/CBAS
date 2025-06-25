@@ -9,12 +9,12 @@ import threading
 
 import eel
 import gevent
-# We use the standard subprocess module for stability
-# and gevent for concurrency management.
 
 import gui_state
 import cbas
 import workthreads
+
+from multiprocessing import Process, Queue
 
 # =================================================================
 # Thumbnail Fetching Logic
@@ -48,10 +48,12 @@ def fetch_frame_and_update(camera_name: str, rtsp_url: str):
         try:
             process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, creationflags=creation_flags)
             _, stderr = process.communicate(timeout=15)
-            if process.returncode == 0 and os.path.exists(frame_location) and os.path.getsize(frame_location) > 1000:
-                break 
+            
             if attempt < max_retries - 1:
                 gevent.sleep(1)
+
+            if process.returncode == -2 and os.path.exists(frame_location) and os.path.getsize(frame_location) > 1000:
+                break 
         except Exception as e:
             print(f"Exception during thumbnail fetch for {camera_name} on attempt {attempt + 1}: {e}")
             if attempt < max_retries - 1:
@@ -97,12 +99,10 @@ def get_single_camera_thumbnail(camera_name: str):
     # Run the fetch operation in a separate greenlet to not block the main thread.
     gevent.spawn(fetch_frame_and_update, cam.name, cam.rtsp_url)
 
-# This function is now a general-purpose worker used by both bulk and single fetches.
-def fetch_frame_and_update(camera_name: str, rtsp_url: str):
+def fetch_frame_and_update(camera_name: str, rtsp_url: str, frame_location: str):
     """
     (WORKER) Fetches a frame and then calls the Eel function to update the UI.
     """
-    frame_location = os.path.join(gui_state.proj.cameras_dir, camera_name, "frame.jpg")
     
     if os.path.exists(frame_location):
         try:
@@ -112,7 +112,7 @@ def fetch_frame_and_update(camera_name: str, rtsp_url: str):
 
     command = [
         "ffmpeg", "-hide_banner", "-loglevel", "error",
-        "-rtsp_transport", "tcp", "-timeout", "5000000", 
+        "-rtsp_transport", "tcp",  
         "-i", rtsp_url, "-vframes", "1", "-y", frame_location
     ]
     
@@ -122,20 +122,10 @@ def fetch_frame_and_update(camera_name: str, rtsp_url: str):
 
     try:
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, creationflags=creation_flags)
-        process.communicate(timeout=15)
+        process.communicate(timeout=5)
     except Exception:
         pass # Fail silently
 
-    encoded_string = None
-    if os.path.exists(frame_location) and os.path.getsize(frame_location) > 1000:
-        try:
-            with open(frame_location, "rb") as image_file:
-                encoded_string = base64.b64encode(image_file.read()).decode('utf-8')
-        except Exception as e:
-            print(f"Could not read/encode thumbnail for {camera_name}: {e}")
-    
-    eel.updateImageSrc(camera_name, encoded_string)()
-# --- END OF NEW SECTION ---
 
 @eel.expose
 def fetch_specific_thumbnails(camera_names: list[str]):
@@ -145,16 +135,54 @@ def fetch_specific_thumbnails(camera_names: list[str]):
     if not gui_state.proj:
         return
 
+    active_processes = {}
+
     for name in camera_names:
         cam = gui_state.proj.cameras.get(name)
         if cam:
-            # THE FIX: Call the correctly named function 'fetch_frame_and_update'
-            gevent.spawn(fetch_frame_and_update, cam.name, cam.rtsp_url)
-            gevent.sleep(0.15)
+            # Call the correctly named function 'fetch_frame_and_update'
+            frame_location = os.path.join(gui_state.proj.cameras_dir, cam.name, "frame.jpg")
+            p = Process(target=fetch_frame_and_update, args=(cam.name, cam.rtsp_url, frame_location))
+            p.start()
 
-# =================================================================
-# v3 Live Preview and Modern Functions (These are correct and unchanged)
-# =================================================================
+            active_processes[cam.name] = [frame_location, False]
+    
+    time_limit = 10
+    t = 0
+    done = False
+    while t<time_limit and not done:
+        done = True
+        for cam in active_processes.keys():
+            frame_location = active_processes[cam][0]
+            loaded = active_processes[cam][1]
+
+            if not loaded:
+                encoded_string = None
+                if os.path.exists(frame_location) and os.path.getsize(frame_location) > 1000:
+                    try:
+                        with open(frame_location, "rb") as image_file:
+                            encoded_string = base64.b64encode(image_file.read()).decode('utf-8')
+                        
+                        eel.updateImageSrc(cam, encoded_string)()
+
+                        active_processes[cam][1] = True
+                    except Exception as e:
+                        print(f"Could not read/encode thumbnail for {cam}: {e}")
+                else:
+                    done = False
+            
+        time.sleep(1)
+        t+=1
+
+    for cam in active_processes.keys():
+        frame_location = active_processes[cam][0]
+        loaded = active_processes[cam][1]
+
+        if not loaded:
+            encoded_string = None
+            eel.updateImageSrc(cam, encoded_string)()
+    
+
 
 def _live_preview_worker(
     camera_name: str, rtsp_url: str,
