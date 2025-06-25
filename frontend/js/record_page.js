@@ -460,6 +460,41 @@ async function loadCameraHTMLCards() {
     container.innerHTML = htmlContent;
 }
 
+async function syncAllCameraSettings() {
+    const framerate = parseInt(document.getElementById('cs-framerate').value) || 10;
+    const resolution = parseInt(document.getElementById('cs-resolution').value) || 256;
+    const segment_seconds = parseInt(document.getElementById('cs-segment-duration').value) || 600;
+
+    const message = `Are you sure you want to apply these settings to ALL cameras?\n\n- Framerate: ${framerate}\n- Resolution: ${resolution}\n- Segment Duration: ${segment_seconds}s\n\nThis will overwrite the current settings on every camera.`;
+
+    if (confirm(message)) {
+        cameraSettingsBsModal?.hide();
+        document.getElementById('cover-spin').style.visibility = 'visible';
+        
+        try {
+            const success = await eel.save_all_camera_settings({
+                framerate,
+                resolution,
+                segment_seconds
+            })();
+            
+            if (!success) {
+                showErrorOnRecordPage("Failed to sync settings across all cameras.");
+            } else {
+                // Important: Clear the entire thumbnail cache as all cameras have been updated.
+                clearThumbnailCache();
+            }
+        } catch (e) {
+            console.error("Error syncing all camera settings:", e);
+            showErrorOnRecordPage("An error occurred while syncing settings.");
+        } finally {
+            // Reload all cameras to reflect the changes.
+            await loadCameras();
+            document.getElementById('cover-spin').style.visibility = 'hidden';
+        }
+    }
+}
+
 async function deleteCamera(cameraName) {
     // Confirmation dialog is crucial for a destructive action
     if (confirm(`Are you sure you want to permanently delete the camera '${cameraName}'?\nThis action cannot be undone.`)) {

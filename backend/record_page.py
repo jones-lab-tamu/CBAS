@@ -105,7 +105,8 @@ def get_single_camera_thumbnail(camera_name: str):
     if not cam:
         eel.updateImageSrc(camera_name, None)()
         return
-    gevent.spawn(_fetch_and_update_single_thumbnail, cam.name, cam.rtsp_url)
+    # Use the standardized profile0_url
+    gevent.spawn(_fetch_and_update_single_thumbnail, cam.name, cam.profile0_url)
 
 
 def fetch_specific_thumbnails(camera_names: list[str]):
@@ -117,7 +118,8 @@ def fetch_specific_thumbnails(camera_names: list[str]):
         cam = gui_state.proj.cameras.get(name)
         if cam:
             frame_location = os.path.join(gui_state.proj.cameras_dir, cam.name, "frame.jpg")
-            p = Process(target=_fetch_frame_worker_process, args=(cam.name, cam.rtsp_url, frame_location))
+            # Use the standardized profile0_url
+            p = Process(target=_fetch_frame_worker_process, args=(cam.name, cam.profile0_url, frame_location))
             p.start()
             active_processes[cam.name] = [frame_location, False]
     
@@ -152,6 +154,48 @@ def fetch_specific_thumbnails(camera_names: list[str]):
 # =================================================================
 # Live Preview & Other Functions
 # =================================================================
+
+def save_all_camera_settings(common_settings: dict) -> bool:
+    """
+    Applies a set of common settings (framerate, resolution, segment_seconds)
+    to all configured cameras.
+    """
+    if not gui_state.proj or not gui_state.proj.cameras:
+        return False
+        
+    framerate = common_settings.get("framerate")
+    resolution = common_settings.get("resolution")
+    segment_seconds = common_settings.get("segment_seconds")
+
+    if not all([framerate, resolution, segment_seconds]):
+        workthreads.log_message("Sync settings failed: Missing one or more key settings.", "ERROR")
+        return False
+        
+    workthreads.log_message(f"Syncing settings for all {len(gui_state.proj.cameras)} cameras...", "INFO")
+    
+    try:
+        # Loop through a copy of the camera objects
+        for cam in list(gui_state.proj.cameras.values()):
+            # Ensure no cameras are recording during this bulk update
+            if cam.name in gui_state.proj.active_recordings:
+                workthreads.log_message(f"Cannot sync settings. Camera '{cam.name}' is currently recording.", "ERROR")
+                eel.showErrorOnRecordPage(f"Cannot sync settings while '{cam.name}' is recording. Please stop all streams first.")()
+                return False
+
+            # Update the settings for the current camera
+            cam.framerate = framerate
+            cam.resolution = resolution
+            cam.segment_seconds = segment_seconds
+            
+            # Write the updated configuration to its config.yaml file
+            cam.write_settings_to_config()
+            workthreads.log_message(f"Updated settings for '{cam.name}'.", "INFO")
+            
+        workthreads.log_message("All camera settings have been synced successfully.", "INFO")
+        return True
+    except Exception as e:
+        workthreads.log_message(f"An error occurred during bulk camera settings update: {e}", "ERROR")
+        return False
 
 def _live_preview_worker(
     camera_name: str, rtsp_url: str,
@@ -225,7 +269,8 @@ def start_live_preview(camera_name: str):
     preview_thread = threading.Thread(
         target=_live_preview_worker, 
         args=(
-            cam.name, cam.rtsp_url, 
+            cam.name, 
+            cam.profile0_url,  # Use the standardized profile0_url
             cam.crop_width, cam.crop_height, 
             cam.crop_left_x, cam.crop_top_y
         ),

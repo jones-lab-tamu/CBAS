@@ -242,18 +242,29 @@ class Camera:
         self.crop_top_y = float(settings.get("crop_top_y", 0.0))
         self.crop_width = float(settings.get("crop_width", 1.0))
         self.crop_height = float(settings.get("crop_height", 1.0))
+
+        # This ensures we always have the high-quality stream URL available,
+        # regardless of what the user entered.
+        if "/profile1" in self.rtsp_url:
+            self.profile0_url = self.rtsp_url.replace("/profile1", "/profile0")
+        else:
+            self.profile0_url = self.rtsp_url # Assume it's already profile0 or a different URL structure
+
         if write_to_disk: self.write_settings_to_config()
 
     def write_settings_to_config(self):
+        """Saves the current camera object's settings to its config.yaml file."""
         with open(os.path.join(self.path, "config.yaml"), "w") as file:
             yaml.dump(self.settings_to_dict(), file, allow_unicode=True)
 
     def start_recording(self, session_name: str) -> bool:
         if self.name in self.project.active_recordings:
+            print(f"[{self.name}] is already recording.")
             return False
 
-        recording_url = self.rtsp_url.replace("/profile1", "/profile0")
-        print(f"[{self.name}] Using stream '{recording_url}' for recording.")
+        recording_url = self.profile0_url
+
+        print(f"[{self.name}] Using high-quality stream '{recording_url}' for recording.")
         
         session_path = os.path.join(self.project.recordings_dir, session_name)
         final_dest_dir = os.path.join(session_path, self.name)
@@ -265,47 +276,27 @@ class Camera:
             f"scale={self.resolution}:{self.resolution}:force_original_aspect_ratio=decrease,"
             f"pad={self.resolution}:{self.resolution}:(ow-iw)/2:(oh-ih)/2"
         )
-        gop_size = self.framerate * 2
 
-        # command = [
-        #    "ffmpeg",
-        #    "-hide_banner", 
-        #    #"-loglevel", "error",
-           
-        #    # Low-latency input flags
-        #    "-fflags", "+nobuffer+flush_packets",
-        #    "-flags", "low_delay",
-           
-        #    "-rtsp_transport", "tcp",
-        #    "-i", recording_url,
-
-        #    "-vf", filter_string,
-
-        #    "-c:v", "libx264",
-        #    "-preset", "ultrafast",
-        #    "-g", str(gop_size),
-        #    "-sc_threshold", "0",
-
-        #    # Use the segment muxer with options passed correctly
-        #    "-f", "segment",
-        #    "-segment_time", str(self.segment_seconds),
-        #    "-segment_format", "mp4",
-        #    # Pass the fragmentation flags to the segment muxer itself
-        #    "-segment_format_options", "movflags=+frag_keyframe+empty_moov+default_base_moof",
-
-        #    "-reset_timestamps", "1",
-        #    "-strftime", "0",
-        #    '-hls_flags', 'temp_file',
-        #    "-y",
-        #    dest_pattern,
-        # ]
-
-        command = ['ffmpeg', '-loglevel', 'panic', '-rtsp_transport', 'tcp', '-i', recording_url,
-        '-r', str(self.framerate),
-        '-filter_complex', f"[0:v]crop=(iw*{self.crop_width}):(ih*{self.crop_height}):(iw*{self.crop_left_x}):(ih*{self.crop_top_y}),scale={self.resolution}:{self.resolution},pad={self.resolution}:{self.resolution}:(ow-iw)/2:(oh-ih)/2[cropped]",
-        '-map', '[cropped]', '-f', 'segment', '-segment_time', str(self.segment_seconds),
-        '-reset_timestamps', '1',
-        '-hls_flags', 'temp_file', '-y', dest_pattern]
+        command = [
+            'ffmpeg',
+            '-hide_banner',
+            '-loglevel', 'error',
+            '-rtsp_transport', 'tcp',
+            '-i', recording_url,
+            '-r', str(self.framerate),
+            '-vf', filter_string,
+            '-an',
+            '-c:v', 'libx264',
+            '-preset', 'ultrafast',
+            '-pix_fmt', 'yuv420p',
+            '-f', 'segment',
+            '-segment_time', str(self.segment_seconds),
+            '-segment_format', 'mp4',
+            '-reset_timestamps', '1',
+            '-strftime', '0',
+            '-y',
+            dest_pattern
+        ]
         
         try:
             print(f"Starting recording for {self.name} with command: {' '.join(command)}")
@@ -314,7 +305,6 @@ class Camera:
             if sys.platform == "win32":
                 creation_flags = subprocess.CREATE_NO_WINDOW
 
-            # shell=False, passing the command as a list.
             process = Popen(
                 command, 
                 stdin=PIPE, 

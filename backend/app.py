@@ -38,6 +38,11 @@ def load_project(path):
     return startup_page.load_project(path)
 
 # --- Record Page Functions ---
+
+@eel.expose
+def save_all_camera_settings(settings):
+    return record_page.save_all_camera_settings(settings)
+
 @eel.expose
 def reveal_recording_folder(session_name, camera_name):
     return record_page.reveal_recording_folder(session_name, camera_name)
