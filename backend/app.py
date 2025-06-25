@@ -24,14 +24,10 @@ import visualize_page
 import gui_state
 
 # =================================================================
-# EEL EXPOSED FUNCTIONS - THE SINGLE SOURCE OF TRUTH FOR THE API
+# EEL EXPOSED FUNCTIONS
 # =================================================================
 
 # --- Startup Page Functions ---
-
-@eel.expose
-def reveal_recording_folder(session_name, camera_name):
-    return record_page.reveal_recording_folder(session_name, camera_name)
 
 @eel.expose
 def create_project(parent_dir, name):
@@ -43,23 +39,20 @@ def load_project(path):
 
 # --- Record Page Functions ---
 @eel.expose
-def get_cameras_with_thumbnails():
-    return record_page.get_cameras_with_thumbnails()
+def reveal_recording_folder(session_name, camera_name):
+    return record_page.reveal_recording_folder(session_name, camera_name)
 
 @eel.expose
-def update_image_src_from_python(camera_name, base64_val):
-    """
-    A Python-callable bridge to trigger the JavaScript updateImageSrc function.
-    This is necessary because the @eel.expose decorator for JS functions is conceptual;
-    the real mechanism is Python calling a JS function via the websocket.
-    """
-    eel.updateImageSrc(camera_name, base64_val)()
-
+def get_camera_list():
+    return record_page.get_camera_list()
 
 @eel.expose
-def stop_all_camera_streams():
-    # This function will call a new helper in record_page.py
-    return record_page.stop_all_camera_streams()
+def get_single_camera_thumbnail(camera_name):
+    return record_page.get_single_camera_thumbnail(camera_name)
+
+@eel.expose
+def fetch_specific_thumbnails(camera_names):
+    return record_page.fetch_specific_thumbnails(camera_names)
 
 @eel.expose
 def get_camera_settings(name):
@@ -68,10 +61,6 @@ def get_camera_settings(name):
 @eel.expose
 def save_camera_settings(name, settings):
     return record_page.save_camera_settings(name, settings)
-
-@eel.expose
-def rename_camera(old_name, new_name):
-    return record_page.rename_camera(old_name, new_name)
 
 @eel.expose
 def create_camera(name, url):
@@ -83,12 +72,16 @@ def get_cbas_status():
 
 @eel.expose
 def start_camera_stream(name, session): 
-    return record_page.start_camera_stream(name, session) # Call with new signature
+    return record_page.start_camera_stream(name, session)
 
 @eel.expose
 def stop_camera_stream(name):
     return record_page.stop_camera_stream(name)
 
+@eel.expose
+def stop_all_camera_streams():
+    return record_page.stop_all_camera_streams()
+    
 @eel.expose
 def get_active_streams():
     return record_page.get_active_streams()
