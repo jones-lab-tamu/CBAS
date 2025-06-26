@@ -438,5 +438,5 @@ def get_active_streams() -> dict | bool:
     """Returns a dictionary of active streams and their start timestamps."""
     if not gui_state.proj:
         return False
-    # Return a dictionary like: {'cam01': 16877345.123, 'cam02': 16877349.456}
-    return {name: start_time for name, (_, start_time) in gui_state.proj.active_recordings.items()} or False
+    # Correctly unpack the 3-item tuple, ignoring the session name
+    return {name: start_time for name, (_, start_time, _) in gui_state.proj.active_recordings.items()} or False

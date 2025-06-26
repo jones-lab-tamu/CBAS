@@ -36,6 +36,8 @@ import classifier_head
 import subprocess
 import shutil
 
+_last_restart_times = {}
+
 # =================================================================
 # LOGGING HELPER
 # =================================================================
@@ -65,22 +67,46 @@ def log_message(message: str, level: str = "INFO"):
 
 def _recording_monitor_worker():
     """
-    (WORKER) A daemon thread that periodically checks if the ffmpeg recording
-    processes are still running. If a process has terminated unexpectedly,
-    it cleans up the application's internal state.
+    (WORKER) A daemon thread that periodically checks if ffmpeg processes
+    are running. If a process has terminated, it automatically restarts it.
     """
+    global _last_restart_times
+    RESTART_COOLDOWN = 60 # Cooldown in seconds before restarting the same camera
+
     while True:
-        # Check every 5 seconds
-        time.sleep(5)
+        time.sleep(5) # Check every 5 seconds
         
         if gui_state.proj and gui_state.proj.active_recordings:
-            # Iterate over a copy of the items to allow safe modification
-            for name, (proc, start_time) in list(gui_state.proj.active_recordings.items()):
-                # poll() returns None if the process is running, otherwise the exit code
+            # Iterate over a copy to allow safe modification during the loop
+            for name, (proc, start_time, session_name) in list(gui_state.proj.active_recordings.items()):
                 if proc.poll() is not None:
                     log_message(f"Recording process for '{name}' terminated unexpectedly (exit code: {proc.returncode}).", "WARN")
+                    
                     # Remove the dead process from the active list
                     del gui_state.proj.active_recordings[name]
+                    
+                    # --- SELF-HEALING LOGIC ---
+                    current_time = time.time()
+                    last_restart = _last_restart_times.get(name, 0)
+                    
+                    if (current_time - last_restart) > RESTART_COOLDOWN:
+                        log_message(f"Attempting to automatically restart recording for '{name}'...", "INFO")
+                        try:
+                            # Get the camera object and tell it to start again with the correct session name
+                            camera_obj = gui_state.proj.cameras.get(name)
+                            if camera_obj:
+                                success = camera_obj.start_recording(session_name)
+                                if success:
+                                    log_message(f"Successfully restarted recording for '{name}'.", "INFO")
+                                    _last_restart_times[name] = current_time
+                                else:
+                                    log_message(f"Failed to restart recording for '{name}'.", "ERROR")
+                            else:
+                                log_message(f"Cannot restart: Camera object for '{name}' not found.", "ERROR")
+                        except Exception as e:
+                            log_message(f"An exception occurred while trying to restart '{name}': {e}", "ERROR")
+                    else:
+                        log_message(f"Skipping restart for '{name}'; it failed within the {RESTART_COOLDOWN}s cooldown period.", "WARN")
 
 def sync_labels_worker(source_dataset_name: str, target_dataset_name: str):
     """

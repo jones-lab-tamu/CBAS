@@ -262,6 +262,7 @@ class Camera:
             print(f"[{self.name}] is already recording.")
             return False
 
+        self.project.current_session_name = session_name
         recording_url = self.profile0_url
         print(f"[{self.name}] Using high-quality stream '{recording_url}' for recording.")
         
@@ -270,13 +271,8 @@ class Camera:
         os.makedirs(final_dest_dir, exist_ok=True)
         
         playlist_file = os.path.join(final_dest_dir, f"{self.name}_playlist.m3u8")
-        dest_pattern = os.path.join(final_dest_dir, f"{self.name}_%05d.mp4")
-
-        # ======================= NEW: FFMPEG ERROR LOGGING =======================
-        # Create a dedicated log file for this ffmpeg process's error stream.
-        # This will capture the true reason for any crash.
         ffmpeg_log_path = os.path.join(final_dest_dir, f"{self.name}_ffmpeg_err.log")
-        # =========================================================================
+        dest_pattern = os.path.join(final_dest_dir, f"{self.name}_%05d.mp4")
 
         filter_string = (
             f"crop=iw*{self.crop_width}:ih*{self.crop_height}:iw*{self.crop_left_x}:ih*{self.crop_top_y},"
@@ -285,59 +281,28 @@ class Camera:
         )
 
         command = [
-            'ffmpeg',
-            '-hide_banner',
-            # We can use a more verbose loglevel now that it's going to a file
-            '-loglevel', 'warning', 
-            
-            # Input stream options
-            '-rtsp_transport', 'tcp',
-            '-timeout', '15000000',
-            '-stream_loop', '-1',
+            'ffmpeg', '-hide_banner', '-loglevel', 'warning',
+            '-rtsp_transport', 'tcp', '-timeout', '15000000',
+            '-stream_loop', '-1', # Using the most stable flag for your ffmpeg version
             '-i', recording_url,
-            
-            # Video processing options
-            '-vf', filter_string,
-            '-r', str(self.framerate),
-            '-an',
-            '-c:v', 'libx264',
-            '-preset', 'ultrafast',
-            '-pix_fmt', 'yuv420p',
-            '-g', str(self.framerate * 2),
-            '-sc_threshold', '0',
-
-            # HLS Muxer options
-            '-f', 'hls',
-            '-hls_time', str(self.segment_seconds),
-            '-hls_list_size', '0', 
-            '-hls_flags', 'delete_segments+program_date_time',
-            '-hls_segment_filename', dest_pattern,
-            '-y',
-            playlist_file
+            '-vf', filter_string, '-r', str(self.framerate), '-an', '-c:v', 'libx264',
+            '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-g', str(self.framerate * 2),
+            '-sc_threshold', '0', '-f', 'hls', '-hls_time', str(self.segment_seconds),
+            '-hls_list_size', '0', '-hls_flags', 'delete_segments+program_date_time',
+            '-hls_segment_filename', dest_pattern, '-y', playlist_file
         ]
         
         try:
             print(f"Starting recording for {self.name} with command: {' '.join(command)}")
-            
             creation_flags = 0
-            if sys.platform == "win32":
-                creation_flags = subprocess.CREATE_NO_WINDOW
-
-            # ======================= MODIFIED Popen CALL =======================
-            # Open the log file in append mode
+            if sys.platform == "win32": creation_flags = subprocess.CREATE_NO_WINDOW
             ffmpeg_log_file = open(ffmpeg_log_path, "a")
-
             process = Popen(
-                command, 
-                stdin=PIPE, 
-                stdout=DEVNULL,
-                stderr=ffmpeg_log_file, # Redirect stderr to our dedicated log file
-                shell=False,
-                creationflags=creation_flags
+                command, stdin=PIPE, stdout=DEVNULL, stderr=ffmpeg_log_file,
+                shell=False, creationflags=creation_flags
             )
-            # ===================================================================
-
-            self.project.active_recordings[self.name] = (process, time.time())
+            # Store the process, start time, AND session name for restarts
+            self.project.active_recordings[self.name] = (process, time.time(), session_name)
             return True
         except Exception as e:
             print(f"Failed to start ffmpeg for {self.name}: {e}")
@@ -345,7 +310,7 @@ class Camera:
             
     def stop_recording(self) -> bool:
         if self.name in self.project.active_recordings:
-            process, _ = self.project.active_recordings.pop(self.name)
+            process, _, _ = self.project.active_recordings.pop(self.name) # Unpack the 3-item tuple
             try:
                 if process.stdin:
                     process.stdin.write(b'q')
@@ -559,8 +524,8 @@ class Project:
         self.datasets_dir = os.path.join(path, "data_sets")
         for subdir in [self.cameras_dir, self.recordings_dir, self.models_dir, self.datasets_dir]:
             os.makedirs(subdir, exist_ok=True)
-        self.active_recordings: dict[str, tuple[subprocess.Popen, float]] = {} # Store process and start time
-        self.current_session_name: str
+        self.active_recordings: dict[str, tuple[subprocess.Popen, float, str]] = {}
+        self.current_session_name: str | None = None # <-- ADD THIS LINE
         self._load_cameras()
         self._load_recordings()
         self._load_models()
