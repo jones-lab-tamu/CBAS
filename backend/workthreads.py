@@ -343,74 +343,97 @@ class ClassificationThread(threading.Thread):
         super().__init__()
         self.device = torch.device(device_str)
         self.cuda_stream = torch.cuda.Stream(device=self.device) if self.device.type == 'cuda' else None
-        self.running = False
+        
+        # --- Use threading.Event for clearer state management ---
+        self.new_task_event = threading.Event()
         self.torch_model = None
-        self.model_meta = None  # Stores the cbas.Model object
+        self.model_meta = None
 
-    def start_inferring(self, model_obj: cbas.Model, whitelist: list[str]):
+    def start_inferring(self, model_obj: cbas.Model, files_to_process: list[str]):
         """
         Loads a model and prepares the thread to start processing classification tasks.
-        
-        Args:
-            model_obj (cbas.Model): The model object containing config and weights path.
-            whitelist (list[str]): A list of directories to restrict inference to (currently unused).
+        This is now the single entry point to give a new job to the thread.
         """
-        with gui_state.classify_lock:
+        # It's safer to not hold the lock while loading the model.
+        log_message(f"Loading model '{model_obj.name}' for classification...", "INFO")
+        try:
+            weights = torch.load(model_obj.weights_path, map_location=self.device, weights_only=True)
+            self.torch_model = classifier_head.classifier(
+                in_features=768,
+                out_features=len(model_obj.config["behaviors"]),
+                seq_len=model_obj.config["seq_len"],
+            )
+            self.torch_model.load_state_dict(weights)
+            self.torch_model.to(self.device).eval()
             self.model_meta = model_obj
-            self.whitelist = whitelist
-            log_message(f"Loading model '{model_obj.name}' for classification...", "INFO")
-            try:
-                weights = torch.load(model_obj.weights_path, map_location=self.device, weights_only=True)
-                self.torch_model = classifier_head.classifier(
-                    in_features=768,
-                    out_features=len(model_obj.config["behaviors"]),
-                    seq_len=model_obj.config["seq_len"],
-                )
-                self.torch_model.load_state_dict(weights)
-                self.torch_model.to(self.device).eval()
-                self.running = True
-                log_message(f"Model '{model_obj.name}' loaded successfully.", "INFO")
-            except Exception as e:
-                log_message(f"Error loading model '{model_obj.name}': {e}", "ERROR")
-                self.running = False
+            
+            # --- Add files to the queue here and set the event ---
+            with gui_state.classify_lock:
+                gui_state.classify_tasks.clear() # Clear any old tasks
+                gui_state.classify_tasks.extend(files_to_process)
+            
+            self.new_task_event.set() # Signal the run() loop to start processing
+            log_message(f"Model '{model_obj.name}' loaded. {len(files_to_process)} tasks queued.", "INFO")
+
+        except Exception as e:
+            log_message(f"Error loading model '{model_obj.name}': {e}", "ERROR")
+            # Ensure we don't proceed if loading fails
+            self.torch_model = None
+            self.model_meta = None
+            self.new_task_event.clear()
+
 
     def run(self):
-        """The main loop for the thread. Pulls tasks from the global queue."""
+        """The main loop for the thread. It now waits for a signal to start work."""
         while True:
-            file_to_classify = None
-            can_run_now = False
-            
-            with gui_state.classify_lock:
-                can_run_now = self.running
-                if can_run_now and gui_state.classify_tasks:
-                    file_to_classify = gui_state.classify_tasks.pop(0)
+            # Wait for the new_task_event to be set. This is a non-blocking wait.
+            # The thread will sleep efficiently until start_inferring() is called.
+            self.new_task_event.wait() 
 
-            if can_run_now and file_to_classify:
-                log_message(f"Classifying: {os.path.basename(file_to_classify)} with model '{self.model_meta.name}'", "INFO")
-                if self.torch_model and self.model_meta:
+            # Once woken up, check if a model is actually loaded
+            if not self.torch_model or not self.model_meta:
+                log_message("Classification thread woken up but no model is loaded. Resetting.", "WARN")
+                self.new_task_event.clear() # Clear the event and go back to waiting
+                continue
+            
+            total_files = 0
+            with gui_state.classify_lock:
+                total_files = len(gui_state.classify_tasks)
+            
+            if total_files > 0:
+                eel.updateTrainingStatusOnUI(self.model_meta.name, f"Processing {total_files} files...")()
+
+            # --- Main processing loop for the current batch of tasks ---
+            while True:
+                file_to_classify = None
+                with gui_state.classify_lock:
+                    if gui_state.classify_tasks:
+                        file_to_classify = gui_state.classify_tasks.pop(0)
+                        # --- Update progress here ---
+                        remaining_count = len(gui_state.classify_tasks)
+                        percent_done = ((total_files - remaining_count) / total_files) * 100
+                        eel.updateDatasetLoadProgress(self.model_meta.name, percent_done)()
+                    else:
+                        # No more tasks in the queue
+                        break 
+
+                if file_to_classify:
+                    log_message(f"Classifying: {os.path.basename(file_to_classify)} with model '{self.model_meta.name}'", "INFO")
+                    
                     if self.cuda_stream:
                         with torch.cuda.stream(self.cuda_stream):
-                            out_file = cbas.infer_file(file_to_classify, self.torch_model, self.model_meta.name, self.model_meta.config["behaviors"], self.model_meta.config["seq_len"], device=self.device)
+                            cbas.infer_file(file_to_classify, self.torch_model, self.model_meta.name, self.model_meta.config["behaviors"], self.model_meta.config["seq_len"], device=self.device)
                     else:
-                        out_file = cbas.infer_file(file_to_classify, self.torch_model, self.model_meta.name, self.model_meta.config["behaviors"], self.model_meta.config["seq_len"], device=self.device)
-                    
-                    if out_file:
-                        log_message(f"Finished classifying: {os.path.basename(file_to_classify)}", "INFO")
-                    else:
-                        log_message(f"Failed to classify: {os.path.basename(file_to_classify)}", "WARN")
-                    
-                    # Notify UI upon queue completion
-                    with gui_state.classify_lock:
-                        if not gui_state.classify_tasks:
-                            log_message("Inference queue is empty. Classification complete.", "INFO")
-                            eel.updateTrainingStatusOnUI(self.model_meta.name, "Inference complete.")()
-                else:
-                    log_message(f"Model not ready, re-queuing: {os.path.basename(file_to_classify)}", "WARN")
-                    with gui_state.classify_lock:
-                        gui_state.classify_tasks.insert(0, file_to_classify)
-                    time.sleep(5)
-            else:
-                time.sleep(1)
+                        cbas.infer_file(file_to_classify, self.torch_model, self.model_meta.name, self.model_meta.config["behaviors"], self.model_meta.config["seq_len"], device=self.device)
+            
+            # --- This block runs after the queue is empty ---
+            log_message(f"Inference queue for model '{self.model_meta.name}' is empty. Classification complete.", "INFO")
+            eel.updateTrainingStatusOnUI(self.model_meta.name, "Inference complete.")()
+            
+            # Reset state for the next job
+            self.torch_model = None
+            self.model_meta = None
+            self.new_task_event.clear()
 
     def get_id(self):
         """Returns the thread's unique identifier."""
