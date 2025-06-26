@@ -61,6 +61,12 @@ def encode_file(encoder: nn.Module, path: str, progress_callback=None) -> str | 
         for i in range(0, video_len, CHUNK_SIZE):
             end_index = min(i + CHUNK_SIZE, video_len)
             frames_np = reader.get_batch(range(i, end_index)).asnumpy()
+            
+            if progress_callback:
+                # Calculate percentage based on the number of frames processed so far
+                percent_complete = (end_index / video_len) * 100
+                progress_callback(percent_complete)         
+                       
             frames_tensor = torch.from_numpy(frames_np[:, :, :, 1] / 255.0).float()
             with torch.no_grad(), torch.amp.autocast(device_type=encoder.device.type if encoder.device.type != 'mps' else 'cpu'):
                 embeddings_batch = encoder(frames_tensor.unsqueeze(1).to(encoder.device))

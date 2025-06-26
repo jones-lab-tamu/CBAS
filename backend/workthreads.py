@@ -290,23 +290,35 @@ class EncodeThread(threading.Thread):
                     file_to_encode = gui_state.encode_tasks.pop(0)
 
             if file_to_encode:
-                log_message(f"Starting encoding for: {os.path.basename(file_to_encode)}", "INFO")
-                # Use a stream if available for CUDA operations
+                video_basename = os.path.basename(file_to_encode)
+                log_message(f"Starting encoding for: {video_basename}", "INFO")
+
+                # Define a simple callback that uses the existing log_message function
+                last_reported_percent = -1
+                def progress_updater(percent):
+                    nonlocal last_reported_percent
+                    # Report progress in ~10% increments to avoid spamming the log
+                    current_increment = int(percent // 10)
+                    last_increment = int(last_reported_percent // 10)
+                    if current_increment > last_increment:
+                        log_message(f"Encoding '{video_basename}': {int(percent)}% complete...", "INFO")
+                        last_reported_percent = percent
+
                 if self.cuda_stream:
                     with torch.cuda.stream(self.cuda_stream):
-                        out_file = cbas.encode_file(self.encoder, file_to_encode)
+                        out_file = cbas.encode_file(self.encoder, file_to_encode, progress_callback=progress_updater)
                 else:
-                    out_file = cbas.encode_file(self.encoder, file_to_encode)
-                
+                    out_file = cbas.encode_file(self.encoder, file_to_encode, progress_callback=progress_updater)
+
                 if out_file:
-                    log_message(f"Finished encoding: {os.path.basename(file_to_encode)}", "INFO")
+                    log_message(f"Finished encoding: {video_basename}", "INFO")
                     with gui_state.classify_lock:
                         gui_state.classify_tasks.append(out_file)
-                    log_message(f"Added '{os.path.basename(out_file)}' to classification queue.", "INFO")
+                        log_message(f"Added '{os.path.basename(out_file)}' to classification queue.", "INFO")
                 else:
-                    log_message(f"Failed to encode: {os.path.basename(file_to_encode)}", "WARN")
+                    log_message(f"Failed to encode: {video_basename}", "WARN")
             else:
-                time.sleep(1)  # Sleep if queue is empty to prevent busy-waiting
+                time.sleep(1)
 
     def get_id(self):
         """Returns the thread's unique identifier."""
