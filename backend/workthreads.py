@@ -532,11 +532,20 @@ class TrainingThread(threading.Thread):
                     log_message(f"New best model in Trial {i + 1} with F1: {f1:.4f}", "INFO")
                     best_f1, best_model, best_reports, best_epoch = f1, trial_model, trial_reports, trial_best_epoch
 
+            # If, after all trials, no model was selected based on validation F1,
+            # it's likely because the validation set was empty. In this case,
+            # we should save the model from the last trial as a fallback.
+            if best_model is None and trial_model is not None:
+                log_message("No validation data available to select best model. Saving model from final trial.", "WARN")
+                best_model = trial_model
+                best_reports = trial_reports
+                best_epoch = trial_best_epoch
+
         if best_model:
             # Pass the raw instance lists down to the saving function
             self._save_training_results(task, best_model, best_reports, best_epoch, train_insts, test_insts)
         else:
-            log_message(f"Training failed for '{task.name}' after {NUM_TRIALS} trials.", "ERROR")
+            log_message(f"Training failed for '{task.name}' after {NUM_TRIALS} trials. No valid model could be trained.", "ERROR")
             eel.updateTrainingStatusOnUI(task.name, f"Training failed after {NUM_TRIALS} trials.")
 
     def _save_training_results(self, task, model, reports, best_epoch_idx, train_insts, test_insts):
@@ -548,7 +557,20 @@ class TrainingThread(threading.Thread):
         best_validation_report = best_report_obj.val_report
         best_validation_cm = best_report_obj.val_cm
         
-        log_message(f"Saving results for best model (Validation F1: {best_validation_report['weighted avg']['f1-score']:.4f})...", "INFO")
+        # Check if the validation report is populated before trying to access it.
+        if best_validation_report and 'weighted avg' in best_validation_report:
+            val_f1_score = best_validation_report['weighted avg'].get('f1-score', 0.0)
+            log_message(f"Saving results for best model (Validation F1: {val_f1_score:.4f})...", "INFO")
+            # The UI update is now safely inside this block
+            eel.updateTrainingStatusOnUI(task.name, f"Training complete. Best Validation F1: {val_f1_score:.4f}")()
+        else:
+            # This branch executes if there was no validation data.
+            log_message("Saving results for best model (no validation data was available).", "INFO")
+            # The UI update is also safely inside this block
+            eel.updateTrainingStatusOnUI(task.name, "Training complete (no validation data).")()
+
+        # Update the UI metrics table. This function is now robust to an empty report.
+                              
         model_dir = os.path.join(gui_state.proj.models_dir, task.name)
         os.makedirs(model_dir, exist_ok=True)
         torch.save(model.state_dict(), os.path.join(model_dir, "model.pth"))
@@ -580,12 +602,12 @@ class TrainingThread(threading.Thread):
         task.dataset.config['model'] = task.name 
         with open(task.dataset.config_path, 'w') as f:
             yaml.dump(task.dataset.config, f, allow_unicode=True)       
-        
-        
+                
         # The UI metrics should reflect the model's performance on unseen (validation) data
         self._update_metrics_in_ui(task.name, best_validation_report, task.behaviors, task.dataset, train_insts, test_insts)
+        
+        # This log message is now the very last thing that happens.
         log_message(f"Training for '{task.name}' complete. Model and reports saved.", "INFO")
-        eel.updateTrainingStatusOnUI(task.name, f"Training complete. Best Validation F1: {best_validation_report['weighted avg']['f1-score']:.4f}")
 
     def _update_metrics_in_ui(self, dataset_name, report_dict, behaviors, dataset_obj, train_insts, test_insts):
         """
@@ -620,6 +642,7 @@ class TrainingThread(threading.Thread):
 
         # --- 3. Update all metrics and counts ---
         for b in behaviors:
+            # Safely get metrics from the report_dict, which might be empty
             metrics = report_dict.get(b, {})
             
             f1 = round(metrics.get("f1-score", 0), 2)

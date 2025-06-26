@@ -498,21 +498,37 @@ class BalancedDataset(torch.utils.data.Dataset):
         for seq, label in zip(sequences, labels):
             if 0 <= label.item() < self.num_behaviors:
                 self.buckets[self.behaviors[label.item()]].append(seq)
+        
+        # Filter out behaviors that have no samples to prevent errors.
+        self.available_behaviors = [b for b in self.behaviors if self.buckets[b]]
+        self.num_available_behaviors = len(self.available_behaviors)
+
         self.total_sequences = sum(len(b) for b in self.buckets.values())
         self.counter = 0
         
     def __len__(self):
-        if self.num_behaviors == 0: return 0
-        return self.total_sequences + (self.num_behaviors - self.total_sequences % self.num_behaviors) % self.num_behaviors
+        # Base the length on the number of *available* behaviors.
+        if self.num_available_behaviors == 0: return 0
+        return self.total_sequences + (self.num_available_behaviors - self.total_sequences % self.num_available_behaviors) % self.num_available_behaviors
         
     def __getitem__(self, idx: int):
-        if self.num_behaviors == 0: raise IndexError("No behaviors defined.")
-        b_idx = self.counter % self.num_behaviors
+        if self.num_available_behaviors == 0:
+            raise IndexError("No behaviors with samples available in this dataset split.")
+
+        # Cycle through only the behaviors that actually have samples.
+        b_idx_in_available = self.counter % self.num_available_behaviors
+        b_name = self.available_behaviors[b_idx_in_available]
+        
+        # Get the original index of this behavior to return the correct label tensor.
+        original_b_idx = self.behaviors.index(b_name)
+        
         self.counter += 1
-        b_name = self.behaviors[b_idx]
-        if not self.buckets[b_name]: raise IndexError(f"Behavior '{b_name}' has no samples.")
+        
+        # The original check is now implicitly handled by the loop.
+        # This line is no longer needed: if not self.buckets[b_name]: raise IndexError(f"Behavior '{b_name}' has no samples.")
+        
         sample_idx = idx % len(self.buckets[b_name])
-        return self.buckets[b_name][sample_idx], torch.tensor(b_idx).long()
+        return self.buckets[b_name][sample_idx], torch.tensor(original_b_idx).long()
 
 class Project:
     def __init__(self, path: str):
@@ -790,7 +806,10 @@ class PerformanceReport:
 def train_lstm_model(train_set, test_set, seq_len: int, behaviors: list, cancel_event: threading.Event, batch_size=512, lr=1e-4, epochs=10, device=None, class_weights=None, patience=3) -> tuple:
     if len(train_set) == 0: return None, None, -1
     if device is None: device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    train_loader = torch.utils.data.DataLoader(train_set, batch_size, shuffle=True, collate_fn=collate_fn, num_workers=0, pin_memory=(device.type == 'cuda'), drop_last=True)
+
+    # Set drop_last=False to ensure at least one batch is processed for small datasets
+    train_loader = torch.utils.data.DataLoader(train_set, batch_size, shuffle=True, collate_fn=collate_fn, num_workers=0, pin_memory=(device.type == 'cuda'), drop_last=False)
+    
     test_loader = torch.utils.data.DataLoader(test_set, batch_size, shuffle=False, collate_fn=collate_fn) if len(test_set) > 0 else None
     model = classifier_head.classifier(in_features=768, out_features=len(behaviors), seq_len=seq_len).to(device)
     optimizer = optim.Adam(model.parameters(), lr=lr)
@@ -824,7 +843,17 @@ def train_lstm_model(train_set, test_set, seq_len: int, behaviors: list, cancel_
                 logits = model.forward_nodrop(d.to(device).float())
                 train_actuals.extend(l.cpu().numpy())
                 train_predictions.extend(logits.argmax(1).cpu().numpy())
-        train_report = classification_report(train_actuals, train_predictions, target_names=behaviors, output_dict=True, zero_division=0)
+        
+        if not train_actuals:
+            print(f"--- Epoch {e+1} | No training data processed in this epoch. Skipping report. ---")
+            # If there's no data, we can't determine if the model improved, so continue
+            epochs_no_improve += 1 
+            if epochs_no_improve >= patience:
+                print(f"Early stopping triggered due to lack of processed data.")
+                break
+            continue # Skip to the next epoch
+
+        train_report = classification_report(train_actuals, train_predictions, target_names=behaviors, output_dict=True, zero_division=0, labels=range(len(behaviors)))
         train_cm = confusion_matrix(train_actuals, train_predictions, labels=range(len(behaviors)))
         val_report, val_cm = {}, np.array([])
         if test_loader:
@@ -835,7 +864,7 @@ def train_lstm_model(train_set, test_set, seq_len: int, behaviors: list, cancel_
                     val_actuals.extend(l.cpu().numpy())
                     val_predictions.extend(logits.argmax(1).cpu().numpy())
             if val_actuals:
-                val_report = classification_report(val_actuals, val_predictions, target_names=behaviors, output_dict=True, zero_division=0)
+                val_report = classification_report(val_actuals, val_predictions, target_names=behaviors, output_dict=True, zero_division=0, labels=range(len(behaviors)))
                 val_cm = confusion_matrix(val_actuals, val_predictions, labels=range(len(behaviors)))
         epoch_reports.append(PerformanceReport(train_report, train_cm, val_report, val_cm))
         current_val_f1 = val_report.get("weighted avg", {}).get("f1-score", -1.0)
@@ -849,11 +878,16 @@ def train_lstm_model(train_set, test_set, seq_len: int, behaviors: list, cancel_
             print(f"Early stopping triggered after {patience} epochs with no improvement.")
             from workthreads import log_message
             log_message(f"Early stopping triggered at epoch {e + 1}.", "INFO")
-            break
+            break                      
+            
+    # If no best model was ever selected (e.g., no validation set) but the
+    # training ran, save the state from the very last epoch as a fallback.
     if best_model_state is None and epochs > 0:
         if not test_loader:
              best_model_state = model.state_dict().copy()
              best_epoch = epochs - 1
+             
+             
     if best_model_state:
         final_model = classifier_head.classifier(in_features=768, out_features=len(behaviors), seq_len=seq_len)
         final_model.load_state_dict(best_model_state)

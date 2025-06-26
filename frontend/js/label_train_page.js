@@ -65,22 +65,23 @@ function update_augmentation_progress(percent, label = "Augmenting Dataset...") 
 }
 
 
-// 2. Find and REPLACE the existing startAugmentation function with this new version.
 async function startAugmentation(sourceDatasetName, newDatasetName) {
     if (!sourceDatasetName || !newDatasetName) return;
 
     augmentDatasetBsModal.hide();
     
-    // HIDE the spinner and SHOW the progress bar.
-    document.getElementById('cover-spin').style.visibility = 'hidden';
+    // Do NOT show the full-screen 'cover-spin'.
+    // ONLY show the bottom progress bar. This leaves the UI responsive.
     update_augmentation_progress(0, `Augmenting '${sourceDatasetName}'...`);
 
     try {
-        await eel.create_augmented_dataset(sourceDatasetName, newDatasetName)();
+        // This is a "fire-and-forget" call.
+        // The JavaScript thread is immediately free to receive other events.
+        eel.create_augmented_dataset(sourceDatasetName, newDatasetName)();
     } catch (error) {
+        // This catch block will now only catch errors if the eel call itself fails to launch.
         showErrorOnLabelTrainPage("An error occurred while trying to start the augmentation task: " + error.message);
-        // Hide the progress bar on error
-        update_augmentation_progress(-1);
+        update_augmentation_progress(-1); // Hide progress bar on launch error.
     }
 }
 
@@ -750,21 +751,24 @@ async function onSessionSelectChange(event) {
 }
 
 eel.expose(refreshAllDatasets);
-async function refreshAllDatasets() {
+function refreshAllDatasets() {
     console.log("Refreshing datasets from disk...");
     document.getElementById('cover-spin').style.visibility = 'visible';
-    try {
-        // 1. Tell Python to reload its data.
-        await eel.reload_project_data()();
-        // 2. NOW, call loadInitialDatasetCards with no arguments. It will fetch
-        //    the newly reloaded data from the backend.
-        await loadInitialDatasetCards();
-    } catch (error) {
+    
+    // Call the backend to reload data. This is a "fire and forget" call from JS.
+    eel.reload_project_data()().then(() => {
+        // This 'then' block executes AFTER the Python function returns.
+        // Now we can safely reload the UI cards.
+        loadInitialDatasetCards().then(() => {
+            // After the cards are loaded, hide the spinner.
+            document.getElementById('cover-spin').style.visibility = 'hidden';
+        });
+    }).catch(error => {
+        // If anything goes wrong, make sure to hide the spinner.
         console.error("Failed to refresh datasets:", error);
         showErrorOnLabelTrainPage("An error occurred while trying to refresh the datasets.");
-    } finally {
         document.getElementById('cover-spin').style.visibility = 'hidden';
-    }
+    });
 }
 
 async function showVideoSelectionForScratch() {
