@@ -1192,33 +1192,33 @@ async function loadInitialDatasetCards(datasets = null) {
 }
 
 /**
- * Checks if a dataset has any training instances before attempting to show the training modal.
- * If the training set is empty, it shows a helpful error message instead.
+ * Checks if all necessary H5 files for a dataset exist on the backend
+ * before showing the training modal. This acts as a pre-flight check
+ * to prevent training from starting prematurely after augmentation.
  * @param {string} datasetName - The name of the dataset to check.
  */
-function checkAndShowTrainModal(datasetName) {
-    // Find all the 'Train #' cells for this specific dataset card
-    const trainCountCells = document.querySelectorAll(`[id^="${datasetName}-"][id$="-train-count"]`);
-    
-    let totalTrainInstances = 0;
-    trainCountCells.forEach(cell => {
-        // The text is formatted like "65 (1950)". We want the first number.
-        const instanceCount = parseInt(cell.innerText.split(' ')[0], 10);
-        if (!isNaN(instanceCount)) {
-            totalTrainInstances += instanceCount;
-        }
-    });
+async function checkAndShowTrainModal(datasetName) {
+    document.getElementById('cover-spin').style.visibility = 'visible';
+    try {
+        // We will create this new eel function in the backend.
+        const [isReady, message] = await eel.check_dataset_files_ready(datasetName)();
 
-    // If there are instances to train on, proceed as normal
-    if (totalTrainInstances > 0) {
-        showTrainModal(datasetName); // This is your original function
-    } else {
-        // Otherwise, show the specific, actionable error message
-        showErrorOnLabelTrainPage(
-            `Training Failed: No Training Data\n\n` +
-            `CBAS must reserve some labeled data for testing, but you have only labeled one video. This forces the entire video into the test set, leaving nothing to train on.\n\n` +
-            `Solution: Click the "Augment" button on the '${datasetName}' card. This will automatically create a second, virtual video, allowing the training to proceed.`
-        );
+        if (isReady) {
+            // All files are present, proceed to show the training modal.
+            showTrainModal(datasetName);
+        } else {
+            // Files are missing, show a helpful error message.
+            showErrorOnLabelTrainPage(
+                `Dataset Not Ready for Training\n\n` +
+                `${message}\n\n` +
+                `This is normal after augmenting a dataset. Please wait a few moments for the background encoding process to finish and then try again.`
+            );
+        }
+    } catch (error) {
+        console.error("Error during pre-training check:", error);
+        showErrorOnLabelTrainPage("An error occurred while verifying the dataset.");
+    } finally {
+        document.getElementById('cover-spin').style.visibility = 'hidden';
     }
 }
 

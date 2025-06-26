@@ -104,6 +104,11 @@ def stop_live_preview():
     return record_page.stop_live_preview()
 
 # --- Label/Train Page Functions ---
+
+@eel.expose
+def check_dataset_files_ready(name):
+    return label_train_page.check_dataset_files_ready(name)
+
 @eel.expose
 def model_exists(name):
     return label_train_page.model_exists(name)

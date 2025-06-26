@@ -110,6 +110,52 @@ def tab20_map(val: int) -> int:
 # EEL-EXPOSED FUNCTIONS: DATA & CONFIGURATION
 # =================================================================
 
+def check_dataset_files_ready(dataset_name: str) -> tuple[bool, str]:
+    """
+    Performs a pre-flight check to ensure all H5 files for a dataset exist.
+    This prevents training from starting before the EncodeThread is finished.
+    """
+    if not gui_state.proj or dataset_name not in gui_state.proj.datasets:
+        return False, f"Dataset '{dataset_name}' not found."
+
+    try:
+        dataset = gui_state.proj.datasets[dataset_name]
+        with open(dataset.labels_path, 'r') as f:
+            labels_data = yaml.safe_load(f)
+
+        all_video_paths = set(
+            inst['video']
+            for behavior_labels in labels_data.get('labels', {}).values()
+            for inst in behavior_labels if 'video' in inst
+        )
+
+        if not all_video_paths:
+            return False, "The dataset contains no labeled video instances."
+
+        missing_files = []
+        for rel_video_path in all_video_paths:
+            abs_video_path = os.path.join(gui_state.proj.path, rel_video_path)
+            h5_path = os.path.splitext(abs_video_path)[0] + "_cls.h5"
+            if not os.path.exists(h5_path):
+                missing_files.append(os.path.basename(rel_video_path))
+        
+        if not missing_files:
+            return True, "All necessary files are ready for training."
+        else:
+            error_msg = (
+                f"{len(missing_files)} of {len(all_video_paths)} required "
+                f"feature files (.h5) are still missing."
+            )
+            if len(missing_files) <= 3:
+                error_msg += f"\nMissing: {', '.join(missing_files)}"
+            else:
+                error_msg += f"\nMissing: {', '.join(missing_files[:3])}, and others..."
+            
+            return False, error_msg
+
+    except Exception as e:
+        print(f"Error checking dataset files for '{dataset_name}': {e}")
+        return False, f"An unexpected error occurred: {e}"
 
 def model_exists(model_name: str) -> bool:
     """Checks if a model with the given name exists in the current project."""
