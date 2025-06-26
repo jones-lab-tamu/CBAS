@@ -718,15 +718,32 @@ class Project:
                 current_test_size += len(group_to_instances.get(group, []))
         train_groups = [g for g in all_groups if g not in test_groups]
         train_insts = [inst for group in train_groups for inst in group_to_instances[group]]
+        
         test_insts = [inst for group in test_groups for inst in group_to_instances[group]]
         random.shuffle(train_insts)
         random.shuffle(test_insts)
         print(f"Stratified Group Split: {len(train_insts)} train instances, {len(test_insts)} test instances.")
         print(f"  - Train groups: {len(train_groups)}, Test groups: {len(test_groups)}")
+        
+        # If stratification results in an empty training set but a populated test set,
+        # (common when only one group exists), fall back to a simple 80/20 split.
+        if not train_insts and test_insts:
+            print("  - [WARN] All labeled data belongs to a single group. Subject-level split is not possible. Falling back to a random 80/20 instance split. Model performance will reflect generalization on new data from the *same* subject, not a new, unseen subject.")
+            # Use all instances from the test set for the split
+            all_insts = test_insts
+            random.shuffle(all_insts)
+            split_idx = int(len(all_insts) * (1 - split))
+            return all_insts[:split_idx], all_insts[split_idx:], behaviors        
+        
         if not test_insts and train_insts:
             print("  - Warning: Stratified split resulted in an empty test set. Falling back to 80/20 instance split.")
+            # Re-use all_insts from the top of the function if this logic is kept
+            # Or, more robustly: all_insts = train_insts
+            all_insts = train_insts
+            random.shuffle(all_insts)
             split_idx = int(len(all_insts) * (1 - split))
             return all_insts[:split_idx], all_insts[split_idx:], behaviors
+
         return train_insts, test_insts, behaviors
         
     def load_dataset(self, name: str, seed: int = 42, split: float = 0.2, seq_len: int = 15, progress_callback=None) -> tuple:
