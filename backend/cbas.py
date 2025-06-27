@@ -208,19 +208,39 @@ class Recording:
         self.path = path
         self.name = os.path.basename(path)
         all_files = [f.path for f in os.scandir(self.path) if f.is_file()]
+        
         def sort_key(filepath):
             match = re.search(r'_(\d+)(?:_aug)?\.mp4', os.path.basename(filepath))
             if match: return int(match.group(1))
             return -1
+            
         self.video_files = sorted([f for f in all_files if f.endswith(".mp4")], key=sort_key)
         self.encoding_files = [f for f in all_files if f.endswith("_cls.h5")]
         self.unencoded_files = [vf for vf in self.video_files if vf.replace(".mp4", "_cls.h5") not in self.encoding_files]
+        
         self.classifications = {}
-        for csv_file in [f for f in all_files if f.endswith(".csv")]:
-            try:
-                model_name = os.path.basename(csv_file).split("_")[-2]
-                self.classifications.setdefault(model_name, []).append(csv_file)
-            except IndexError: continue
+        for csv_file_path in [f for f in all_files if f.endswith(".csv")]:
+            base_name = os.path.basename(csv_file_path)
+            
+            # Ensure the file is a classification output file
+            if base_name.endswith("_outputs.csv"):
+                # Isolate the part of the filename that contains the video name and model name
+                # e.g., "OVX1_00045_cbas_aug" from "OVX1_00045_cbas_aug_outputs.csv"
+                name_part = base_name[:-12] # len("_outputs.csv") is 12
+                
+                # Find which video file this CSV corresponds to by checking prefixes
+                matched_video_base = None
+                for vf in self.video_files:
+                    vf_base = os.path.splitext(os.path.basename(vf))[0]
+                    if name_part.startswith(vf_base):
+                        # We found a match, e.g., "OVX1_00045_cbas_aug" starts with "OVX1_00045"
+                        matched_video_base = vf_base
+                        break
+                
+                if matched_video_base:
+                    # The model name is what's left after removing the video name and the connecting underscore
+                    model_name = name_part[len(matched_video_base) + 1:]
+                    self.classifications.setdefault(model_name, []).append(csv_file_path)
 
 class Camera:
     """Manages configuration and FFMPEG process for a single camera."""

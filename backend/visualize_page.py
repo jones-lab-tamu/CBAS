@@ -26,10 +26,15 @@ def get_recording_tree() -> list:
         return []
 
     dates_list = []
-    for date_str, sessions in gui_state.proj.recordings.items():
-        session_list = []
-        for session_name, recording in sessions.items():
+    # --- The outer key is the session name (which often includes the date) ---
+    for session_name, subjects in gui_state.proj.recordings.items():
+        subject_list = [] # <-- This list will hold the subjects for this session
+        
+        # --- The inner key is the subject/camera name ---
+        for subject_name, recording in subjects.items():
             model_list = []
+            
+            # This part of the logic was correct
             for model_name, classifications in recording.classifications.items():
                 if model_name in gui_state.proj.models:
                     model_config = gui_state.proj.models[model_name].config
@@ -38,10 +43,12 @@ def get_recording_tree() -> list:
                         model_list.append((model_name, behaviors))
             
             if model_list:
-                session_list.append((recording.name, model_list))
+                # --- Append the subject_name and its models ---
+                subject_list.append((subject_name, model_list))
         
-        if session_list:
-            dates_list.append((date_str, session_list))
+        if subject_list:
+            # --- Append the session_name and its list of subjects ---
+            dates_list.append((session_name, subject_list))
     
     return dates_list
 
