@@ -37,6 +37,7 @@ import subprocess
 import shutil
 
 _last_restart_times = {}
+file_watcher_handler = None
 
 # =================================================================
 # LOGGING HELPER
@@ -909,12 +910,12 @@ class VideoFileWatcher(FileSystemEventHandler):
             if files_to_queue_now:
                 with gui_state.encode_lock:
                     for f in files_to_queue_now:
-                        # Only add the file if it's NOT already in the queue from a manual import
+                        # This is the original, simple logic. It just checks if the file
+                        # is already in the encode queue. This is sufficient when the
+                        # manual import worker clears the pending list.
                         if f not in gui_state.encode_tasks:
                             gui_state.encode_tasks.append(f)
                             log_message(f"Queued for encoding (auto-detected): '{os.path.basename(f)}'", "INFO")
-                        else:
-                            log_message(f"Skipping auto-detection for '{os.path.basename(f)}'; it was already queued manually.", "INFO")
 
 
 # =================================================================
@@ -960,12 +961,13 @@ def start_threads():
 
 def start_recording_watcher():
     """Initializes and starts the file system watcher."""
+    global file_watcher_handler # Declare we are using the global variable
     if not gui_state.proj or not os.path.exists(gui_state.proj.recordings_dir): return
     if gui_state.recording_observer and gui_state.recording_observer.is_alive(): return
 
-    event_handler = VideoFileWatcher()
+    file_watcher_handler = VideoFileWatcher() # Assign the instance to our global var
     gui_state.recording_observer = Observer()
-    gui_state.recording_observer.schedule(event_handler, gui_state.proj.recordings_dir, recursive=True)
+    gui_state.recording_observer.schedule(file_watcher_handler, gui_state.proj.recordings_dir, recursive=True)
     gui_state.recording_observer.start()
     log_message(f"Recording watcher started on: {gui_state.proj.recordings_dir}", "INFO")
 

@@ -159,42 +159,41 @@
 	    <!-- =================================================================
 	    GLOBAL ENCODING PROGRESS BAR (Two-Tier)
 	    ================================================================== -->
-	    <div id="encoding-progress-overlay" class="fixed-bottom p-3" style="display: none; background-color: rgba(43, 48, 53, 0.9); z-index: 1045; bottom: 45px;">
-		  <div class="container">
-			  <!-- Overall Queue Progress -->
+	    <!-- =================================================================
+	    PAGE FOOTER (Contains Progress Bar & Log Panel)
+	    ================================================================== -->
+	    <div id="page-footer-container">
+
+		  <!-- Global Encoding Progress Bar -->
+		  <div id="encoding-progress-overlay" class="p-3" style="display: none; background-color: rgba(43, 48, 53, 0.9);">
+		    <div class="container">
 			  <h6 id="encoding-progress-label-overall" class="text-light mb-1 small">Overall Progress...</h6>
 			  <div class="progress mb-2" style="height: 20px;">
-				  <div id="encoding-progress-bar-overall" class="progress-bar progress-bar-striped progress-bar-animated bg-info text-dark" role="progressbar" style="width: 0%;" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">0%</div>
+			    <div id="encoding-progress-bar-overall" class="progress-bar progress-bar-striped progress-bar-animated bg-info text-dark" role="progressbar" style="width: 0%;">0%</div>
 			  </div>
-			  <!-- Current File Progress -->
 			  <h6 id="encoding-progress-label-current" class="text-light mb-1 small" style="font-size: 0.75rem;">Current File...</h6>
 			  <div class="progress" style="height: 10px;">
-				  <div id="encoding-progress-bar-current" class="progress-bar bg-success" role="progressbar" style="width: 0%;" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
+			    <div id="encoding-progress-bar-current" class="progress-bar bg-success" role="progressbar" style="width: 0%;"></div>
 			  </div>
+		    </div>
 		  </div>
-	    </div>
 
+		  <!-- Log Panel -->
+		  <div class="log-panel-footer">
+		    <div class="d-flex justify-content-end p-2 bg-dark">
+			  <button class="btn btn-sm btn-outline-secondary me-2" id="clear-log-btn" data-bs-toggle="tooltip" data-bs-placement="top" title="Clear all messages from the log">Clear Log</button>
+			  <button class="btn btn-sm btn-info" type="button" data-bs-toggle="collapse" data-bs-target="#log-panel-collapse" aria-expanded="false" aria-controls="log-panel-collapse" data-bs-toggle="tooltip" data-bs-placement="top" title="Show/Hide the log panel">
+			    <i class="bi bi-terminal"></i> View Log
+			  </button>
+		    </div>
+		    <div class="collapse" id="log-panel-collapse">
+			  <div id="log-panel-content">
+			    <!-- Log messages will be appended here by JavaScript -->
+			  </div>
+		    </div>
+		  </div>
 
-        <!-- =================================================================
-        LOG PANEL FOOTER
-        ================================================================== -->
-        <div class="log-panel-footer">
-            <!-- This is the button that toggles the panel -->
-            <div class="d-flex justify-content-end p-2 bg-dark">
-                <!-- MODIFIED: Added tooltip attributes -->
-                <button class="btn btn-sm btn-outline-secondary me-2" id="clear-log-btn" data-bs-toggle="tooltip" data-bs-placement="top" title="Clear all messages from the log">Clear Log</button>
-                <!-- MODIFIED: Added tooltip attributes -->
-                <button class="btn btn-sm btn-info" type="button" data-bs-toggle="collapse" data-bs-target="#log-panel-collapse" aria-expanded="false" aria-controls="log-panel-collapse" data-bs-toggle="tooltip" data-bs-placement="top" title="Show/Hide the log panel">
-                    <i class="bi bi-terminal"></i> View Log
-                </button>
-            </div>
-            <!-- This is the collapsible panel itself -->
-            <div class="collapse" id="log-panel-collapse">
-            <div id="log-panel-content">
-                <!-- Log messages will be appended here by JavaScript -->
-            </div>
-            </div>
-        </div>
+	  </div>
         
         <!-- Bootstrap JS Bundle -->
         <script src="libs/bootstrap-5.3.3/js/bootstrap.bundle.min.js"></script>

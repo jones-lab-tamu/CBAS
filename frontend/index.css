@@ -224,14 +224,19 @@ kbd {
 /*# sourceMappingURL=index.css.map */
 
 /* =================================================================
-   LOG PANEL STYLES
+   PAGE FOOTER CONTAINER
    ================================================================= */
-.log-panel-footer {
+#page-footer-container {
     position: fixed;
     bottom: 0;
     left: 0;
     width: 100%;
-    z-index: 1050; /* Above most elements */
+    z-index: 1040; /* Ensure it's on top of content */
+}
+
+/* This is the old class, just remove the fixed positioning from it */
+.log-panel-footer {
+    position: relative; 
 }
 
 /* NEW: Give the toggle bar a fixed height and center its contents */

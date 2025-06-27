@@ -23,6 +23,8 @@ function update_global_encoding_progress(status) {
     const overlay = document.getElementById('encoding-progress-overlay');
     if (!overlay) return;
 
+    const wasHidden = overlay.style.display === 'none';
+
     // Get all the elements
     const overallLabel = document.getElementById('encoding-progress-label-overall');
     const overallBar = document.getElementById('encoding-progress-bar-overall');
@@ -45,6 +47,15 @@ function update_global_encoding_progress(status) {
     overallBar.style.width = `${overallDisplayPercent}%`;
     overallBar.textContent = `${overallDisplayPercent}%`;
     overallBar.setAttribute('aria-valuenow', overallDisplayPercent);
+
+    if (!status || status.overall_total === 0) {
+        overlay.style.display = 'none';
+        if (!wasHidden) updateFooterLayout(); // Update layout if it just became hidden
+        return;
+    }
+    
+    overlay.style.display = 'block';
+    if (wasHidden) updateFooterLayout(); // Update layout if it just became visible
 
     // Update Current File Bar
     const currentDisplayPercent = Math.round(status.current_percent);
@@ -95,6 +106,29 @@ function renderLogMessage(message, container) {
 }
 
 /**
+ * Adjusts the main content padding and FAB positions to prevent overlap with the footer.
+ * This should be called any time the footer's height might change.
+ */
+function updateFooterLayout() {
+    const footerContainer = document.getElementById('page-footer-container');
+    const fabLeft = document.querySelector('.fab-container-left');
+    const fabRight = document.querySelector('.fab-container-right');
+
+    if (!footerContainer) return;
+
+    const footerHeight = footerContainer.offsetHeight;
+
+    // 1. Add padding to the bottom of the body so content can scroll up past the footer.
+    document.body.style.paddingBottom = `${footerHeight + 20}px`;
+
+    // 2. Adjust the position of the Floating Action Buttons.
+    const fabBottomPosition = `${footerHeight + 20}px`;
+    if (fabLeft) fabLeft.style.bottom = fabBottomPosition;
+    if (fabRight) fabRight.style.bottom = fabBottomPosition;
+}
+
+
+/**
  * Initializes the log panel on page load by rendering messages from sessionStorage
  * and attaching all global event listeners.
  */
@@ -117,34 +151,17 @@ function initializeGlobalUI() {
 
     // --- Initialize Log Panel Animation & FABs ---
     const logCollapseElement = document.getElementById('log-panel-collapse');
-    const fabLeft = document.querySelector('.fab-container-left');
-    const fabRight = document.querySelector('.fab-container-right');
-    const contentSpacer = document.getElementById('content-spacer');
-
-    if (logCollapseElement && (fabLeft || fabRight) && contentSpacer) {
-        const fabUpPosition = `${200 + 45 + 20}px`; 
-        const fabDownPosition = '65px';
-        contentSpacer.classList.add('footer-visible');
-
-        logCollapseElement.addEventListener('show.bs.collapse', () => {
-            if (fabLeft) fabLeft.style.bottom = fabUpPosition;
-            if (fabRight) fabRight.style.bottom = fabUpPosition;
-            contentSpacer.classList.remove('footer-visible');
-            contentSpacer.classList.add('log-panel-visible');
-        });
-
-        logCollapseElement.addEventListener('hide.bs.collapse', () => {
-            if (fabLeft) fabLeft.style.bottom = fabDownPosition;
-            if (fabRight) fabRight.style.bottom = fabDownPosition;
-            contentSpacer.classList.remove('log-panel-visible');
-            contentSpacer.classList.add('footer-visible');
-        });
+    if (logCollapseElement) {
+        // Just call our central layout function on show and hide events.
+        logCollapseElement.addEventListener('shown.bs.collapse', updateFooterLayout);
+        logCollapseElement.addEventListener('hidden.bs.collapse', updateFooterLayout);
     }
 }
 
 // Initialize all global UI components when the DOM is ready
 document.addEventListener('DOMContentLoaded', async () => { // Make it async
     initializeGlobalUI();
+    updateFooterLayout(); // Set initial state
 
     // After initializing, synchronize the state with the backend
     if (typeof eel !== 'undefined') {

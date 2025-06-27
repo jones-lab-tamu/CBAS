@@ -62,14 +62,16 @@ def _video_import_worker(session_name: str, subject_name: str, video_paths: list
             except Exception as copy_error:
                 workthreads.log_message(f"Could not copy '{os.path.basename(video_path)}'. Skipping. Error: {copy_error}", "WARN")
 
-        # This is the single, authoritative place where imported files are queued.
         if newly_copied_files:
             with gui_state.encode_lock:
-                # Add only files not already in the queue to be safe.
                 new_files_to_queue = [f for f in newly_copied_files if f not in gui_state.encode_tasks]
                 gui_state.encode_tasks.extend(new_files_to_queue)
             workthreads.log_message(f"Queued {len(new_files_to_queue)} imported files for encoding.", "INFO")
         
+        if workthreads.file_watcher_handler:
+            with workthreads.file_watcher_handler.pending_files_lock:
+                workthreads.file_watcher_handler.pending_files.clear()
+            workthreads.log_message("Cleared automatic file watcher queue to prevent duplicate encoding.", "INFO")
 
         workthreads.log_message(f"Successfully imported {len(video_paths)} video(s).", "INFO")
         eel.notify_import_complete(True, f"Successfully imported {len(video_paths)} video(s) to session '{session_name}' under subject '{subject_name}'.")
@@ -78,7 +80,6 @@ def _video_import_worker(session_name: str, subject_name: str, video_paths: list
         print(f"ERROR in video import worker: {e}")
         traceback.print_exc()
         eel.notify_import_complete(False, f"Import failed: {e}")
-
 
 def color_distance(rgb1, rgb2):
     """Calculates the perceived distance between two RGB colors for contrast checking."""
