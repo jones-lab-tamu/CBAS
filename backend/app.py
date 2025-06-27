@@ -27,6 +27,10 @@ import gui_state
 # EEL EXPOSED FUNCTIONS
 # =================================================================
 
+@eel.expose
+def get_encoding_queue_status():
+    return workthreads.get_encoding_queue_status()
+
 # --- Startup Page Functions ---
 
 @eel.expose

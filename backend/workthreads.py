@@ -279,6 +279,8 @@ class EncodeThread(threading.Thread):
         super().__init__()
         self.device = torch.device(device_str)
         self.cuda_stream = torch.cuda.Stream(device=self.device) if self.device.type == 'cuda' else None
+        self.total_initial_tasks = 0
+        self.tasks_processed_in_batch = 0
         self.encoder = cbas.DinoEncoder(device_str)
 
     def run(self):
@@ -287,23 +289,38 @@ class EncodeThread(threading.Thread):
             file_to_encode = None
             with gui_state.encode_lock:
                 if gui_state.encode_tasks:
+                    if self.total_initial_tasks == 0:
+                        self.total_initial_tasks = len(gui_state.encode_tasks)
+                        self.tasks_processed_in_batch = 0
+                    
                     file_to_encode = gui_state.encode_tasks.pop(0)
 
             if file_to_encode:
                 video_basename = os.path.basename(file_to_encode)
                 log_message(f"Starting encoding for: {video_basename}", "INFO")
 
-                # Define a simple callback that uses the existing log_message function
-                last_reported_percent = -1
-                def progress_updater(percent):
+                # --- Nested callback for dual progress reporting ---
+                def progress_updater(current_file_percent):
+                    status = {
+                        "overall_processed": self.tasks_processed_in_batch,
+                        "overall_total": self.total_initial_tasks,
+                        "current_percent": current_file_percent,
+                        "current_file": video_basename
+                    }
+                    eel.update_global_encoding_progress(status)()
+
+                    # Also log to console/log panel, but less frequently
                     nonlocal last_reported_percent
-                    # Report progress in ~10% increments to avoid spamming the log
-                    current_increment = int(percent // 10)
+                    current_increment = int(current_file_percent // 10)
                     last_increment = int(last_reported_percent // 10)
                     if current_increment > last_increment:
-                        log_message(f"Encoding '{video_basename}': {int(percent)}% complete...", "INFO")
-                        last_reported_percent = percent
+                        log_message(f"Encoding '{video_basename}': {int(current_file_percent)}% complete...", "INFO")
+                        last_reported_percent = current_file_percent
 
+                last_reported_percent = -1
+                progress_updater(0) # Send an initial 0% update for the current file
+
+                # Run the encoding process
                 if self.cuda_stream:
                     with torch.cuda.stream(self.cuda_stream):
                         out_file = cbas.encode_file(self.encoder, file_to_encode, progress_callback=progress_updater)
@@ -312,12 +329,25 @@ class EncodeThread(threading.Thread):
 
                 if out_file:
                     log_message(f"Finished encoding: {video_basename}", "INFO")
+                    self.tasks_processed_in_batch += 1
                     with gui_state.classify_lock:
-                        gui_state.classify_tasks.append(out_file)
-                        log_message(f"Added '{os.path.basename(out_file)}' to classification queue.", "INFO")
+                        if out_file not in gui_state.classify_tasks:
+                            gui_state.classify_tasks.append(out_file)
                 else:
                     log_message(f"Failed to encode: {video_basename}", "WARN")
+                    self.tasks_processed_in_batch += 1
+
+                # Send a final 100% update for the file that just finished
+                progress_updater(100)
+
             else:
+                # This block runs when the queue is empty
+                if self.total_initial_tasks > 0:
+                    status = {"overall_total": 0} # Signal to hide the bar
+                    eel.update_global_encoding_progress(status)()
+                
+                self.total_initial_tasks = 0
+                self.tasks_processed_in_batch = 0
                 time.sleep(1)
 
     def get_id(self):
@@ -879,9 +909,12 @@ class VideoFileWatcher(FileSystemEventHandler):
             if files_to_queue_now:
                 with gui_state.encode_lock:
                     for f in files_to_queue_now:
+                        # Only add the file if it's NOT already in the queue from a manual import
                         if f not in gui_state.encode_tasks:
                             gui_state.encode_tasks.append(f)
-                            log_message(f"Queued for encoding: '{os.path.basename(f)}'", "INFO")
+                            log_message(f"Queued for encoding (auto-detected): '{os.path.basename(f)}'", "INFO")
+                        else:
+                            log_message(f"Skipping auto-detection for '{os.path.basename(f)}'; it was already queued manually.", "INFO")
 
 
 # =================================================================
@@ -1029,3 +1062,21 @@ def sync_labels_worker(source_dataset_name: str, target_dataset_name: str):
         import traceback
         traceback.print_exc()
         eel.showErrorOnLabelTrainPage(f"Label sync failed: {e}")()
+        
+def get_encoding_queue_status():
+    """
+    Returns the current status of the encoding queue for UI synchronization.
+    """
+    # We need to access the tracking variables from the EncodeThread instance
+    if gui_state.encode_thread:
+        thread = gui_state.encode_thread
+        # It's safer to access these attributes directly, as they are simple integers
+        # and don't require a lock for a quick read.
+        processed = thread.tasks_processed_in_batch
+        total = thread.total_initial_tasks
+        
+        # This check is important. If total is 0, it means no batch is running.
+        if total > 0:
+            return {'processed': processed, 'total': total}
+            
+    return {'processed': 0, 'total': 0}

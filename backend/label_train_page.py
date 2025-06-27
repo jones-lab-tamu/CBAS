@@ -62,13 +62,14 @@ def _video_import_worker(session_name: str, subject_name: str, video_paths: list
             except Exception as copy_error:
                 workthreads.log_message(f"Could not copy '{os.path.basename(video_path)}'. Skipping. Error: {copy_error}", "WARN")
 
+        # This is the single, authoritative place where imported files are queued.
         if newly_copied_files:
             with gui_state.encode_lock:
+                # Add only files not already in the queue to be safe.
                 new_files_to_queue = [f for f in newly_copied_files if f not in gui_state.encode_tasks]
                 gui_state.encode_tasks.extend(new_files_to_queue)
             workthreads.log_message(f"Queued {len(new_files_to_queue)} imported files for encoding.", "INFO")
         
-        gui_state.proj.reload_recordings()
 
         workthreads.log_message(f"Successfully imported {len(video_paths)} video(s).", "INFO")
         eel.notify_import_complete(True, f"Successfully imported {len(video_paths)} video(s) to session '{session_name}' under subject '{subject_name}'.")

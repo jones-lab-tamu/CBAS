@@ -85,38 +85,6 @@ async function startAugmentation(sourceDatasetName, newDatasetName) {
     }
 }
 
-eel.expose(update_log_panel);
-function update_log_panel(message) {
-    const logContainer = document.getElementById('log-panel-content');
-    if (!logContainer) return;
-
-    let logHistory = JSON.parse(sessionStorage.getItem('logHistory') || '[]');
-    logHistory.push(message);
-    while (logHistory.length > 500) {
-        logHistory.shift();
-    }
-    sessionStorage.setItem('logHistory', JSON.stringify(logHistory));
-
-    renderLogMessage(message, logContainer);
-    logContainer.scrollTop = logContainer.scrollHeight;
-}
-
-function renderLogMessage(message, container) {
-    const logEntry = document.createElement('div');
-    logEntry.className = 'log-message';
-
-    if (message.includes('[ERROR]')) {
-        logEntry.classList.add('log-level-ERROR');
-    } else if (message.includes('[WARN]')) {
-        logEntry.classList.add('log-level-WARN');
-    } else {
-        logEntry.classList.add('log-level-INFO');
-    }
-    
-    logEntry.textContent = message;
-    container.appendChild(logEntry);
-}
-
 // =================================================================
 // GLOBAL STATE & VARIABLES
 // =================================================================
@@ -1299,22 +1267,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     }
 
-    const logCollapseElement = document.getElementById('log-panel-collapse');
-    if (logCollapseElement) {
-        const fabLeft = document.querySelector('.fab-container-left');
-        const fabRight = document.querySelector('.fab-container-right');
-        const fabUpPosition = `${200 + 45 + 5}px`; 
-        const fabDownPosition = '65px';
-
-        logCollapseElement.addEventListener('show.bs.collapse', () => {
-            if (fabLeft) fabLeft.style.bottom = fabUpPosition;
-            if (fabRight) fabRight.style.bottom = fabUpPosition;
-        });
-        logCollapseElement.addEventListener('hide.bs.collapse', () => {
-            if (fabLeft) fabLeft.style.bottom = fabDownPosition;
-            if (fabRight) fabRight.style.bottom = fabDownPosition;
-        });
-    }
 });
 
 window.addEventListener("keydown", (event) => {

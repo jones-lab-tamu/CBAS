@@ -243,6 +243,24 @@
 
   <div id="cover-spin"></div>
   
+  <!-- =================================================================
+  GLOBAL ENCODING PROGRESS BAR (Two-Tier)
+  ================================================================== -->
+  <div id="encoding-progress-overlay" class="fixed-bottom p-3" style="display: none; background-color: rgba(43, 48, 53, 0.9); z-index: 1045; bottom: 45px;">
+    <div class="container">
+        <!-- Overall Queue Progress -->
+        <h6 id="encoding-progress-label-overall" class="text-light mb-1 small">Overall Progress...</h6>
+        <div class="progress mb-2" style="height: 20px;">
+            <div id="encoding-progress-bar-overall" class="progress-bar progress-bar-striped progress-bar-animated bg-info text-dark" role="progressbar" style="width: 0%;" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">0%</div>
+        </div>
+        <!-- Current File Progress -->
+        <h6 id="encoding-progress-label-current" class="text-light mb-1 small" style="font-size: 0.75rem;">Current File...</h6>
+        <div class="progress" style="height: 10px;">
+            <div id="encoding-progress-bar-current" class="progress-bar bg-success" role="progressbar" style="width: 0%;" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
+        </div>
+    </div>
+  </div>
+  
   <!-- LOG PANEL FOOTER -->
   <div class="log-panel-footer">
     <div class="d-flex justify-content-end p-2 bg-dark">
@@ -260,7 +278,8 @@
 
   <!-- Bootstrap JS Bundle -->
   <script src="libs/bootstrap-5.3.3/js/bootstrap.bundle.min.js"></script>
-  <!-- Custom Page Logic -->
+  <!-- Global & Custom Page Logic -->
+  <script type="text/javascript" src="js/global.js"></script>
   <script type="text/javascript" src="js/record_page.js"></script>
   <!-- Tooltip Initializer -->
   <script>

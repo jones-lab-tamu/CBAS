@@ -6,7 +6,6 @@
 // 1. EEL-EXPOSED FUNCTIONS (API for Python to call)
 // =================================================================
 
-eel.expose(update_log_panel);
 eel.expose(update_live_frame);
 eel.expose(end_live_preview);
 eel.expose(updateImageSrc);
@@ -826,30 +825,6 @@ function drawImageOnCropCanvas(img) {
     imageCtx.drawImage(img, 0, 0, imageCanvas.width, imageCanvas.height);
 }
 
-function update_log_panel(message) {
-    const logContainer = document.getElementById('log-panel-content');
-    if (!logContainer) return;
-    let logHistory = JSON.parse(sessionStorage.getItem('logHistory') || '[]');
-    logHistory.push(message);
-    while (logHistory.length > 500) logHistory.shift();
-    sessionStorage.setItem('logHistory', JSON.stringify(logHistory));
-    renderLogMessage(message, logContainer);
-    logContainer.scrollTop = logContainer.scrollHeight;
-}
-
-function renderLogMessage(message, container) {
-    const logEntry = document.createElement('div');
-    logEntry.className = 'log-message';
-    if (message.includes('[ERROR]')) {
-        logEntry.classList.add('log-level-ERROR');
-    } else if (message.includes('[WARN]')) {
-        logEntry.classList.add('log-level-WARN');
-    } else {
-        logEntry.classList.add('log-level-INFO');
-    }
-    logEntry.textContent = message;
-    container.appendChild(logEntry);
-}
 
 // =================================================================
 // 4. PAGE INITIALIZATION
@@ -923,37 +898,4 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     }
 
-    const logContainer = document.getElementById('log-panel-content');
-    if (logContainer) {
-        const logHistory = JSON.parse(sessionStorage.getItem('logHistory') || '[]');
-        logHistory.forEach(msg => renderLogMessage(msg, logContainer));
-        logContainer.scrollTop = logContainer.scrollHeight;
-        document.getElementById('clear-log-btn')?.addEventListener('click', () => {
-            logContainer.innerHTML = '';
-            sessionStorage.setItem('logHistory', '[]'); 
-            update_log_panel('Log cleared.');
-        });
-        const logCollapseElement = document.getElementById('log-panel-collapse');
-        const fabLeft = document.querySelector('.fab-container-left');
-        const fabRight = document.querySelector('.fab-container-right');
-        const contentSpacer = document.getElementById('content-spacer');
-
-        if(logCollapseElement && fabLeft && fabRight && contentSpacer){
-            const fabUpPosition = `${200 + 45 + 20}px`; 
-            const fabDownPosition = '65px';
-            contentSpacer.classList.add('footer-visible');
-            logCollapseElement.addEventListener('show.bs.collapse', () => {
-                fabLeft.style.bottom = fabUpPosition;
-                fabRight.style.bottom = fabUpPosition;
-                contentSpacer.classList.remove('footer-visible');
-                contentSpacer.classList.add('log-panel-visible');
-            });
-            logCollapseElement.addEventListener('hide.bs.collapse', () => {
-                fabLeft.style.bottom = fabDownPosition;
-                fabRight.style.bottom = fabDownPosition;
-                contentSpacer.classList.remove('log-panel-visible');
-                contentSpacer.classList.add('footer-visible');
-            });
-        }
-    }
 });
