@@ -157,6 +157,10 @@ This will open the folder containing your dataset. Inside, you will find several
 
 By analyzing these files, you can gain confidence in your model's performance and identify which behaviors might need more labeled examples.
 
-## 4. Use Your New Model
+## 4. Next Steps: Using Your Model
 
-After training is complete, the **Infer** button will become active on your dataset card. You can now use your newly trained, custom model to classify behavior in any of your recordings, just as you would with the default model. Congratulations!
+After training is complete, the **Infer** button will become active on your dataset's card. You are now ready to use your model to analyze your video data.
+
+This involves two main steps: **Inference** (running the model on videos) and **Visualization** (viewing the results as actograms). We have a dedicated guide for this entire analysis workflow.
+
+➡️ [**Click here for the guide on Classifying and Visualizing Data**](Analysis.md)
