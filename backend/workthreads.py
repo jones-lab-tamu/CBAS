@@ -388,18 +388,18 @@ class ClassificationThread(threading.Thread):
         while True:
             # Wait for the new_task_event to be set. This is a non-blocking wait.
             # The thread will sleep efficiently until start_inferring() is called.
-            self.new_task_event.wait() 
+            self.new_task_event.wait()
 
             # Once woken up, check if a model is actually loaded
             if not self.torch_model or not self.model_meta:
                 log_message("Classification thread woken up but no model is loaded. Resetting.", "WARN")
                 self.new_task_event.clear() # Clear the event and go back to waiting
                 continue
-            
+
             total_files = 0
             with gui_state.classify_lock:
                 total_files = len(gui_state.classify_tasks)
-            
+
             if total_files > 0:
                 eel.updateTrainingStatusOnUI(self.model_meta.name, f"Processing {total_files} files...")()
 
@@ -414,22 +414,28 @@ class ClassificationThread(threading.Thread):
                         percent_done = ((total_files - remaining_count) / total_files) * 100
                         eel.updateDatasetLoadProgress(self.model_meta.name, percent_done)()
                     else:
-                        # No more tasks in the queue
-                        break 
+                        # No more tasks in the queue, exit the processing loop
+                        break
 
                 if file_to_classify:
                     log_message(f"Classifying: {os.path.basename(file_to_classify)} with model '{self.model_meta.name}'", "INFO")
-                    
+
                     if self.cuda_stream:
                         with torch.cuda.stream(self.cuda_stream):
                             cbas.infer_file(file_to_classify, self.torch_model, self.model_meta.name, self.model_meta.config["behaviors"], self.model_meta.config["seq_len"], device=self.device)
                     else:
                         cbas.infer_file(file_to_classify, self.torch_model, self.model_meta.name, self.model_meta.config["behaviors"], self.model_meta.config["seq_len"], device=self.device)
-            
+
             # --- This block runs after the queue is empty ---
-            log_message(f"Inference queue for model '{self.model_meta.name}' is empty. Classification complete.", "INFO")
-            eel.updateTrainingStatusOnUI(self.model_meta.name, "Inference complete.")()
-            
+            if self.model_meta: # Check if a model was actually run
+                log_message(f"Inference queue for model '{self.model_meta.name}' is empty. Classification complete.", "INFO")
+                eel.updateTrainingStatusOnUI(self.model_meta.name, "Inference complete.")()
+
+                # After finishing, tell the project to re-scan the directories to find the new files.
+                if gui_state.proj:
+                    log_message("Reloading project data to discover new classification files.", "INFO")
+                    gui_state.proj.reload()
+
             # Reset state for the next job
             self.torch_model = None
             self.model_meta = None
