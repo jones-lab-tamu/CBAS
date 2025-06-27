@@ -841,6 +841,9 @@ async function showImportVideosDialog() {
 async function handleImportSubmit() {
     const sessionName = document.getElementById('import-session-name').value;
     const subjectName = document.getElementById('import-subject-name').value;
+	const shouldStandardize = document.getElementById('standardize-video-toggle').checked;
+
+	
     if (!sessionName.trim() || !subjectName.trim()) {
         showErrorOnLabelTrainPage("Session Name and Subject Name cannot be empty.");
         return;
@@ -854,13 +857,13 @@ async function handleImportSubmit() {
     document.getElementById('cover-spin').style.visibility = 'visible';
 
     try {
-        await eel.import_videos(sessionName, subjectName, selectedVideoPathsForImport)();
+        // Pass the new boolean flag to the backend
+        await eel.import_videos(sessionName, subjectName, selectedVideoPathsForImport, shouldStandardize)();
     } catch (error) {
         showErrorOnLabelTrainPage("An error occurred while trying to start the import task: " + error.message);
         document.getElementById('cover-spin').style.visibility = 'hidden';
     }
 }
-
 async function showAddDatasetModal() {
     try {
         const treeContainer = document.getElementById('ad-recording-tree');

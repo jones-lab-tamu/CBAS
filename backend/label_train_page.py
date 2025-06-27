@@ -37,44 +37,71 @@ import time
 # HELPER FUNCTIONS
 # =================================================================
 
-def _video_import_worker(session_name: str, subject_name: str, video_paths: list[str]):
+def _video_import_worker(session_name: str, subject_name: str, video_paths: list[str], standardize: bool):
     """
-    (WORKER) Runs in a separate thread to handle slow file copy operations.
+    (WORKER) Runs in a separate thread. Copies or standardizes imported videos based on user selection
+    before queuing them for encoding.
     """
     try:
-        workthreads.log_message(f"Starting import of {len(video_paths)} videos to session '{session_name}' for subject '{subject_name}'.", "INFO")
+        # Determine action for logging based on the 'standardize' flag
+        action_str = "Standardizing" if standardize else "Copying"
+        workthreads.log_message(f"Starting import: {action_str} {len(video_paths)} videos for session '{session_name}'...", "INFO")
 
         session_dir = os.path.join(gui_state.proj.recordings_dir, session_name)
         final_dest_dir = os.path.join(session_dir, subject_name)
         
-        if os.path.exists(final_dest_dir) and os.listdir(final_dest_dir):
-            raise FileExistsError(f"A folder for subject '{subject_name}' already exists in this session and is not empty.")
-            
         os.makedirs(final_dest_dir, exist_ok=True)
         
-        newly_copied_files = []
+        files_for_queue = []
         for video_path in video_paths:
             try:
                 basename = os.path.basename(video_path)
                 dest_path = os.path.join(final_dest_dir, basename)
-                shutil.copy(video_path, dest_path)
-                newly_copied_files.append(dest_path)
-            except Exception as copy_error:
-                workthreads.log_message(f"Could not copy '{os.path.basename(video_path)}'. Skipping. Error: {copy_error}", "WARN")
 
-        if newly_copied_files:
+                # --- CONDITIONAL LOGIC BASED ON USER'S CHOICE ---
+                if standardize:
+                    # --- Path A: Standardize the video using ffmpeg ---
+                    workthreads.log_message(f"Standardizing '{basename}' to 10fps / 256p...", "INFO")
+                    command = [
+                        'ffmpeg', '-hide_banner', '-loglevel', 'warning', '-y',
+                        '-i', video_path,
+                        '-vf', 'fps=10,scale=256:256:force_original_aspect_ratio=decrease,pad=256:256:(ow-iw)/2:(oh-ih)/2',
+                        '-an', # Remove audio track
+                        dest_path
+                    ]
+                    # Use subprocess.run to wait for ffmpeg to finish for this file
+                    subprocess.run(command, check=True, capture_output=True, text=True)
+                
+                else:
+                    # --- Path B: Just copy the original file as-is ---
+                    workthreads.log_message(f"Copying '{basename}' without changes...", "INFO")
+                    shutil.copy(video_path, dest_path)
+
+                # Whichever path was taken, the `dest_path` is the file to be encoded
+                files_for_queue.append(dest_path)
+
+            except subprocess.CalledProcessError as cpe:
+                workthreads.log_message(f"Could not process '{os.path.basename(video_path)}'. FFMPEG Error: {cpe.stderr}", "ERROR")
+            except Exception as e:
+                workthreads.log_message(f"An unexpected error occurred while processing '{os.path.basename(video_path)}'. Skipping. Error: {e}", "ERROR")
+
+        # --- The rest of the logic is now common to both paths ---
+        if files_for_queue:
             with gui_state.encode_lock:
-                new_files_to_queue = [f for f in newly_copied_files if f not in gui_state.encode_tasks]
+                new_files_to_queue = [f for f in files_for_queue if f not in gui_state.encode_tasks]
                 gui_state.encode_tasks.extend(new_files_to_queue)
-            workthreads.log_message(f"Queued {len(new_files_to_queue)} imported files for encoding.", "INFO")
+            workthreads.log_message(f"Queued {len(new_files_to_queue)} files for encoding.", "INFO")
         
+        # Clear the watcher queue to prevent duplicate encoding
         if workthreads.file_watcher_handler:
             with workthreads.file_watcher_handler.pending_files_lock:
                 workthreads.file_watcher_handler.pending_files.clear()
             workthreads.log_message("Cleared automatic file watcher queue to prevent duplicate encoding.", "INFO")
 
-        workthreads.log_message(f"Successfully imported {len(video_paths)} video(s).", "INFO")
-        eel.notify_import_complete(True, f"Successfully imported {len(video_paths)} video(s) to session '{session_name}' under subject '{subject_name}'.")
+        # Notify the UI that the import process is complete
+        success_msg_action = "imported and standardized" if standardize else "imported"
+        workthreads.log_message(f"Successfully {success_msg_action} {len(files_for_queue)} video(s).", "INFO")
+        eel.notify_import_complete(True, f"Successfully {success_msg_action} {len(files_for_queue)} video(s) to session '{session_name}' under subject '{subject_name}'.")
 
     except Exception as e:
         print(f"ERROR in video import worker: {e}")
@@ -278,10 +305,10 @@ def get_existing_session_names() -> list[str]:
 
 
 
-def import_videos(session_name: str, subject_name: str, video_paths: list[str]) -> bool:
+def import_videos(session_name: str, subject_name: str, video_paths: list[str], standardize: bool) -> bool:
     """
-    (LAUNCHER) Starts the video import process in a background thread.
-    Returns immediately to keep the UI responsive.
+    (LAUNCHER) Spawns the video import process in a background thread,
+    passing the user's choice for standardization.
     """
     if not gui_state.proj or not session_name or not subject_name or not video_paths:
         return False
@@ -290,7 +317,7 @@ def import_videos(session_name: str, subject_name: str, video_paths: list[str]) 
     
     import_thread = threading.Thread(
         target=_video_import_worker,
-        args=(session_name, subject_name, video_paths)
+        args=(session_name, subject_name, video_paths, standardize)
     )
     
     import_thread.daemon = True

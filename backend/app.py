@@ -146,8 +146,8 @@ def get_existing_session_names():
     return label_train_page.get_existing_session_names()
     
 @eel.expose
-def import_videos(s_name, sub_name, paths):
-    return label_train_page.import_videos(s_name, sub_name, paths)
+def import_videos(s_name, sub_name, paths, standardize):
+    return label_train_page.import_videos(s_name, sub_name, paths, standardize)
 
 @eel.expose
 def get_model_configs():
