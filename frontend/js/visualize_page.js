@@ -20,13 +20,36 @@ let actogramDebounceTimer;
 let latestVizTaskId = 0; // The ID of the most recent request sent from the frontend.
 
 // =================================================================
-// ROUTING & UTILITY FUNCTIONS
+// ROUTING & UI MODE FUNCTIONS
 // =================================================================
 
 function routeToRecordPage() { routingInProgress = true; window.location.href = './record.html'; }
 function routeToLabelTrainPage() { routingInProgress = true; window.location.href = './label-train.html'; }
 function routeToVisualizePage() { routingInProgress = true; window.location.href = './visualize.html'; }
 
+/**
+ * Controls the visibility of UI sections based on the selected visualization mode.
+ * This function is called by the onclick events in the HTML.
+ * @param {string} mode - The mode to switch to, either 'actogram' or 'ethogram'.
+ */
+function setVisualizationMode(mode) {
+    const actogramUI = document.getElementById('actogram-mode-ui');
+    const ethogramUI = document.getElementById('ethogram-mode-ui');
+    const titleElement = document.getElementById('visualization-title');
+
+    if (mode === 'actogram') {
+        titleElement.textContent = 'Actogram Analysis';
+        actogramUI.style.display = 'block';
+        ethogramUI.style.display = 'none';
+        initializeActogramUI();
+    } else if (mode === 'ethogram') {
+        titleElement.textContent = 'Ethogram Analysis (Single Video)';
+        actogramUI.style.display = 'none';
+        ethogramUI.style.display = 'block';
+        document.getElementById('ethogram-container').innerHTML = '';
+        initializeEthogramUI();
+    }
+}
 
 function toggleVisibility(elementId) {
     const elem = document.getElementById(elementId);
@@ -38,9 +61,9 @@ function showActogramLoadingIndicator() {
     const container = document.getElementById('actogram-container');
     
     if (spinner) spinner.style.display = "block";
-    // The only action needed is to clear the container.
     if (container) container.innerHTML = ''; 
 }
+
 // =================================================================
 // EEL-EXPOSED FUNCTIONS (Called FROM Python)
 // =================================================================
@@ -68,7 +91,6 @@ function updateActogramDisplay(results, taskId) {
     if (!container) return;
 
     if (results && results.length > 0) {
-        // We have results, so build the actogram cards.
         let html = '';
         const colClass = results.length === 1 ? 'col-12' : 'col-xl-6';
 
@@ -88,7 +110,6 @@ function updateActogramDisplay(results, taskId) {
         });
         container.innerHTML = html;
     } else {
-        // No results, so put the placeholder HTML back into the container.
         container.innerHTML = `
             <div id="actogram-placeholder" class="d-flex align-items-center justify-content-center text-muted"
                  style="border: 1px dashed #6c757d; border-radius: .375rem; height: 300px; background-color: #212529;">
@@ -98,50 +119,23 @@ function updateActogramDisplay(results, taskId) {
     }
 }
 
-eel.expose(save_data_to_file);
-async function save_data_to_file(csvData, defaultFilename) {
-    if (window.electronAPI && window.electronAPI.invoke) {
-        try {
-            // 1. Ask the user where to save the file
-            const filePath = await window.electronAPI.invoke('show-save-dialog', {
-                title: 'Save Actogram Data',
-                defaultPath: defaultFilename,
-                filters: [{ name: 'CSV Files', extensions: ['csv'] }]
-            });
-
-            // 2. If they chose a path, send the data and path to be written to disk
-            if (filePath) {
-                window.electronAPI.send('save-file-to-disk', filePath, csvData);
-            } else {
-                console.log("User cancelled the save dialog.");
-            }
-        } catch (err) {
-            console.error("Save process error:", err);
-            showErrorOnVisualizePage("Could not save the file.");
-        }
-    }
-}
-
 // =================================================================
 // CORE APPLICATION LOGIC
 // =================================================================
 
-/**
- * Gathers all checked behaviors and parameters, then calls the backend to generate actograms.
- */
 async function generateAndDisplayActograms() {
-    // Get a handle to the export button
     const exportBtn = document.getElementById('export-data-btn');
 
     const checkedBehaviors = Array.from(document.querySelectorAll('.behavior-checkbox:checked'));
     
-    latestVizTaskId++; // Increment to create a new, unique ID for this task.
+    latestVizTaskId++;
     const currentTaskId = latestVizTaskId;
     
     if (checkedBehaviors.length === 0) {
         updateActogramDisplay([], currentTaskId);
-        document.getElementById('actogram-title').textContent = 'Actogram';
-        if (exportBtn) exportBtn.disabled = true; // Disable button if nothing is selected
+        // Reset the title when no behaviors are selected
+        document.getElementById('visualization-title').textContent = 'Actogram Analysis';
+        if (exportBtn) exportBtn.disabled = true;
         return;
     }
 
@@ -160,30 +154,25 @@ async function generateAndDisplayActograms() {
 
     if (!framerate || !binsize || !start || !threshold) return;
 
-    document.getElementById('actogram-title').textContent = `Actogram: ${modelName} (Recording: ${sessionDir})`;
+    document.getElementById('visualization-title').textContent = `Actogram: ${modelName} (${sessionDir})`;
     showActogramLoadingIndicator();
 
-    // Enable the export button right before we make the request
     if (exportBtn) exportBtn.disabled = false;
 
     try {
         await eel.generate_actograms(
             rootDir, sessionDir, modelName, behaviorNames,
             framerate, binsize, start, threshold, lightcycle, plotAcrophase,
-            currentTaskId // Send the unique ID with the request
+            currentTaskId
         )();
     } catch (error) {
         console.error("Error calling eel.generate_actograms:", error);
         updateActogramDisplay([], currentTaskId);
         showErrorOnVisualizePage(`Failed to generate actogram(s): ${error.message || error}`);
-        if (exportBtn) exportBtn.disabled = true; // Disable button on error
+        if (exportBtn) exportBtn.disabled = true;
     }
 }
 
-/**
- * Handles a click on a behavior checkbox. It unchecks behaviors from other
- * models to prevent confusion and then triggers the debounced update.
- */
 function handleBehaviorSelection(checkbox) {
     const rootDir = checkbox.dataset.root;
     const sessionDir = checkbox.dataset.session;
@@ -202,18 +191,14 @@ function handleBehaviorSelection(checkbox) {
     actogramDebounceTimer = setTimeout(generateAndDisplayActograms, 200);
 }
 
-/**
- * Initializes the page by fetching the recording tree from Python and building the selection UI.
- */
-async function initializeVisualizePageContent() {
+async function initializeActogramUI() {
     const container = document.getElementById('directories');
     if (!container) return;
 
     try {
         const recordingTree = await eel.get_recording_tree()();
         if (!recordingTree || recordingTree.length === 0) {
-            container.innerHTML = "<p class='text-light'>No classified recordings available.</p>";
-            showErrorOnVisualizePage('No classified recordings found. Please run inference first.');
+            container.innerHTML = "<p class='text-light p-3'>No classified recordings available for actograms.</p>";
             return;
         }
 
@@ -268,11 +253,13 @@ async function exportActogramData() {
         return;
     }
 
-    try {
-        // Step 1: Ask the user to select a FOLDER.
-        const folderPath = await window.electronAPI.invoke('show-folder-dialog');
+    if (!window.electronAPI) {
+        showErrorOnVisualizePage("Export function is not available in this environment.");
+        return;
+    }
 
-        // Step 2: If the user chose a folder, then call the backend.
+    try {
+        const folderPath = await window.electronAPI.invoke('show-folder-dialog');
         if (folderPath) {
             console.log("Folder path chosen, now calling Python to generate and save data.");
             
@@ -287,11 +274,7 @@ async function exportActogramData() {
             const start = document.getElementById('vs-start').value;
             const threshold = document.getElementById('vs-threshold').value;
 
-            // Call the backend with the chosen FOLDER path
-            eel.generate_and_save_data(
-                folderPath, rootDir, sessionDir, modelName, behaviorNames,
-                framerate, binsize, start, threshold
-            )();
+            eel.generate_and_save_data(folderPath, rootDir, sessionDir, modelName, behaviorNames, framerate, binsize, start, threshold)();
         } else {
             console.log("User cancelled the folder selection dialog.");
         }
@@ -301,15 +284,78 @@ async function exportActogramData() {
     }
 }
 
+async function initializeEthogramUI() {
+    const container = document.getElementById('directories');
+    if (!container) return;
+
+    container.innerHTML = '<div class="text-center text-muted p-3">Loading videos...</div>';
+    
+    try {
+        const videoTree = await eel.get_classified_video_tree()();
+        if (!videoTree || videoTree.length === 0) {
+            container.innerHTML = "<p class='text-light p-3'>No classified videos available.</p>";
+            return;
+        }
+
+        let htmlBuilder = '';
+        videoTree.forEach(sessionEntry => {
+            const [sessionName, subjects] = sessionEntry;
+            const sessionId = `etho-sess-${sessionName.replace(/[\W_]+/g, '-')}`;
+            htmlBuilder += `<h5 class='text-light mt-2 hand-cursor' onclick="toggleVisibility('${sessionId}')"><i class="bi bi-camera-reels-fill me-2"></i>${sessionName}</h5>`;
+            htmlBuilder += `<div id='${sessionId}' class='ms-3' style="display:none;">`;
+
+            subjects.forEach(subjectEntry => {
+                const [subjectName, videos] = subjectEntry;
+                const subjectId = `${sessionId}-subj-${subjectName.replace(/[\W_]+/g, '-')}`;
+                htmlBuilder += `<h6 class='text-info mt-1 hand-cursor' onclick="toggleVisibility('${subjectId}')"><i class="bi bi-person-fill me-2"></i>${subjectName}</h6>`;
+                htmlBuilder += `<div id='${subjectId}' class='ms-3' style="display:none;">`;
+
+                videos.forEach(video => {
+                    htmlBuilder += `<div class="small hand-cursor text-light py-1" onclick="generateEthogram('${video.path}')"><i class="bi bi-film me-2"></i>${video.name}</div>`;
+                });
+                htmlBuilder += `</div>`;
+            });
+            htmlBuilder += `</div>`;
+        });
+        container.innerHTML = htmlBuilder;
+    } catch (error) {
+        console.error("Error initializing ethogram UI:", error);
+        container.innerHTML = "<p class='text-danger text-center p-3'>Error loading video data.</p>";
+    }
+}
+
+async function generateEthogram(videoPath) {
+    const ethogramContainer = document.getElementById('ethogram-container');
+    const spinner = document.getElementById('loading-spinner-ethogram');
+    if (!ethogramContainer || !spinner) return;
+
+    spinner.style.display = 'block';
+    ethogramContainer.innerHTML = '';
+
+    try {
+        const result = await eel.generate_ethogram(videoPath)();
+        if (result && result.blob) {
+            ethogramContainer.innerHTML = `<img src="data:image/png;base64,${result.blob}" class="img-fluid" alt="Ethogram for ${result.name}">`;
+        } else {
+            ethogramContainer.innerHTML = '<p class="text-warning">Could not generate ethogram. The classification file might be empty or invalid.</p>';
+        }
+    } catch (error) {
+        console.error("Error generating ethogram:", error);
+        ethogramContainer.innerHTML = '<p class="text-danger">An error occurred while generating the plot.</p>';
+    } finally {
+        spinner.style.display = 'none';
+    }
+}
+
 // =================================================================
 // PAGE INITIALIZATION & EVENT LISTENERS
 // =================================================================
 
 document.addEventListener('DOMContentLoaded', async () => {
-    await new Promise(resolve => setTimeout(resolve, 200)); 
-    
-    initializeVisualizePageContent();
+    // Call the ACTOGRAM initializer by default when the page loads
+    initializeActogramUI();
 
+    // Attach event listeners for the actogram controls
     const adjustmentControlsIds = ['vs-framerate', 'vs-binsize', 'vs-start', 'vs-threshold', 'vs-lcycle', 'vs-acrophase'];
     adjustmentControlsIds.forEach(controlId => {
         const elem = document.getElementById(controlId);

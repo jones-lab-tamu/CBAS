@@ -271,6 +271,14 @@ def generate_and_save_data(out_dir, root, sub, model, behaviors, fr, bs, st, th)
     return visualize_page.generate_and_save_data(out_dir, root, sub, model, behaviors, fr, bs, st, th)
 
 @eel.expose
+def get_classified_video_tree():
+    return visualize_page.get_classified_video_tree()
+
+@eel.expose
+def generate_ethogram(video_path: str):
+    return visualize_page.generate_ethogram(video_path)
+
+@eel.expose
 def kill_all_processes():
     """Forcefully terminates all known child processes (recording and preview)."""
     print("Shutdown signal received from main process. Terminating all child processes...")

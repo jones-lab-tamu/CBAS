@@ -64,74 +64,93 @@
                 </div>
               </div>
           
-              <!-- Column 2: Actogram Display and Controls -->
+              <!-- Column 2: Main Display Area -->
               <div class="col-md-8 col-lg-9">
                 <div class="card bg-dark text-light">
-                  <div class="card-header">
-                    <h5 id="actogram-title">Actogram</h5>
+                  <div class="card-header d-flex justify-content-between align-items-center">
+                    <!-- Title on the left -->
+                    <h5 id="visualization-title">Actogram Analysis</h5>
+                    <!-- Mode Switcher on the right -->
+                    <div class="btn-group btn-group-sm" role="group" aria-label="Visualization Mode">
+                      <input type="radio" class="btn-check" name="viz-mode" id="mode-actogram" autocomplete="off" checked onclick="setVisualizationMode('actogram')">
+                      <label class="btn btn-outline-primary" for="mode-actogram">Actogram</label>
+                    
+                      <input type="radio" class="btn-check" name="viz-mode" id="mode-ethogram" autocomplete="off" onclick="setVisualizationMode('ethogram')">
+                      <label class="btn btn-outline-primary" for="mode-ethogram">Ethogram</label>
+                    </div>
                   </div>
                   <div class="card-body">
-					<!-- Controls Section -->
-					<div class="row mb-3 gy-2">
-					  <div class="col-lg-6 col-xl-3 d-flex align-items-center" data-bs-toggle="tooltip" data-bs-placement="top" title="Framerate of the source video">
-						<label for="vs-framerate" class="form-label me-2 mb-0 text-nowrap">Framerate:</label>
-						<input type="number" class="form-control form-control-sm" id="vs-framerate" value="10" step="1" min="1" max="90">
-					  </div>
-					  <div class="col-lg-6 col-xl-3 d-flex align-items-center" data-bs-toggle="tooltip" data-bs-placement="top" title="Duration of each bin in the actogram (in minutes)">
-						<label for="vs-binsize" class="form-label me-2 mb-0 text-nowrap">Bin Size (min):</label>
-						<input type="number" class="form-control form-control-sm" id="vs-binsize" value="10" step="1" min="1" max="720">
-					  </div>
-					  <div class="col-lg-6 col-xl-3 d-flex align-items-center" data-bs-toggle="tooltip" data-bs-placement="top" title="Hour of the day (0-24) to start the plot">
-						<label for="vs-start" class="form-label me-2 mb-0 text-nowrap">Start Time:</label>
-						<input type="number" class="form-control form-control-sm" id="vs-start" value="0" step="0.01" min="0" max="24">
-					  </div>
-					  <div class="col-lg-6 col-xl-3 d-flex align-items-center" data-bs-toggle="tooltip" data-bs-placement="top" title="Confidence threshold for counting a behavior event">
-						<label for="vs-threshold" class="form-label me-2 mb-0 text-nowrap">Threshold (%):</label>
-						<input type="number" class="form-control form-control-sm" id="vs-threshold" value="50" step="1" min="1" max="100">
-					  </div>
 
-					  <!-- Light Cycle Dropdown -->
-					  <div class="col-lg-6 col-xl-3 d-flex align-items-center mt-2">
-						 <label for="vs-lcycle" class="form-label me-2 mb-0 text-nowrap">Light Cycle:</label>
-						 <select class="form-select form-select-sm" id="vs-lcycle">
-							<option value="LD" selected>LD (12h:12h light:dark)</option>
-							<option value="LL">LL (constant light)</option>
-							<option value="DD">DD (constant dark)</option>
-						 </select>
-					  </div>
-					  <div class="col-lg-6 col-xl-6 d-flex align-items-center justify-content-start mt-2">
-						<div class="form-check">
-						  <input class="form-check-input" type="checkbox" id="vs-acrophase">
-						  <label class="form-check-label text-nowrap" for="vs-acrophase">
-							Plot Acrophase
-						  </label>
-						</div>
-					  </div>			  
-					
-                      <!-- EXPORT BUTTON -->
-                      <div class="col-12 d-flex justify-content-end mt-3">
-                        <button id="export-data-btn" class="btn btn-sm btn-outline-info" onclick="exportActogramData()" disabled data-bs-toggle="tooltip" data-bs-placement="top" title="Export binned actogram data to CSV files">
-                          <i class="bi bi-download me-1"></i> Export Binned Data
-                        </button>
+                    <!-- ================== ACTOGRAM UI CONTAINER ================== -->
+                    <div id="actogram-mode-ui">
+                      <!-- Actogram Controls -->
+                      <div class="row mb-3 gy-2">
+                        <div class="col-lg-6 col-xl-3 d-flex align-items-center" data-bs-toggle="tooltip" data-bs-placement="top" title="Framerate of the source video">
+                          <label for="vs-framerate" class="form-label me-2 mb-0 text-nowrap">Framerate:</label>
+                          <input type="number" class="form-control form-control-sm" id="vs-framerate" value="10" step="1" min="1" max="90">
+                        </div>
+                        <div class="col-lg-6 col-xl-3 d-flex align-items-center" data-bs-toggle="tooltip" data-bs-placement="top" title="Duration of each bin in the actogram (in minutes)">
+                          <label for="vs-binsize" class="form-label me-2 mb-0 text-nowrap">Bin Size (min):</label>
+                          <input type="number" class="form-control form-control-sm" id="vs-binsize" value="10" step="1" min="1" max="720">
+                        </div>
+                        <div class="col-lg-6 col-xl-3 d-flex align-items-center" data-bs-toggle="tooltip" data-bs-placement="top" title="Hour of the day (0-24) to start the plot">
+                          <label for="vs-start" class="form-label me-2 mb-0 text-nowrap">Start Time:</label>
+                          <input type="number" class="form-control form-control-sm" id="vs-start" value="0" step="0.01" min="0" max="24">
+                        </div>
+                        <div class="col-lg-6 col-xl-3 d-flex align-items-center" data-bs-toggle="tooltip" data-bs-placement="top" title="Confidence threshold for counting a behavior event">
+                          <label for="vs-threshold" class="form-label me-2 mb-0 text-nowrap">Threshold (%):</label>
+                          <input type="number" class="form-control form-control-sm" id="vs-threshold" value="50" step="1" min="1" max="100">
+                        </div>
+                        <div class="col-lg-6 col-xl-3 d-flex align-items-center mt-2">
+                          <label for="vs-lcycle" class="form-label me-2 mb-0 text-nowrap">Light Cycle:</label>
+                          <select class="form-select form-select-sm" id="vs-lcycle">
+                             <option value="LD" selected>LD (12h:12h light:dark)</option>
+                             <option value="LL">LL (constant light)</option>
+                             <option value="DD">DD (constant dark)</option>
+                          </select>
+                        </div>
+                        <div class="col-lg-6 col-xl-6 d-flex align-items-center justify-content-start mt-2">
+                          <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="vs-acrophase">
+                            <label class="form-check-label text-nowrap" for="vs-acrophase">Plot Acrophase</label>
+                          </div>
+                        </div>
+                        <div class="col-12 d-flex justify-content-end mt-3">
+                          <button id="export-data-btn" class="btn btn-sm btn-outline-info" onclick="exportActogramData()" disabled data-bs-toggle="tooltip" data-bs-placement="top" title="Export binned actogram data to CSV files">
+                            <i class="bi bi-download me-1"></i> Export Binned Data
+                          </button>
+                        </div>
                       </div>
-					
-					</div>
-                    
-                    <!-- Actogram Image Display -->
-					<div class="text-center mt-3">
-					  <div id="loading-spinner-actogram" class="spinner-border text-light" role="status" style="display: none;">
-						<span class="visually-hidden">Loading...</span>
-					  </div>
-					  
-					  <!-- Single master container -->
-					  <div id="actogram-container" class="row g-3 justify-content-center">
-						<!-- The initial state IS the placeholder. JS will replace this. -->
-						<div id="actogram-placeholder" class="d-flex align-items-center justify-content-center text-muted"
-							 style="border: 1px dashed #6c757d; border-radius: .375rem; height: 300px; background-color: #212529;">
-						  <p class="mb-0 text-light">Select a behavior to generate an actogram.</p>
-						</div>
-					  </div>
-					</div>
+                      
+                      <!-- Actogram Image Display -->
+                      <div class="text-center mt-3">
+                        <div id="loading-spinner-actogram" class="spinner-border text-light" role="status" style="display: none;"><span class="visually-hidden">Loading...</span></div>
+                        <div id="actogram-container" class="row g-3 justify-content-center">
+                          <div id="actogram-placeholder" class="d-flex align-items-center justify-content-center text-muted" style="border: 1px dashed #6c757d; border-radius: .375rem; height: 300px; background-color: #212529;">
+                            <p class="mb-0 text-light">Select a behavior to generate an actogram.</p>
+                          </div>
+                        </div>
+                      </div>
+                    </div> <!-- End of actogram-mode-ui -->
+
+                    <!-- ================== ETHOGRAM UI CONTAINER ================== -->
+                    <div id="ethogram-mode-ui" style="display: none;">
+                        <!-- Ethogram Controls will go here in a future step -->
+                        <div class="row mb-3 gy-2">
+                          <div class="col-12">
+                              <p class="text-muted small">Select a single video from the left panel to generate an ethogram.</p>
+                          </div>
+                        </div>
+
+                        <!-- Ethogram Image Display -->
+                        <div class="text-center mt-3">
+                            <div id="loading-spinner-ethogram" class="spinner-border text-light" role="status" style="display: none;"><span class="visually-hidden">Loading...</span></div>
+                            <div id="ethogram-container" class="justify-content-center">
+                                <!-- The ethogram plot will be injected here by JavaScript -->
+                            </div>
+                        </div>
+                    </div> <!-- End of ethogram-mode-ui -->
+
                   </div>
                 </div>
               </div>
