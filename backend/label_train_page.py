@@ -24,7 +24,7 @@ from datetime import datetime
 import cbas
 import classifier_head
 import gui_state
-from workthreads import log_message 
+import workthreads
 from cmap import Colormap
 
 import eel
