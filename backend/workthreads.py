@@ -276,13 +276,15 @@ def augment_dataset_worker(source_dataset_name: str, new_dataset_name: str):
 
 class EncodeThread(threading.Thread):
     """A background thread that continuously processes video encoding tasks serially."""
-    def __init__(self, device_str: str):
+    # Accept an encoder object, not a string
+    def __init__(self, encoder_model: cbas.DinoEncoder):
         super().__init__()
-        self.device = torch.device(device_str)
+        # Store the received model and its device
+        self.encoder = encoder_model
+        self.device = self.encoder.device
         self.cuda_stream = torch.cuda.Stream(device=self.device) if self.device.type == 'cuda' else None
         self.total_initial_tasks = 0
         self.tasks_processed_in_batch = 0
-        self.encoder = cbas.DinoEncoder(device_str)
 
     def run(self):
         """The main loop for the thread. Pulls tasks from the global queue."""
@@ -942,8 +944,14 @@ def start_threads():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Initializing worker threads on device: {device}")
 
+    # Initialize the DINO Encoder here
+    print("Loading DINOv2 model for encoding thread...")
+    dino_encoder = cbas.DinoEncoder(device=device)
+    print("DINOv2 model loaded.")
+
     gui_state.encode_lock = threading.Lock()
-    gui_state.encode_thread = EncodeThread(device)
+    # Pass the initialized model object to the thread
+    gui_state.encode_thread = EncodeThread(encoder_model=dino_encoder)
     gui_state.encode_thread.daemon = True
     gui_state.encode_thread.start()
 
