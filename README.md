@@ -108,9 +108,17 @@ We have tested the installation instructions to be as straightforward and user-f
 
 ## Setup & Use
 
-*   [**Camera & Recording Setup:** For instructions on configuring RTSP IP cameras and our recommended recording hardware.](Cameras.md)
-*   [**Training a Custom Model:** For a detailed guide on creating a new dataset and training a custom classification model.](Training.md)
-*   [**Understanding the Project Directory:** For a detailed breakdown of the file and folder structure.](ProjectDirectory.md)
+The documentation is organized to follow the logical workflow of a typical project.
+
+*   **1. Hardware & Project Setup**
+    *   [**Hardware & Network Setup:** For instructions on configuring RTSP IP cameras and the recording rig.](Hardware_Setup.md)
+    *   [**Software Installation:** For step-by-step instructions on how to install CBAS.](Installation.md)
+    *   [**Understanding the Project Directory:** For a detailed breakdown of the file and folder structure.](ProjectDirectory.md)
+
+*   **2. Core Workflows**
+    *   [**Recording Video:** For a guide on adding cameras and managing recording sessions in CBAS.](Recording.md)
+    *   [**Training a Custom Model:** For a detailed guide on creating a new dataset and training a model.](Training.md)
+    *   [**Classifying & Visualizing Data:** For a guide on using your trained model to analyze videos and interpret the results.](Analysis.md)
 
 --------------
 ## Hardware Requirements
