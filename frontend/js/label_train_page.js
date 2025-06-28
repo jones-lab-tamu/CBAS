@@ -1276,19 +1276,25 @@ document.addEventListener('DOMContentLoaded', async () => {
     // --- Listeners for various modal/page buttons ---
     document.getElementById('createDatasetButton')?.addEventListener('click', submitCreateDataset);
     document.getElementById('modal-import-button-final')?.addEventListener('click', handleImportSubmit);
+    document.getElementById('trainModelButton')?.addEventListener('click', submitTrainModel); // Ensure this is also present
     
     // --- Listeners for the Labeling UI ---
-    // (This part for the timelines remains unchanged)
     const fullTimelineElement = document.getElementById('full-timeline-image');
     if (fullTimelineElement) {
-        fullTimelineElement.addEventListener('mousedown', function (event) { /* ... */ });
+        fullTimelineElement.addEventListener('mousedown', function (event) {
+            handleMouseMoveForLabelScrub(event);
+            document.addEventListener('mousemove', handleMouseMoveForLabelScrub);
+            document.addEventListener('mouseup', handleMouseUpForLabelScrub, { once: true });
+        });
     }
     const zoomBarImageElement = document.getElementById('zoom-bar-image');
     if (zoomBarImageElement) {
-        zoomBarImageElement.addEventListener('mousedown', function (event) { /* ... */ });
+        zoomBarImageElement.addEventListener('mousedown', function (event) {
+            get_zoom_range_for_click(event.offsetX); // Immediately jump on click
+        });
     }
     
-    // --- NEW, SIMPLIFIED LOGIC for the "Labeling Options" Modal ---
+    // --- Logic for the "Labeling Options" Modal ---
     const manualBtn = document.getElementById('manual-label-btn');
     const guidedBtn = document.getElementById('guided-label-btn');
     const guidedOptionsPanel = document.getElementById('guided-options-panel');
@@ -1296,7 +1302,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     const videoSelectModal = document.getElementById('pl-video-select');
     const modelSelectModal = document.getElementById('pl-model-select');
 
-    // Clicking "Manual Labeling" ALWAYS takes you to the editor.
     if (manualBtn) {
         manualBtn.onclick = () => {
             const videoPath = videoSelectModal.value;
@@ -1306,12 +1311,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
             const datasetName = document.getElementById('pl-dataset-name').innerText;
             preLabelBsModal.hide();
-            // The backend's start_labeling function already correctly loads existing labels.
             prepareAndShowLabelModal(datasetName, videoPath);
         };
     }
     
-    // Clicking "Guided Labeling" reveals the model selection panel.
     if (guidedBtn) {
         guidedBtn.onclick = async () => {
             const videoPath = videoSelectModal.value;
@@ -1324,7 +1327,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             const datasetName = document.getElementById('pl-dataset-name').innerText;
             modelSelectModal.innerHTML = '<option>Loading compatible models...</option>';
             try {
-                // ... (This logic to populate the model dropdown is correct and can be copied from the previous version)
                 const [allDatasetConfigs, allModelConfigs, allModels] = await Promise.all([
                     eel.load_dataset_configs()(), eel.get_model_configs()(), eel.get_available_models()()
                 ]);
@@ -1345,14 +1347,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     if (startPreloadBtn) {
-        // This button's logic is already correct from the previous step.
-        startPreloadBtn.onclick = () => { /* ... */ };
+        // This is the corrected line.
+        startPreloadBtn.onclick = startPreLabeling;
     }
     
     // Reset the modal when it's closed
     preLabelModalElement?.addEventListener('hidden.bs.modal', () => {
         if(guidedOptionsPanel) guidedOptionsPanel.style.display = 'none';
-        videoSelectModal.selectedIndex = 0;
+        if(videoSelectModal) videoSelectModal.selectedIndex = 0;
+        if(modelSelectModal) modelSelectModal.innerHTML = '';
     });
 });
 
