@@ -844,7 +844,7 @@ def add_instance_to_buffer():
     # Get the absolute path of the video currently being labeled
     absolute_video_path = gui_state.label_videos[gui_state.label_vid_index]
     # Create the path relative to the project's root directory
-    relative_video_path = os.path.relpath(absolute_video_path, start=gui_state.proj.path)
+    relative_video_path = os.path.relpath(absolute_video_path, start=gui_state.proj.path).replace('\\', '/')
     
     new_instance = { 
         "video": relative_video_path, # Save the new relative path
