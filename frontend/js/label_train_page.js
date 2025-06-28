@@ -1333,8 +1333,18 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
             guidedOptionsPanel.style.display = 'block';
             
-            const datasetName = document.getElementById('pl-dataset-name').innerText;
+            // Get references to the elements we need to manage
+            const smoothingInput = document.getElementById('pl-smoothing-window');
+            const prelabelBtn = document.getElementById('start-preload-btn');
+
+            // 1. Immediately disable the controls to prevent interaction during loading
             modelSelectModal.innerHTML = '<option>Loading compatible models...</option>';
+            modelSelectModal.disabled = true;
+            if (smoothingInput) smoothingInput.disabled = true;
+            if (prelabelBtn) prelabelBtn.disabled = true;
+
+            const datasetName = document.getElementById('pl-dataset-name').innerText;
+            
             try {
                 const [allDatasetConfigs, allModelConfigs, allModels] = await Promise.all([
                     eel.load_dataset_configs()(), eel.get_model_configs()(), eel.get_available_models()()
@@ -1344,13 +1354,21 @@ document.addEventListener('DOMContentLoaded', async () => {
                     const modelConfig = allModelConfigs[modelName];
                     return modelConfig?.behaviors && [...targetBehaviors].some(b => new Set(modelConfig.behaviors).has(b));
                 });
+
+                // 2. Populate the dropdown and re-enable controls based on the result
                 if (compatibleModels.length > 0) {
                     modelSelectModal.innerHTML = '<option selected disabled>Choose a model...</option>' + compatibleModels.map(name => `<option value="${name}">${name}</option>`).join('');
+                    modelSelectModal.disabled = false;
+                    if (smoothingInput) smoothingInput.disabled = false;
+                    if (prelabelBtn) prelabelBtn.disabled = false; // The button is now useful
                 } else {
                     modelSelectModal.innerHTML = '<option selected disabled>No compatible models found</option>';
+                    // Keep other controls disabled as there's nothing to do
                 }
+
             } catch (e) {
                 modelSelectModal.innerHTML = '<option selected disabled>Error loading models</option>';
+                // Keep controls disabled on error
             }
         };
     }
