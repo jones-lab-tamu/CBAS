@@ -118,6 +118,8 @@ let manageDatasetBsModal = manageDatasetModalElement ? new bootstrap.Modal(manag
 let augmentDatasetBsModal = augmentDatasetModalElement ? new bootstrap.Modal(augmentDatasetModalElement) : null;
 let syncDatasetBsModal = syncDatasetModalElement ? new bootstrap.Modal(syncDatasetModalElement) : null;
 
+let currentLabelingMode = 'scratch'; // Default to 'scratch'
+
 // =================================================================
 // ROUTING & UTILITY FUNCTIONS
 // =================================================================
@@ -440,6 +442,9 @@ function buildLabelingUI(behaviors, colors) {
 
 eel.expose(setLabelingModeUI);
 function setLabelingModeUI(mode, modelName = '') {
+    // Set the global state variable for later use
+    currentLabelingMode = mode;
+
     const controlsHeader = document.querySelector('#controls .card-header');
     const cheatSheet = document.getElementById('labeling-cheat-sheet');
     const saveBtn = document.getElementById('save-labels-btn'); // Get the save button
@@ -501,7 +506,7 @@ function setLabelingModeUI(mode, modelName = '') {
                       <li><kbd>←</kbd> / <kbd>→</kbd> : Step one frame</li>
                       <li><kbd>↑</kbd> / <kbd>↓</kbd> : Double / Halve scrub speed</li>
                       <li><kbd>Click Timeline</kbd> : Jump to frame</li>
-                      <li><kbd>Ctrl</kbd> + <kbd>S</kbd> : Commit Corrections</li>
+                      <li><kbd>Ctrl</kbd> + <kbd>S</kbd> : Save Labels</li>
                     </ul>
                   </div>
                   <div class="col-md-6">
@@ -515,15 +520,15 @@ function setLabelingModeUI(mode, modelName = '') {
                 </div>
               </div>
             </div>`;
-        // Set button text for scratch mode 
-	   saveBtn.innerHTML = '<i class="bi bi-save-fill me-2"></i>Save New Labels';		
+        // Set button text for scratch/manual mode
+        saveBtn.innerHTML = '<i class="bi bi-save-fill me-2"></i>Save New Labels';       
     }
 
+    // This part for the slider remains the same and is correct.
     const confidenceSlider = document.getElementById('confidence-slider');
     const sliderValueDisplay = document.getElementById('slider-value-display');
     const resetSliderBtn = document.getElementById('reset-slider-btn');
     const timelineContainer = document.getElementById('full-timeline-section');
-
     if (confidenceSlider && sliderValueDisplay) {
         confidenceSlider.addEventListener('input', function() {
             sliderValueDisplay.textContent = `${this.value}%`;
@@ -598,11 +603,16 @@ function setConfirmationModeUI(isConfirming) {
         commitBtn.classList.replace('btn-success', 'btn-primary');
         cancelBtn.style.display = 'inline-block';
     } else {
-        commitBtn.innerHTML = '<i class="bi bi-save-fill me-2"></i>Commit Corrections';
+        // Use the state variable to reset the text properly.
+        if (currentLabelingMode === 'review') {
+            commitBtn.innerHTML = '<i class="bi bi-save-fill me-2"></i>Commit Corrections';
+        } else {
+            commitBtn.innerHTML = '<i class="bi bi-save-fill me-2"></i>Save New Labels';
+        }
         commitBtn.classList.replace('btn-primary', 'btn-success');
         cancelBtn.style.display = 'none';
     }
-    return true;	
+    return true;
 }
 
 
@@ -620,30 +630,29 @@ function jumpToFrame() {
 
 function handleCommitClick() {
     const commitBtn = document.getElementById('save-labels-btn');
-    if (commitBtn.innerText.includes("Confirm & Save")) {
-        // This is the second click in the confirmation workflow
-        if (confirm("Are you sure you want to commit these verified labels? This will overwrite previous labels for this video file.")) {
+    const isConfirming = commitBtn.innerText.includes("Confirm & Save");
+
+    // Define messages based on the current mode
+    const confirmationMessage = currentLabelingMode === 'review' 
+        ? "Are you sure you want to commit these verified labels? This will overwrite previous labels for this video file."
+        : "Are you sure you want to save these new labels? This will overwrite any previous labels for this video file.";
+
+    if (isConfirming) {
+        if (confirm(confirmationMessage)) {
             eel.save_session_labels()();
             
-            // Provide temporary feedback on the button
-            const originalText = commitBtn.innerHTML;
             commitBtn.innerHTML = '<i class="bi bi-check-lg"></i> Saved!';
             commitBtn.classList.add('btn-info');
             commitBtn.classList.remove('btn-primary');
             setTimeout(() => {
-                // After 2 seconds, exit the labeling UI and go back to the main view.
-                // The main view will be refreshed automatically when it loads.
                 document.getElementById('label').style.display = 'none';
                 document.getElementById('labeling-cheat-sheet').style.display = 'none';
                 document.getElementById('datasets').style.display = 'block';
                 labelingInterfaceActive = false;
-                
-                // Trigger a full reload of the cards to show the new state.
                 loadInitialDatasetCards(); 
-            }, 1500); // 1.5-second delay to let the user see "Saved!"
+            }, 1500);
         }
     } else {
-        // This is the first click, which stages the commit
         eel.stage_for_commit()();
     }
 }
