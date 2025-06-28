@@ -479,29 +479,50 @@ class Dataset:
         return instances, df
 
 class Actogram:
-    def __init__(self, directory: str, model: str, behavior: str, framerate: float, start: float, binsize_minutes: int, threshold: float, lightcycle: str, plot_acrophase: bool = False, base_color: str = None):
-        self.directory, self.model, self.behavior = directory, model, behavior
+    def __init__(self, behavior: str, framerate: float, start: float, binsize_minutes: int, threshold: float, lightcycle: str, plot_acrophase: bool = False, base_color: str = None, directory: str = None, model: str = None, preloaded_df: pd.DataFrame = None):
+        
+        self.behavior = behavior
         self.framerate, self.start_hour_on_plot = float(framerate), float(start)
         self.threshold, self.bin_size_minutes = float(threshold), int(binsize_minutes)
         self.plot_acrophase = plot_acrophase
         self.lightcycle_str = {"LL": "1"*24, "DD": "0"*24}.get(lightcycle, "1"*12 + "0"*12)
         self.blob = None
         self.binned_activity = []
+
         if self.framerate <= 0 or self.bin_size_minutes <= 0: return
         self.binsize_frames = int(self.bin_size_minutes * self.framerate * 60)
         if self.binsize_frames <= 0: return
+
         activity_per_frame = []
-        all_csvs_for_model = [os.path.join(self.directory, f) for f in os.listdir(self.directory) if f.endswith(f"_{self.model}_outputs.csv")]
-        if not all_csvs_for_model: return
-        try: all_csvs_for_model.sort(key=lambda p: int(re.search(r'_(\d+)_' + self.model, os.path.basename(p)).group(1)))
-        except (AttributeError, ValueError): all_csvs_for_model.sort()
-        for file_path in all_csvs_for_model:
-            df = pd.read_csv(file_path)
-            if df.empty or self.behavior not in df.columns: continue
-            probs = df[self.behavior].to_numpy()
-            is_max = (df[df.columns.drop(self.behavior)].max(axis=1) < probs).to_numpy()
-            activity_per_frame.extend((probs * is_max >= self.threshold).astype(float).tolist())
+        
+        # Use preloaded_df if available 
+        if preloaded_df is not None:
+            if self.behavior in preloaded_df.columns:
+                probs = preloaded_df[self.behavior].to_numpy()
+                is_max = (preloaded_df[preloaded_df.columns.drop(self.behavior)].max(axis=1) < probs).to_numpy()
+                activity_per_frame.extend((probs * is_max >= self.threshold).astype(float).tolist())
+        # Original logic if no preloaded_df
+        elif directory and model:
+            all_csvs_for_model = [os.path.join(directory, f) for f in os.listdir(directory) if f.endswith(f"_{model}_outputs.csv")]
+            if not all_csvs_for_model: return
+            try:
+                all_csvs_for_model.sort(key=lambda p: int(re.search(r'_(\d+)_' + model, os.path.basename(p)).group(1)))
+            except (AttributeError, ValueError):
+                all_csvs_for_model.sort()
+            
+            for file_path in all_csvs_for_model:
+                df = pd.read_csv(file_path)
+                if df.empty or self.behavior not in df.columns: continue
+                probs = df[self.behavior].to_numpy()
+                is_max = (df[df.columns.drop(self.behavior)].max(axis=1) < probs).to_numpy()
+                activity_per_frame.extend((probs * is_max >= self.threshold).astype(float).tolist())
+        else:
+             # Not enough information to proceed
+             return
+            
         if not activity_per_frame: return
+        
+        # Binning and plotting
         self.binned_activity = [np.sum(activity_per_frame[i:i + self.binsize_frames]) for i in range(0, len(activity_per_frame), self.binsize_frames)]
         if not self.binned_activity: return
         fig = _create_matplotlib_actogram(self.binned_activity, [c=="1" for c in self.lightcycle_str], 24.0, self.bin_size_minutes, f"{model} - {behavior}", self.start_hour_on_plot, self.plot_acrophase, base_color)

@@ -15,8 +15,7 @@ let generalErrorBsModal = errorModalElement ? new bootstrap.Modal(errorModalElem
 
 let currentSelection = { root: null, session: null, model: null };
 
-// --- Task & Debounce Management ---
-let actogramDebounceTimer;
+// --- Task Management ---
 let latestVizTaskId = 0; // The ID of the most recent request sent from the frontend.
 
 // =================================================================
@@ -42,6 +41,7 @@ function setVisualizationMode(mode) {
         actogramUI.style.display = 'block';
         ethogramUI.style.display = 'none';
         initializeActogramUI();
+        document.getElementById('generate-actograms-btn').disabled = true;
     } else if (mode === 'ethogram') {
         titleElement.textContent = 'Ethogram Analysis (Single Video)';
         actogramUI.style.display = 'none';
@@ -173,11 +173,16 @@ async function generateAndDisplayActograms() {
     }
 }
 
+/**
+ * Handles a click on a behavior checkbox.
+ * This function NO LONGER triggers plotting directly. It only enables/disables the 'Generate' button.
+ */
 function handleBehaviorSelection(checkbox) {
     const rootDir = checkbox.dataset.root;
     const sessionDir = checkbox.dataset.session;
     const modelName = checkbox.dataset.model;
 
+    // Logic to ensure only behaviors from the same model/subject can be selected at once.
     if (currentSelection.root !== rootDir || currentSelection.session !== sessionDir || currentSelection.model !== modelName) {
         document.querySelectorAll('.behavior-checkbox').forEach(cb => {
             if (cb.dataset.model !== modelName || cb.dataset.session !== sessionDir) {
@@ -187,8 +192,28 @@ function handleBehaviorSelection(checkbox) {
         currentSelection = { root: rootDir, session: sessionDir, model: modelName };
     }
     
-    clearTimeout(actogramDebounceTimer);
-    actogramDebounceTimer = setTimeout(generateAndDisplayActograms, 200);
+    // Check how many boxes are checked and update the button's state.
+    const checkedCount = document.querySelectorAll('.behavior-checkbox:checked').length;
+    const generateBtn = document.getElementById('generate-actograms-btn');
+    if (generateBtn) {
+        generateBtn.disabled = (checkedCount === 0);
+    }
+}
+
+/**
+ * This function is called ONLY when the "Generate Plots" button is clicked.
+ * It gathers all selected behaviors and sends a single request to the backend.
+ */
+function onGenerateClick() {
+    const generateBtn = document.getElementById('generate-actograms-btn');
+    
+    // Disable the button immediately to prevent double-clicks
+    if (generateBtn) {
+        generateBtn.disabled = true;
+    }
+
+    // Call the plotting function
+    generateAndDisplayActograms(); 
 }
 
 async function initializeActogramUI() {
@@ -362,9 +387,15 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (elem) {
             const eventType = (elem.type === 'checkbox' || elem.tagName.toLowerCase() === 'select') ? 'change' : 'input';
             
+            // When a control changes, simply enable the "Generate" button.
             elem.addEventListener(eventType, () => {
-                clearTimeout(actogramDebounceTimer);
-                actogramDebounceTimer = setTimeout(generateAndDisplayActograms, 200);
+                const generateBtn = document.getElementById('generate-actograms-btn');
+                const checkedCount = document.querySelectorAll('.behavior-checkbox:checked').length;
+                
+                // Enable the button ONLY if at least one behavior is also selected.
+                if (generateBtn && checkedCount > 0) {
+                    generateBtn.disabled = false;
+                }
             });
         }
     });
