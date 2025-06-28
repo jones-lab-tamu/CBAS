@@ -243,64 +243,58 @@
   </div>
 </div>
 
-  <!-- Modal for Choosing Labeling Options (From Scratch vs. Pre-Label) -->
-  <div class="modal" tabindex="-1" id="preLabelModal">
-    <div class="modal-dialog modal-dialog-centered">
-      <div class="modal-content">
-        <div class="modal-header">
-          <h5 class="modal-title">Labeling Options</h5>
-          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+<!-- Modal for Choosing Labeling Options -->
+<div class="modal" tabindex="-1" id="preLabelModal">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Labeling Options</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        
+        <p>Choose a video to work on for dataset: <strong id="pl-dataset-name"></strong></p>
+        <div class="mb-3">
+            <label for="pl-video-select" class="form-label small">Video File:</label>
+            <select class="form-select" id="pl-video-select">
+              <!-- Populated by JS -->
+            </select>
         </div>
-        <div class="modal-body">
-          <p>How would you like to label videos for dataset: <strong id="pl-dataset-name"></strong>?</p>
-          <div class="d-grid gap-2">
-            <button class="btn btn-outline-primary" type="button" onclick="showVideoSelectionForScratch()">
-              <i class="bi bi-pen me-2"></i>Start From Scratch
-            </button>
+        <hr>
+        
+        <p class="text-center">How would you like to label this video?</p>
+        <div class="d-grid gap-2">
+          <button class="btn btn-outline-primary" type="button" id="manual-label-btn">
+            <i class="bi bi-pen me-2"></i>Manual Labeling
+          </button>
+          <button class="btn btn-outline-success" type="button" id="guided-label-btn">
+            <i class="bi bi-robot me-2"></i>Guided Labeling (Review & Correct)
+          </button>
+        </div>
+
+        <!-- This panel is hidden by default and only appears for Guided Labeling -->
+        <div id="guided-options-panel" class="mt-3 border-top pt-3" style="display: none;">
+           <p class="small text-muted">Select a model to generate initial labels for your review.</p>
+           <div class="mb-3">
+              <label for="pl-model-select" class="form-label">Model to use:</label>
+              <select class="form-select" id="pl-model-select"></select>
+              <div id="pl-behavior-match-info" class="form-text mt-1"></div>
           </div>
-          <hr>
-          <p class="text-center mb-1">Or pre-label a specific video:</p>
-			<div class="mb-3">
-				<label for="pl-model-select" class="form-label">1. Choose a model to use:</label>
-				<select class="form-select" id="pl-model-select">
-				  <!-- Populated by JS -->
-				</select>
-				<div id="pl-behavior-match-info" class="form-text mt-1"></div>
-			</div>
-
-			<div class="mb-3">
-			  <label for="pl-session-select" class="form-label">2. Choose a recording session:</label>
-			  <select class="form-select" id="pl-session-select" disabled>
-				<!-- Populated by JS -->
-			  </select>
-			</div>
-
-			<div class="mb-3">
-			  <label for="pl-video-select" class="form-label">3. Choose a video to label:</label>
-			  <select class="form-select" id="pl-video-select" disabled>
-				<!-- Populated by JS -->
-			  </select>
-			</div>
-            
-            <!-- SMOOTHING INPUT FIELD -->
-            <hr>
-            <div class="mb-3">
-              <label for="pl-smoothing-window" class="form-label">
-                Smoothing Window (frames):
-                <i class="bi bi-info-circle" data-bs-toggle="tooltip" data-bs-placement="top" title="Applies a median filter to remove behavior events shorter than a given number of frames. Higher values = more smoothing. (Example: On a 10fps video, a value of 15 will filter out events shorter than ~1.5 seconds). A value of 1 disables smoothing."></i>
-              </label>
-              <input type="number" class="form-control" id="pl-smoothing-window" value="15" min="1" step="2">
-            </div>
-
+          <div class="mb-3">
+            <label for="pl-smoothing-window" class="form-label">Smoothing Window (frames):</label>
+            <input type="number" class="form-control" id="pl-smoothing-window" value="15" min="1" step="2">
+          </div>
           <div class="d-grid">
-            <button class="btn btn-outline-success" type="button" onclick="startPreLabeling()">
-              <i class="bi bi-robot me-2"></i>Pre-Label & Correct Selected Video
-            </button>
+              <button class="btn btn-success" id="start-preload-btn">
+                Pre-Label This Video
+              </button>
           </div>
         </div>
+
       </div>
     </div>
   </div>
+</div>
 
   <!-- Modal for Model Training Parameters -->
   <div class="modal" tabindex="-1" id="trainModal">

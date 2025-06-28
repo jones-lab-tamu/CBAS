@@ -193,9 +193,42 @@ def model_exists(model_name: str) -> bool:
 
 
 def load_dataset_configs() -> dict:
-    """Loads configurations for all available datasets."""
-    if not gui_state.proj: return {}
-    return {name: dataset.config for name, dataset in gui_state.proj.datasets.items()}
+    """
+    Loads configurations for all available datasets and determines their current state
+    ('new', 'labeled', 'trained').
+    """
+    if not gui_state.proj:
+        return {}
+        
+    dataset_configs = {}
+    for name, dataset in gui_state.proj.datasets.items():
+        # Start with the existing config
+        config = dataset.config.copy()
+        
+        # --- Determine the state ---
+        # State 1: Has a model been trained from this dataset?
+        model_path = os.path.join(gui_state.proj.models_dir, name, "model.pth")
+        if os.path.exists(model_path):
+            config['state'] = 'trained'
+        else:
+            # State 2: If not trained, does it have any labels?
+            # Check if any behavior in the labels file has at least one entry.
+            has_labels = False
+            if dataset.labels and "labels" in dataset.labels:
+                for behavior_name in dataset.labels["labels"]:
+                    if dataset.labels["labels"][behavior_name]: # Check if the list is not empty
+                        has_labels = True
+                        break
+            
+            if has_labels:
+                config['state'] = 'labeled'
+            else:
+                # State 3: If not trained and no labels, it's new.
+                config['state'] = 'new'
+
+        dataset_configs[name] = config
+        
+    return dataset_configs
 
 
 
@@ -329,6 +362,20 @@ def import_videos(session_name: str, subject_name: str, video_paths: list[str], 
 # EEL-EXPOSED FUNCTIONS: LABELING WORKFLOW & ACTIONS
 # =================================================================
 
+def video_has_labels(dataset_name: str, video_path: str) -> bool:
+    """Checks if a specific video has any existing labels in a given dataset."""
+    if not gui_state.proj: return False
+    dataset = gui_state.proj.datasets.get(dataset_name)
+    if not dataset or not dataset.labels: return False
+    
+    # We need the relative path for comparison with what's in labels.yaml
+    relative_video_path = os.path.relpath(video_path, start=gui_state.proj.path).replace('\\', '/')
+
+    for behavior, instances in dataset.labels.get("labels", {}).items():
+        for instance in instances:
+            if instance.get("video") == relative_video_path:
+                return True # Found at least one label, we can stop early
+    return False
 
 def get_model_configs() -> dict:
     """Loads configurations for all available models."""
@@ -363,19 +410,28 @@ def _start_labeling_worker(name: str, video_to_open: str = None, preloaded_insta
         
         eel.setConfirmationModeUI(False)()
         
+        # 1. Force a reload of the specific dataset object from disk.
+        # This ensures we are ALWAYS working with the latest saved labels.
+        gui_state.proj.datasets[name] = cbas.Dataset(gui_state.proj.datasets[name].path)
         dataset: cbas.Dataset = gui_state.proj.datasets[name]
         gui_state.label_dataset = dataset
+               
+        
         gui_state.label_col_map = Colormap("seaborn:tab20")
-
         print("Loading session buffer...")
         gui_state.label_videos = [video_to_open]
-        current_video_path = gui_state.label_videos[0]
+        
+        # Convert the absolute path from the frontend to a relative path
+        # that matches the format stored in labels.yaml
+        relative_video_path = os.path.relpath(video_to_open, start=gui_state.proj.path).replace('\\', '/')
 
+        # Now, compare against the new relative path
         for b_name, b_insts in gui_state.label_dataset.labels["labels"].items():
             for inst in b_insts:
-                if inst.get("video") == current_video_path:
+                if inst.get("video") == relative_video_path: # This check will now work
                     gui_state.label_session_buffer.append(inst)
-        print(f"Loaded {len(gui_state.label_session_buffer)} existing human labels into buffer.")
+        
+        print(f"Loaded {len(gui_state.label_session_buffer)} existing human labels for '{relative_video_path}' into buffer.")
 
         labeling_mode = 'scratch'
         model_name_for_ui = ''
@@ -519,12 +575,20 @@ def save_session_labels():
     with open(gui_state.label_dataset.labels_path, "w") as file:
         yaml.dump(gui_state.label_dataset.labels, file, allow_unicode=True)
     
+    # After saving, immediately update the instance counts in the config file.
+    # This ensures that the next time the frontend loads configs, the counts are fresh.
+    try:
+        workthreads.log_message(f"Recalculating instance counts for '{gui_state.label_dataset.name}'...", "INFO")
+        gui_state.label_dataset.update_instance_counts_in_config(gui_state.proj)
+        workthreads.log_message(f"Instance counts updated.", "INFO")
+    except Exception as e:
+        workthreads.log_message(f"Could not update instance counts after saving: {e}", "ERROR")
+
     print(f"Saved {len(final_labels_to_save)} human-verified/corrected labels for video {os.path.basename(current_video_path)}.")
     
     gui_state.label_confirmation_mode = False
     eel.setConfirmationModeUI(False)()
     render_image()
-
 
 
 def refilter_instances(new_threshold: int):

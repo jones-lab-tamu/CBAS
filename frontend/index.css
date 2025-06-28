@@ -369,3 +369,7 @@ kbd {
     margin-left: auto;
     margin-right: auto;
 }
+
+#datasets .container-fluid {
+    padding-bottom: 100px; /* Add enough padding to clear the FABs */
+}
