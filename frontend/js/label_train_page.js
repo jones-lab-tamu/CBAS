@@ -338,7 +338,7 @@ function updateMetricsOnPage(datasetName, behaviorName, metricGroupKey, metricVa
 }
 
 eel.expose(updateTrainingStatusOnUI);
-async function updateTrainingStatusOnUI(datasetName, message) {
+function updateTrainingStatusOnUI(datasetName, message) {
     const statusElem = document.getElementById(`dataset-status-${datasetName}`);
     if (!statusElem) return;
 
