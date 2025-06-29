@@ -975,17 +975,22 @@ async function submitTrainModel() {
     const learningRate = document.getElementById('tm-lrate').value;
     const epochsCount = document.getElementById('tm-epochs').value;
     const trainMethod = document.getElementById('tm-method').value;
-    const patience = document.getElementById('tm-patience').value; // Get the new value
+    const patience = document.getElementById('tm-patience').value;
 
-    if (!batchSize || !seqLen || !learningRate || !epochsCount || !patience) { // Add patience to the check
-        showErrorOnLabelTrainPage("All training parameters must be filled."); 
-        return; 
+    if (!batchSize || !seqLen || !learningRate || !epochsCount || !patience) {
+        showErrorOnLabelTrainPage("All training parameters must be filled.");
+        return;
     }
     
-    updateTrainingStatusOnUI(datasetName, "Training task queued...");
-    // Add patience to the eel.train_model call
-    await eel.train_model(datasetName, batchSize, learningRate, epochsCount, seqLen, trainMethod, patience)();
+    // 1. Immediately hide the modal. This makes the UI feel responsive.
     trainBsModal?.hide();
+
+    // 2. Immediately update the status on the card. The user gets instant feedback.
+    updateTrainingStatusOnUI(datasetName, "Training task queued...");
+    
+    // 3. Call the backend function WITHOUT await. This is a "fire-and-forget" call.
+    // The JavaScript thread is now free and the UI is not blocked.
+    eel.train_model(datasetName, batchSize, learningRate, epochsCount, seqLen, trainMethod, patience)();
 }
 
 async function showInferenceModal(datasetName) {

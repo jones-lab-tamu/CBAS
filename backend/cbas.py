@@ -857,7 +857,7 @@ def train_lstm_model(train_set, test_set, seq_len: int, behaviors: list, cancel_
     # Set drop_last=False to ensure at least one batch is processed for small datasets
     train_loader = torch.utils.data.DataLoader(train_set, batch_size, shuffle=True, collate_fn=collate_fn, num_workers=0, pin_memory=(device.type == 'cuda'), drop_last=False)
     
-    test_loader = torch.utils.data.DataLoader(test_set, batch_size, shuffle=False, collate_fn=collate_fn) if len(test_set) > 0 else None
+    test_loader = torch.utils.data.DataLoader(test_set, batch_size, shuffle=False, collate_fn=collate_fn, num_workers=0) if len(test_set) > 0 else None
     model = classifier_head.classifier(in_features=768, out_features=len(behaviors), seq_len=seq_len).to(device)
     optimizer = optim.Adam(model.parameters(), lr=lr)
     loss_weights = torch.tensor(class_weights, dtype=torch.float).to(device) if class_weights else None

@@ -538,9 +538,10 @@ class TrainingThread(threading.Thread):
                 log_message(f"Skipping task for '{task.name}' due to cancellation.", "WARN")
                 return
 
-            eel.updateTrainingStatusOnUI(task.name, "Loading dataset...")()
+            eel.spawn(eel.updateTrainingStatusOnUI(task.name, "Loading dataset..."))
             log_message(f"Loading and processing dataset '{task.name}' for training...", "INFO")
-            def update_progress(p): eel.updateDatasetLoadProgress(task.name, p)()
+            
+            def update_progress(p): eel.spawn(eel.updateDatasetLoadProgress(task.name, p))
             
             train_insts, test_insts = None, None # Initialize
             if task.training_method == "weighted_loss":
@@ -553,7 +554,7 @@ class TrainingThread(threading.Thread):
             if train_ds is None or test_ds is None or train_insts is None or test_insts is None:
                 raise ValueError("Dataset loading returned None. Check for empty labels or other data issues.")
             
-            eel.updateDatasetLoadProgress(task.name, 100)() # Signal completion
+            eel.spawn(eel.updateDatasetLoadProgress(task.name, 100)) # Signal completion
             log_message(f"Dataset '{task.name}' loaded successfully.", "INFO")
  
             if not train_ds or len(train_ds) == 0:
@@ -564,14 +565,21 @@ class TrainingThread(threading.Thread):
                         "This typically happens when only one video has been labeled, forcing the entire video "
                         "into the test set. Please label a second video or use the 'Augment' feature."
                     )
-                    raise ValueError(error_message)
                 else:
                     # The original error for a truly empty dataset
-                    raise ValueError("Dataset is empty or failed to load.")
+                    error_message = f"Training failed for '{task.name}'. The dataset contains no valid labeled instances to train on."
+
+                # Gracefully exit instead of raising an exception
+                log_message(error_message, "ERROR")
+                eel.spawn(eel.updateTrainingStatusOnUI(task.name, error_message))
+                eel.spawn(eel.updateDatasetLoadProgress(task.name, -1))
+                return # Exit the function cleanly
+
         except Exception as e:
             log_message(f"Critical error loading dataset {task.name}: {e}", "ERROR")
-            eel.updateTrainingStatusOnUI(task.name, f"Error loading dataset: {e}")()
-            eel.updateDatasetLoadProgress(task.name, -1)(); return
+            eel.spawn(eel.updateTrainingStatusOnUI(task.name, f"Error loading dataset: {e}"))
+            eel.spawn(eel.updateDatasetLoadProgress(task.name, -1))
+            return
 
         best_model, best_reports, best_epoch = None, None, -1
         best_f1 = -1.0
@@ -580,11 +588,12 @@ class TrainingThread(threading.Thread):
         for i in range(NUM_TRIALS):
             if self.cancel_event.is_set():
                 log_message(f"Cancelling training for '{task.name}' before trial {i+1}.", "WARN")
-                eel.updateTrainingStatusOnUI(task.name, "Training cancelled.")()
+                eel.spawn(eel.updateTrainingStatusOnUI(task.name, "Training cancelled."))
                 return # Exit the entire task execution
 
-            eel.updateTrainingStatusOnUI(task.name, f"Training Trial {i + 1}/{NUM_TRIALS}...")()
+            eel.spawn(eel.updateTrainingStatusOnUI(task.name, f"Training Trial {i + 1}/{NUM_TRIALS}..."))
             log_message(f"Starting training trial {i + 1}/{NUM_TRIALS} for '{task.name}'.", "INFO")
+            
             trial_model, trial_reports, trial_best_epoch = cbas.train_lstm_model(
                 train_ds, test_ds, task.sequence_length, task.behaviors, self.cancel_event,
                 lr=task.learning_rate, batch_size=task.batch_size,
@@ -593,15 +602,13 @@ class TrainingThread(threading.Thread):
             )
 
             if trial_model and trial_reports and trial_best_epoch != -1:
-                # We need to access the VALIDATION report (val_report) to get the F1 score.
-                
                 # Get the PerformanceReport object for the best epoch of this trial
                 best_epoch_report = trial_reports[trial_best_epoch]
                 
                 # Access the f1-score from the validation report inside that object
                 f1 = best_epoch_report.val_report.get("weighted avg", {}).get("f1-score", -1.0)
                                               
-                eel.updateTrainingStatusOnUI(task.name, f"Trial {i + 1} F1: {f1:.4f}")()
+                eel.spawn(eel.updateTrainingStatusOnUI(task.name, f"Trial {i + 1} F1: {f1:.4f}"))
                 if f1 > best_f1:
                     log_message(f"New best model in Trial {i + 1} with F1: {f1:.4f}", "INFO")
                     best_f1, best_model, best_reports, best_epoch = f1, trial_model, trial_reports, trial_best_epoch
@@ -620,7 +627,7 @@ class TrainingThread(threading.Thread):
             self._save_training_results(task, best_model, best_reports, best_epoch, train_insts, test_insts)
         else:
             log_message(f"Training failed for '{task.name}' after {NUM_TRIALS} trials. No valid model could be trained.", "ERROR")
-            eel.updateTrainingStatusOnUI(task.name, f"Training failed after {NUM_TRIALS} trials.")
+            eel.spawn(eel.updateTrainingStatusOnUI(task.name, f"Training failed after {NUM_TRIALS} trials."))
 
     def _save_training_results(self, task, model, reports, best_epoch_idx, train_insts, test_insts):
         """Saves the best model, performance reports, and plots."""
