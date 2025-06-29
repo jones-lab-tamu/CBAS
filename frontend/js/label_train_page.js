@@ -1298,7 +1298,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     // --- Listeners for various modal/page buttons ---
     document.getElementById('createDatasetButton')?.addEventListener('click', submitCreateDataset);
     document.getElementById('modal-import-button-final')?.addEventListener('click', handleImportSubmit);
-    document.getElementById('trainModelButton')?.addEventListener('click', submitTrainModel); // Ensure this is also present
+    document.getElementById('trainModelButton')?.addEventListener('click', submitTrainModel);
+	document.getElementById('startClassificationButton')?.addEventListener('click', submitStartClassification);
     
     // --- Listeners for the Labeling UI ---
     const fullTimelineElement = document.getElementById('full-timeline-image');
