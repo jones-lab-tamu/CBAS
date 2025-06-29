@@ -4,6 +4,8 @@
  * advanced labeling workflow including pre-labeling and instance-based navigation.
  */
 
+let cardRefreshTimeoutId = null;
+
 // =================================================================
 // EEL-EXPOSED & LOG PANEL FUNCTIONS
 // =================================================================
@@ -340,34 +342,32 @@ async function updateTrainingStatusOnUI(datasetName, message) {
     const statusElem = document.getElementById(`dataset-status-${datasetName}`);
     if (!statusElem) return;
 
-    const isFinalState = /complete|failed|cancelled/i.test(message);
+    // A more robust check for any message that indicates a final state.
+    const isFinalState = /complete|failed|cancelled|error/i.test(message);
 
     if (isFinalState) {
-        // Show the final message for a few seconds.
+        // This part is correct: show the final message, then reload the cards.
         statusElem.innerHTML = message;
         statusElem.style.display = 'block';
-        setTimeout(() => {
-            // After the delay, simply reload all the dataset cards.
-            // This is the simplest and most robust way to update the UI.
+        
+        // Store the ID of the timeout before starting it
+        cardRefreshTimeoutId = setTimeout(() => {
             loadInitialDatasetCards();
-        }, 3000); // 3-second delay
+        }, 3000); 
     } else {
-        // This is an in-progress message.
-        if (/training|loading/i.test(message)) {
-            statusElem.innerHTML = `
-                <div class="d-flex justify-content-between align-items-center">
-                    <span>${message}</span>
-                    <button class="btn btn-xs btn-outline-danger py-0" onclick="cancelTraining('${datasetName}')">Cancel</button>
-                </div>`;
-        } else {
-            statusElem.innerHTML = message;
-        }
+        // For ANY message that is not a final state, we assume it's an
+        // in-progress update and should include the Cancel button.
+        statusElem.innerHTML = `
+            <div class="d-flex justify-content-between align-items-center">
+                <span>${message}</span>
+                <button class="btn btn-xs btn-outline-danger py-0" onclick="cancelTraining('${datasetName}')">Cancel</button>
+            </div>`;
         statusElem.style.display = 'block';
     }
-    return true;	
+    return true;
 }
 
-// Add this new function to call the backend to cancel
+// Function to call the backend to cancel
 function cancelTraining(datasetName) {
     if (confirm(`Are you sure you want to cancel the training task for '${datasetName}'?`)) {
         console.log(`Requesting cancellation for training task: ${datasetName}`);
@@ -982,14 +982,22 @@ async function submitTrainModel() {
         return;
     }
     
-    // 1. Immediately hide the modal. This makes the UI feel responsive.
+    // Immediately hide the modal so the user knows their action was accepted.
     trainBsModal?.hide();
 
-    // 2. Immediately update the status on the card. The user gets instant feedback.
+    // If there is a pending card refresh from a previous run, cancel it.
+    // This prevents the old run's refresh from wiping out the UI state of this new run.
+    if (cardRefreshTimeoutId) {
+        clearTimeout(cardRefreshTimeoutId);
+        cardRefreshTimeoutId = null;
+        console.log("Cancelled a pending UI refresh to start a new training task.");
+    }
+
+    // Immediately update the UI to show the new task has been queued.
     updateTrainingStatusOnUI(datasetName, "Training task queued...");
     
-    // 3. Call the backend function WITHOUT await. This is a "fire-and-forget" call.
-    // The JavaScript thread is now free and the UI is not blocked.
+    // Call the backend to start the training process. This is a non-blocking,
+    // "fire-and-forget" call. The UI thread is now free.
     eel.train_model(datasetName, batchSize, learningRate, epochsCount, seqLen, trainMethod, patience)();
 }
 

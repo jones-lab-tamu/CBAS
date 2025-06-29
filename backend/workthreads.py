@@ -540,7 +540,6 @@ class TrainingThread(threading.Thread):
 
             eel.spawn(eel.updateTrainingStatusOnUI(task.name, "Loading dataset..."))
             log_message(f"Loading and processing dataset '{task.name}' for training...", "INFO")
-            
             def update_progress(p): eel.spawn(eel.updateDatasetLoadProgress(task.name, p))
             
             train_insts, test_insts = None, None # Initialize
@@ -574,7 +573,6 @@ class TrainingThread(threading.Thread):
                 eel.spawn(eel.updateTrainingStatusOnUI(task.name, error_message))
                 eel.spawn(eel.updateDatasetLoadProgress(task.name, -1))
                 return # Exit the function cleanly
-
         except Exception as e:
             log_message(f"Critical error loading dataset {task.name}: {e}", "ERROR")
             eel.spawn(eel.updateTrainingStatusOnUI(task.name, f"Error loading dataset: {e}"))
@@ -584,6 +582,9 @@ class TrainingThread(threading.Thread):
         best_model, best_reports, best_epoch = None, None, -1
         best_f1 = -1.0
         NUM_TRIALS = 10
+
+        def training_progress_updater(message: str):
+            eel.spawn(eel.updateTrainingStatusOnUI(task.name, message))
 
         for i in range(NUM_TRIALS):
             if self.cancel_event.is_set():
@@ -598,7 +599,8 @@ class TrainingThread(threading.Thread):
                 train_ds, test_ds, task.sequence_length, task.behaviors, self.cancel_event,
                 lr=task.learning_rate, batch_size=task.batch_size,
                 epochs=task.epochs, device=self.device, class_weights=weights,
-                patience=task.patience
+                patience=task.patience,
+                progress_callback=training_progress_updater
             )
 
             if trial_model and trial_reports and trial_best_epoch != -1:
@@ -608,7 +610,6 @@ class TrainingThread(threading.Thread):
                 # Access the f1-score from the validation report inside that object
                 f1 = best_epoch_report.val_report.get("weighted avg", {}).get("f1-score", -1.0)
                                               
-                eel.spawn(eel.updateTrainingStatusOnUI(task.name, f"Trial {i + 1} F1: {f1:.4f}"))
                 if f1 > best_f1:
                     log_message(f"New best model in Trial {i + 1} with F1: {f1:.4f}", "INFO")
                     best_f1, best_model, best_reports, best_epoch = f1, trial_model, trial_reports, trial_best_epoch

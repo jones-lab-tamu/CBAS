@@ -850,7 +850,7 @@ class PerformanceReport:
         self.val_report = val_report
         self.val_cm = val_cm
         
-def train_lstm_model(train_set, test_set, seq_len: int, behaviors: list, cancel_event: threading.Event, batch_size=512, lr=1e-4, epochs=10, device=None, class_weights=None, patience=3) -> tuple:
+def train_lstm_model(train_set, test_set, seq_len: int, behaviors: list, cancel_event: threading.Event, batch_size=512, lr=1e-4, epochs=10, device=None, class_weights=None, patience=3, progress_callback=None) -> tuple:
     if len(train_set) == 0: return None, None, -1
     if device is None: device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -868,6 +868,10 @@ def train_lstm_model(train_set, test_set, seq_len: int, behaviors: list, cancel_
         if cancel_event.is_set():
             print(f"Cancellation detected within training loop at epoch {e+1}.")
             return None, epoch_reports, best_epoch
+        
+        if progress_callback:
+            progress_callback(f"Training Epoch {e + 1}/{epochs}...")
+        
         model.train()
         for i, (d, l) in enumerate(train_loader):
             d, l = d.to(device).float(), l.to(device)
@@ -915,6 +919,10 @@ def train_lstm_model(train_set, test_set, seq_len: int, behaviors: list, cancel_
                 val_cm = confusion_matrix(val_actuals, val_predictions, labels=range(len(behaviors)))
         epoch_reports.append(PerformanceReport(train_report, train_cm, val_report, val_cm))
         current_val_f1 = val_report.get("weighted avg", {}).get("f1-score", -1.0)
+
+        if progress_callback:
+            progress_callback(f"Epoch {e + 1} Val F1: {current_val_f1:.4f}")
+
         print(f"--- Epoch {e+1} | Train F1: {train_report.get('weighted avg', {}).get('f1-score', -1.0):.4f} | Val F1: {current_val_f1:.4f} ---")
         if current_val_f1 > best_f1:
             best_f1, best_epoch, best_model_state = current_val_f1, e, model.state_dict().copy()
