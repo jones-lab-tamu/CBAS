@@ -683,8 +683,17 @@ class Project:
         os.makedirs(directory, exist_ok=True)
         config_path = os.path.join(directory, "config.yaml")
         labels_path = os.path.join(directory, "labels.yaml")
-        metrics = {b: {"Train #": 0, "Test #": 0, "Precision": "N/A", "Recall": "N/A", "F1 Score": "N/A"} for b in behaviors}
-        dconfig = {"name": name, "behaviors": behaviors, "whitelist": recordings_whitelist, "model": None, "metrics": metrics}
+        
+        # A new dataset should have a minimal config. 
+        # The 'metrics' dictionary should not exist yet.
+        dconfig = {
+            "name": name, 
+            "behaviors": behaviors, 
+            "whitelist": recordings_whitelist, 
+            "model": None
+            # The 'metrics' key is intentionally omitted.
+        }
+
         lconfig = {"behaviors": behaviors, "labels": {b: [] for b in behaviors}}
         with open(config_path, "w") as file: yaml.dump(dconfig, file, allow_unicode=True)
         with open(labels_path, "w") as file: yaml.dump(lconfig, file, allow_unicode=True)
