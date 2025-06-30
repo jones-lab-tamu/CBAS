@@ -287,10 +287,14 @@
               <select class="form-select" id="pl-model-select"></select>
               <div id="pl-behavior-match-info" class="form-text mt-1"></div>
           </div>
-          <div class="mb-3">
-            <label for="pl-smoothing-window" class="form-label">Smoothing Window (frames):</label>
-            <input type="number" class="form-control" id="pl-smoothing-window" value="15" min="1" step="2">
-          </div>
+		  <div class="mb-3">
+		    <label for="pl-smoothing-window" class="form-label">Smoothing Window (frames):
+			  <!-- NEW: Info icon with a helpful tooltip -->
+			  <i class="bi bi-info-circle-fill ms-1" data-bs-toggle="tooltip" data-bs-placement="top" 
+			     title="Removes noisy, single-frame predictions. Higher values create longer, smoother behavior blocks."></i>
+		    </label>
+		    <input type="number" class="form-control" id="pl-smoothing-window" value="15" min="1" step="2">
+		  </div>
           <div class="d-grid">
               <button class="btn btn-success" id="start-preload-btn">
                 Pre-Label This Video
@@ -343,46 +347,50 @@
           <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
         </div>
         <div class="modal-body">
-          <div class="container">
-            <div class="row mb-3">
-              <div class="col">
-                <label for="tm-method" class="form-label">Training Method:</label>
-                <select class="form-select" id="tm-method">
-                  <option value="oversampling" selected>Balanced Sampling (Oversampling)</option>
-                  <option value="weighted_loss">Weighted Loss</option>
-                </select>
-              </div>
-            </div>
-            <div class="row justify-content-center align-items-center g-2">
-              <div class="col">
-                <p>Sequence Length:</p>
-                <input type="number" class="form-control" id="tm-seqlen" value="31" step="2" min="5" max="127">
-              </div>
-              <div class="col">
-                <p>Batch Size:</p>
-                <input type="number" class="form-control" id="tm-batchsize" value="512" step="32" min="32" max="2048">
-              </div>
-            </div>
-            <div class="row justify-content-center align-items-center g-2">
-              <div class="col">
-                <p>Learning Rate:</p>
-                <input type="number" class="form-control" id="tm-lrate" value="0.0001" step=".0001" min="0" max="1">
-              </div>
-              <div class="col">
-                <p>Epochs:</p>
-                <input type="number" class="form-control" id="tm-epochs" value="10" step="1" min="1" max="100">
-              </div>
-            </div>
-			<div class="row justify-content-center align-items-center g-2 mt-2">
-				<div class="col" data-bs-toggle="tooltip" data-bs-placement="top" title="Stop training if validation F1 score does not improve for this many epochs.">
-					<p>Patience:</p>
+		<div class="container">
+			<div class="row mb-3">
+			  <div class="col">
+				<label for="tm-method" class="form-label" data-bs-toggle="tooltip" data-bs-placement="top" title="Recommended: 'Balanced Sampling' helps the model learn rare behaviors by showing them more often. 'Weighted Loss' is an alternative that penalizes mistakes on rare behaviors more heavily. Try it if the default method gives poor results for a specific behavior.">Training Method:</label>
+				<select class="form-select" id="tm-method">
+				  <option value="oversampling" selected>Balanced Sampling (Oversampling)</option>
+				  <option value="weighted_loss">Weighted Loss</option>
+				</select>
+			  </div>
+			</div>
+
+			<!-- Group label and input together inside each column -->
+			<div class="row g-3">
+			  <div class="col">
+				<label for="tm-seqlen" class="form-label" data-bs-toggle="tooltip" data-bs-placement="top" title="The number of frames the model sees at once to make a prediction. Longer sequences can capture longer behaviors.">Sequence Length:</label>
+				<input type="number" class="form-control" id="tm-seqlen" value="31" step="2" min="5" max="127">
+			  </div>
+			  <div class="col">
+				<label for="tm-batchsize" class="form-label" data-bs-toggle="tooltip" data-bs-placement="top" title="How many examples to process at once. Lower this if you get 'Out of Memory' errors.">Batch Size:</label>
+				<input type="number" class="form-control" id="tm-batchsize" value="512" step="32" min="32" max="2048">
+			  </div>
+			</div>
+
+			<div class="row g-3 mt-2">
+			  <div class="col">
+				<label for="tm-lrate" class="form-label" data-bs-toggle="tooltip" data-bs-placement="top" title="Advanced: Controls how much the model learns from its mistakes. The default value is small and stable. It is not recommended to change this.">Learning Rate:</label>
+				<input type="number" class="form-control" id="tm-lrate" value="0.0001" step=".0001" min="0" max="1">
+			  </div>
+			  <div class="col">
+				<label for="tm-epochs" class="form-label" data-bs-toggle="tooltip" data-bs-placement="top" title="How many times the model sees the entire dataset. If the performance plots show the model is still improving at the end of training, you can increase this value to train for longer.">Epochs:</label>
+				<input type="number" class="form-control" id="tm-epochs" value="10" step="1" min="1" max="100">
+			  </div>
+			</div>
+
+			<div class="row g-3 mt-2">
+				<div class="col">
+					<label for="tm-patience" class="form-label" data-bs-toggle="tooltip" data-bs-placement="top" title="Stop training if validation F1 score does not improve for this many epochs.">Patience:</label>
 					<input type="number" class="form-control" id="tm-patience" value="3" step="1" min="1" max="20">
 				</div>
 				<div class="col">
 					<!-- This column is empty to balance the layout -->
 				</div>
-			</div>			
-          </div>
+			</div>	
+		</div>
         </div>
         <div class="modal-footer">
           <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
