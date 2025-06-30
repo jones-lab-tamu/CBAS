@@ -154,7 +154,7 @@ function showManageDatasetModal(datasetName) {
         };
     }
 
-    // Attach event for the new "Recalculate Stats" button
+    // Attach event for the  "Recalculate Stats" button
     const recalcBtn = document.getElementById('recalculateStatsButton');
     if (recalcBtn) {
         recalcBtn.onclick = async () => { // Make this function async
@@ -175,6 +175,30 @@ function showManageDatasetModal(datasetName) {
                 
                 document.getElementById('cover-spin').style.visibility = 'hidden';
                 manageDatasetBsModal.hide();
+            }
+        };
+    }
+	
+    // Event listener for the  delete button
+    const deleteBtn = document.getElementById('deleteDatasetButton');
+    if (deleteBtn) {
+        deleteBtn.onclick = async () => {
+            const confirmationMessage = `Are you sure you want to permanently delete the '${datasetName}' dataset and its trained model?\n\nThis action cannot be undone.`;
+            if (confirm(confirmationMessage)) {
+                document.getElementById('cover-spin').style.visibility = 'visible';
+                try {
+                    const success = await eel.delete_dataset(datasetName)();
+                    if (success) {
+                        manageDatasetBsModal.hide();
+                        refreshAllDatasets(); // Reload the cards to show the deletion
+                    } else {
+                        showErrorOnLabelTrainPage(`Failed to delete dataset '${datasetName}'. Check the logs for more information.`);
+                    }
+                } catch (e) {
+                    showErrorOnLabelTrainPage(`An error occurred: ${e.message}`);
+                } finally {
+                    document.getElementById('cover-spin').style.visibility = 'hidden';
+                }
             }
         };
     }

@@ -261,6 +261,10 @@ def cancel_training_task(name):
 def recalculate_dataset_stats(name):
     return label_train_page.recalculate_dataset_stats(name)
 
+@eel.expose
+def delete_dataset(name: str) -> bool:
+    return label_train_page.delete_dataset(name)
+
 # --- Visualize Page Functions ---
 @eel.expose
 def get_recording_tree():

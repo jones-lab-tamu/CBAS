@@ -208,8 +208,12 @@ def load_dataset_configs() -> dict:
         # --- Determine the state ---
         # State 1: Has a model been trained from this dataset?
         model_path = os.path.join(gui_state.proj.models_dir, name, "model.pth")
-        if os.path.exists(model_path):
+
+        # A dataset is only 'trained' if BOTH the model file exists AND its own dataset folder exists.
+        # This prevents orphaned models from causing UI state issues.
+        if os.path.exists(model_path) and os.path.exists(dataset.path):
             config['state'] = 'trained'
+
         else:
             # State 2: If not trained, does it have any labels?
             # Check if any behavior in the labels file has at least one entry.
@@ -1066,6 +1070,18 @@ def train_model(name: str, batch_size: str, learning_rate: str, epochs: str, seq
 def update_classification_progress(dataset_name, percent):
     """A helper function to call the JavaScript progress bar update function."""
     eel.updateDatasetLoadProgress(dataset_name, percent)()
+
+def delete_dataset(name: str) -> bool:
+    """Handles the request from the frontend to delete a dataset and its model."""
+    if not gui_state.proj:
+        return False
+    try:
+        # We will delegate the actual file system logic to the Project class
+        return gui_state.proj.delete_dataset(name)
+    except Exception as e:
+        workthreads.log_message(f"Failed to delete dataset '{name}': {e}", "ERROR")
+        traceback.print_exc()
+        return False
 
 def start_classification(dataset_name_for_model: str, recordings_whitelist_paths: list[str]):
     """

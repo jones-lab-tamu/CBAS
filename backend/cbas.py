@@ -700,7 +700,44 @@ class Project:
         ds = Dataset(directory)
         self.datasets[name] = ds
         return ds
+    
+    def delete_dataset(self, name: str) -> bool:
+        """
+        Deletes a dataset's folder, its corresponding model folder, and removes
+        them from the in-memory project state.
+        """
+        if name not in self.datasets:
+            print(f"Attempted to delete non-existent dataset: {name}")
+            return False
+
+        print(f"Deleting dataset '{name}' and its associated model...")
         
+        dataset_path = self.datasets[name].path
+        model_path = os.path.join(self.models_dir, name)
+
+        try:
+            # Delete the dataset folder
+            if os.path.isdir(dataset_path):
+                shutil.rmtree(dataset_path)
+                print(f"  - Successfully removed dataset folder: {dataset_path}")
+
+            # Delete the model folder if it exists
+            if os.path.isdir(model_path):
+                shutil.rmtree(model_path)
+                print(f"  - Successfully removed model folder: {model_path}")
+
+            # Remove from the in-memory dictionaries
+            self.datasets.pop(name, None)
+            self.models.pop(name, None)
+            
+            print(f"Deletion of '{name}' complete.")
+            return True
+        except Exception as e:
+            print(f"An error occurred during deletion of '{name}': {e}")
+            # As a safety measure, reload the project state from disk to ensure consistency
+            self.reload()
+            return False
+    
     def convert_instances(self, project_root_path: str, insts: list, seq_len: int, behaviors: list, progress_callback=None) -> tuple:
         seqs, labels = [], []
         half_seqlen = seq_len // 2
