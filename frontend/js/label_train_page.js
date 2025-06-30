@@ -722,34 +722,38 @@ async function onModelSelectChange(event) {
     const datasetName = document.getElementById('pl-dataset-name').innerText;
     
     const infoDiv = document.getElementById('pl-behavior-match-info');
-    infoDiv.innerHTML = '';
+    infoDiv.innerHTML = ''; // Clear previous info
+    if (!modelName) return;
+
     try {
-        const [allModelConfigs, allDatasetConfigs] = await Promise.all([eel.get_model_configs()(), eel.load_dataset_configs()()]);
-        const targetBehaviors = new Set(allDatasetConfigs[datasetName].behaviors);
+        const [allModelConfigs, allDatasetConfigs] = await Promise.all([
+            eel.get_model_configs()(), 
+            eel.load_dataset_configs()()
+        ]);
+        
+        const targetBehaviors = new Set(allDatasetConfigs[datasetName]?.behaviors || []);
         const modelConfig = allModelConfigs[modelName];
 
         if (modelConfig?.behaviors) {
             const modelBehaviors = new Set(modelConfig.behaviors);
-            const matching = [...targetBehaviors].filter(b => modelBehaviors.has(b)).join(', ');
-            const nonMatching = [...targetBehaviors].filter(b => !modelBehaviors.has(b)).join(', ');
-            infoDiv.innerHTML = `Will pre-label for: <strong>${matching}</strong>.`;
-            if (nonMatching) infoDiv.innerHTML += `<br><span class="text-warning">Will ignore: ${nonMatching}</span>`;
+            const matching = [...targetBehaviors].filter(b => modelBehaviors.has(b));
+            const nonMatching = [...targetBehaviors].filter(b => !modelBehaviors.has(b));
+            
+            let infoHTML = '';
+            if (matching.length > 0) {
+                infoHTML += `Will pre-label for: <strong>${matching.join(', ')}</strong>.`;
+            }
+            if (nonMatching.length > 0) {
+                infoHTML += `<br><span class="text-warning small">Will ignore: ${nonMatching.join(', ')}</span>`;
+            }
+            infoDiv.innerHTML = infoHTML || '<span class="text-danger">No matching behaviors found.</span>';
         }
-    } catch(e) { console.error(e); }
-
-    const sessionSelect = document.getElementById('pl-session-select');
-    sessionSelect.disabled = true;
-    sessionSelect.innerHTML = '<option>Loading sessions...</option>';
-    const sessions = await eel.get_inferred_session_dirs(datasetName, modelName)();
-    
-    sessionSelect.innerHTML = '<option selected disabled>Choose a session...</option>';
-    if (sessions?.length > 0) {
-        sessions.forEach(dir => sessionSelect.innerHTML += `<option value="${dir}">${dir}</option>`);
-        sessionSelect.disabled = false;
-    } else {
-        sessionSelect.innerHTML = '<option selected disabled>No inferred sessions</option>';
+    } catch(e) { 
+        console.error("Error updating behavior match info:", e); 
+        infoDiv.innerHTML = '<span class="text-danger">Could not load model info.</span>';
     }
 }
+
 
 async function onSessionSelectChange(event) {
     const sessionDir = event.target.value;
@@ -1143,7 +1147,6 @@ async function loadInitialDatasetCards(datasets = null) {
                 htmlContent += `
                     <div class="card-state-view" id="state-view-labeled-${datasetName}" style="display: ${state === 'labeled' ? 'flex' : 'none'}; flex-direction: column;">
                         <div>
-                            <!-- FIX: Replaced incorrect text with the correct instructional text for this state. -->
                             <p class="small text-muted mb-2">You have labeled examples. You can add more, or train your first model.</p>
                             <div class="table-responsive" style="max-height: 150px;">
                                 <table class="table table-sm table-hover small">
@@ -1408,11 +1411,21 @@ document.addEventListener('DOMContentLoaded', async () => {
         startPreloadBtn.onclick = startPreLabeling;
     }
     
+    // MODIFICATION: Add the onchange event listener to the model selector
+    if (modelSelectModal) {
+        modelSelectModal.addEventListener('change', onModelSelectChange);
+    }
+
     // Reset the modal when it's closed
     preLabelModalElement?.addEventListener('hidden.bs.modal', () => {
         if(guidedOptionsPanel) guidedOptionsPanel.style.display = 'none';
         if(videoSelectModal) videoSelectModal.selectedIndex = 0;
-        if(modelSelectModal) modelSelectModal.innerHTML = '';
+        if(modelSelectModal) {
+            modelSelectModal.innerHTML = '';
+            // Clear the info div as well
+            const infoDiv = document.getElementById('pl-behavior-match-info');
+            if (infoDiv) infoDiv.innerHTML = '';
+        }
     });
 });
 
