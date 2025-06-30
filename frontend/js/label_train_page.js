@@ -362,32 +362,65 @@ function updateMetricsOnPage(datasetName, behaviorName, metricGroupKey, metricVa
 }
 
 eel.expose(updateTrainingStatusOnUI);
-function updateTrainingStatusOnUI(datasetName, message) {
+function updateTrainingStatusOnUI(datasetName, displayMessage, originalMessage = null) {
     const statusElem = document.getElementById(`dataset-status-${datasetName}`);
-    if (!statusElem) return;
+    const progressContainer = document.getElementById(`progress-container-${datasetName}`);
+    const progressBar = document.getElementById(`progress-bar-${datasetName}`);
 
-    // A more robust check for any message that indicates a final state.
-    const isFinalState = /complete|failed|cancelled|error/i.test(message);
+    if (!statusElem || !progressContainer || !progressBar) return;
+
+    // The message for the final state is still the first argument
+    const isFinalState = /complete|failed|cancelled|error/i.test(displayMessage);
+    
+    // We now parse the epoch info from the original, unmodified message
+    const messageForEpochParse = originalMessage || displayMessage;
+    const epochMatch = messageForEpochParse.match(/Epoch (\d+)\s*\/\s*(\d+)/);
 
     if (isFinalState) {
-        // This part is correct: show the final message, then reload the cards.
-        statusElem.innerHTML = message;
+        progressContainer.style.display = 'none';
+        statusElem.innerHTML = displayMessage;
         statusElem.style.display = 'block';
-        
-        // Store the ID of the timeout before starting it
+
+        if (cardRefreshTimeoutId) clearTimeout(cardRefreshTimeoutId);
         cardRefreshTimeoutId = setTimeout(() => {
             loadInitialDatasetCards();
-        }, 3000); 
+        }, 3000);
+
     } else {
-        // For ANY message that is not a final state, we assume it's an
-        // in-progress update and should include the Cancel button.
+        // This is an in-progress message.
+        progressContainer.style.display = 'block';
+        statusElem.style.display = 'block';
+        
+        // Update the status text with the new displayMessage
         statusElem.innerHTML = `
             <div class="d-flex justify-content-between align-items-center">
-                <span>${message}</span>
+                <span>${displayMessage}</span>
                 <button class="btn btn-xs btn-outline-danger py-0" onclick="cancelTraining('${datasetName}')">Cancel</button>
             </div>`;
-        statusElem.style.display = 'block';
+
+        // Logic for updating the bar itself
+        if (epochMatch) {
+            const currentEpoch = parseInt(epochMatch[1]);
+            const totalEpochs = parseInt(epochMatch[2]);
+            const percent = Math.max(1, (currentEpoch / totalEpochs) * 100);
+
+            progressBar.classList.remove('progress-bar-animated', 'bg-info');
+            progressBar.classList.add('bg-primary');
+            progressBar.style.width = `${percent}%`;
+            progressBar.innerText = `Epoch ${currentEpoch}/${totalEpochs}`;
+        } else if (displayMessage.toLowerCase().includes('loading dataset')) {
+            progressBar.classList.add('progress-bar-animated', 'bg-info');
+            progressBar.classList.remove('bg-primary');
+            progressBar.style.width = '100%';
+            progressBar.innerText = 'Loading...';
+        } else {
+             // For messages like "Trial X/Y..." that don't have epoch info,
+             // we can reset the bar to 0% to show a new trial is starting.
+             progressBar.style.width = '0%';
+             progressBar.innerText = '';
+        }
     }
+    
     return true;
 }
 

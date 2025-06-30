@@ -17,6 +17,7 @@ import ctypes
 from datetime import datetime
 import os
 import yaml
+import re
 
 # Third-party imports
 import torch
@@ -549,15 +550,13 @@ class TrainingThread(threading.Thread):
                 train_ds, test_ds, train_insts, test_insts = gui_state.proj.load_dataset(task.name, seq_len=task.sequence_length, progress_callback=update_progress)
                 weights = None
             
-            # Error check if loading failed
             if train_ds is None or test_ds is None or train_insts is None or test_insts is None:
                 raise ValueError("Dataset loading returned None. Check for empty labels or other data issues.")
             
-            eel.spawn(eel.updateDatasetLoadProgress(task.name, 100)) # Signal completion
+            eel.spawn(eel.updateDatasetLoadProgress(task.name, 100))
             log_message(f"Dataset '{task.name}' loaded successfully.", "INFO")
  
             if not train_ds or len(train_ds) == 0:
-                # Check if the test set is NOT empty. This is the key condition.
                 if test_ds and len(test_ds) > 0:
                     error_message = (
                         f"Training failed for '{task.name}' because the training set is empty. "
@@ -565,14 +564,12 @@ class TrainingThread(threading.Thread):
                         "into the test set. Please label a second video or use the 'Augment' feature."
                     )
                 else:
-                    # The original error for a truly empty dataset
                     error_message = f"Training failed for '{task.name}'. The dataset contains no valid labeled instances to train on."
 
-                # Gracefully exit instead of raising an exception
                 log_message(error_message, "ERROR")
                 eel.spawn(eel.updateTrainingStatusOnUI(task.name, error_message))
                 eel.spawn(eel.updateDatasetLoadProgress(task.name, -1))
-                return # Exit the function cleanly
+                return
         except Exception as e:
             log_message(f"Critical error loading dataset {task.name}: {e}", "ERROR")
             eel.spawn(eel.updateTrainingStatusOnUI(task.name, f"Error loading dataset: {e}"))
@@ -583,18 +580,41 @@ class TrainingThread(threading.Thread):
         best_f1 = -1.0
         NUM_TRIALS = 10
 
+        # PROGRESS UPDATER
         def training_progress_updater(message: str):
-            eel.spawn(eel.updateTrainingStatusOnUI(task.name, message))
+            # Check if the message contains an F1 score from the cbas module
+            f1_match = re.search(r"Val F1: ([\d\.]+)", message)
+            
+            # The text we will actually display on the UI
+            display_message = ""
+
+            if f1_match:
+                # This is an F1 score update from within an epoch
+                epoch_f1 = float(f1_match.group(1))
+                # We show the BEST F1 score seen so far across all trials and epochs
+                display_message = f"Trial {i + 1}/{NUM_TRIALS}... Best F1: {max(best_f1, epoch_f1):.4f}"
+            else:
+                # This is a message like "Training Epoch X/Y..."
+                # We still want to show the trial count and the best F1 so far.
+                # If best_f1 is -1.0, we display N/A.
+                f1_text = f"{best_f1:.4f}" if best_f1 >= 0 else "N/A"
+                display_message = f"Trial {i + 1}/{NUM_TRIALS}... Best F1: {f1_text}"
+            
+            # We also pass the original message, which contains the epoch info for the progress bar
+            eel.spawn(eel.updateTrainingStatusOnUI(task.name, display_message, message))
 
         for i in range(NUM_TRIALS):
             if self.cancel_event.is_set():
                 log_message(f"Cancelling training for '{task.name}' before trial {i+1}.", "WARN")
                 eel.spawn(eel.updateTrainingStatusOnUI(task.name, "Training cancelled."))
-                return # Exit the entire task execution
+                return
 
-            eel.spawn(eel.updateTrainingStatusOnUI(task.name, f"Training Trial {i + 1}/{NUM_TRIALS}..."))
             log_message(f"Starting training trial {i + 1}/{NUM_TRIALS} for '{task.name}'.", "INFO")
             
+            # Initial message for the trial before epochs start
+            f1_text = f"{best_f1:.4f}" if best_f1 >= 0 else "N/A"
+            eel.spawn(eel.updateTrainingStatusOnUI(task.name, f"Trial {i + 1}/{NUM_TRIALS}... Best F1: {f1_text}", f"Trial {i + 1}/{NUM_TRIALS}..."))
+
             trial_model, trial_reports, trial_best_epoch = cbas.train_lstm_model(
                 train_ds, test_ds, task.sequence_length, task.behaviors, self.cancel_event,
                 lr=task.learning_rate, batch_size=task.batch_size,
@@ -604,19 +624,13 @@ class TrainingThread(threading.Thread):
             )
 
             if trial_model and trial_reports and trial_best_epoch != -1:
-                # Get the PerformanceReport object for the best epoch of this trial
                 best_epoch_report = trial_reports[trial_best_epoch]
-                
-                # Access the f1-score from the validation report inside that object
                 f1 = best_epoch_report.val_report.get("weighted avg", {}).get("f1-score", -1.0)
                                               
                 if f1 > best_f1:
                     log_message(f"New best model in Trial {i + 1} with F1: {f1:.4f}", "INFO")
                     best_f1, best_model, best_reports, best_epoch = f1, trial_model, trial_reports, trial_best_epoch
 
-            # If, after all trials, no model was selected based on validation F1,
-            # it's likely because the validation set was empty. In this case,
-            # we should save the model from the last trial as a fallback.
             if best_model is None and trial_model is not None:
                 log_message("No validation data available to select best model. Saving model from final trial.", "WARN")
                 best_model = trial_model
@@ -624,7 +638,6 @@ class TrainingThread(threading.Thread):
                 best_epoch = trial_best_epoch
 
         if best_model:
-            # Pass the raw instance lists down to the saving function
             self._save_training_results(task, best_model, best_reports, best_epoch, train_insts, test_insts)
         else:
             log_message(f"Training failed for '{task.name}' after {NUM_TRIALS} trials. No valid model could be trained.", "ERROR")

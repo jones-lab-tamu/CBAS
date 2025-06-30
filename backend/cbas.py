@@ -966,15 +966,19 @@ def train_lstm_model(train_set, test_set, seq_len: int, behaviors: list, cancel_
         epoch_reports.append(PerformanceReport(train_report, train_cm, val_report, val_cm))
         current_val_f1 = val_report.get("weighted avg", {}).get("f1-score", -1.0)
 
+        # We now send a more detailed message AFTER evaluating the epoch.
         if progress_callback:
             progress_callback(f"Epoch {e + 1} Val F1: {current_val_f1:.4f}")
 
         print(f"--- Epoch {e+1} | Train F1: {train_report.get('weighted avg', {}).get('f1-score', -1.0):.4f} | Val F1: {current_val_f1:.4f} ---")
+        
         if current_val_f1 > best_f1:
             best_f1, best_epoch, best_model_state = current_val_f1, e, model.state_dict().copy()
             epochs_no_improve = 0
+            
         else:
             epochs_no_improve += 1
+            
         if test_loader and epochs_no_improve >= patience:
             print(f"Early stopping triggered after {patience} epochs with no improvement.")
             from workthreads import log_message
