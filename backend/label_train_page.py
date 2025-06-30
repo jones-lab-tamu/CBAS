@@ -272,8 +272,26 @@ def get_videos_for_dataset(dataset_name: str) -> list[tuple[str, str]]:
     video_list = []
     if gui_state.proj.recordings_dir and os.path.exists(gui_state.proj.recordings_dir):
         for root, _, files in os.walk(gui_state.proj.recordings_dir):
+            # Create a set of filenames in the current directory for fast lookups.
+            file_set = set(files)
+            
             for file in files:
-                if file.endswith(".mp4"):
+                # Only process .mp4 files.
+                if not file.endswith(".mp4"):
+                    continue
+
+                # A file is considered an augmented video to be skipped
+                # ONLY IF it ends with '_aug.mp4' AND its corresponding source video exists.
+                is_genuinely_augmented = False
+                if file.endswith("_aug.mp4"):
+                    # Construct the potential source filename by removing the suffix.
+                    source_filename = file[:-8] + ".mp4" # len('_aug.mp4') is 8
+                    # Check if that source file exists in the same directory.
+                    if source_filename in file_set:
+                        is_genuinely_augmented = True
+
+                # If it's not a genuinely augmented video, add it to the list.
+                if not is_genuinely_augmented:
                     video_path = os.path.join(root, file)
                     normalized_path = os.path.normpath(video_path)
                     if any(os.path.normpath(p) in normalized_path for p in whitelist):
@@ -281,7 +299,6 @@ def get_videos_for_dataset(dataset_name: str) -> list[tuple[str, str]]:
                         video_list.append((video_path, display_name))
     
     return sorted(video_list, key=lambda x: x[1])
-
 
 
 def get_inferred_session_dirs(dataset_name: str, model_name: str) -> list[str]:
