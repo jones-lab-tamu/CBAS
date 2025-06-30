@@ -110,6 +110,10 @@ def stop_live_preview():
 # --- Label/Train Page Functions ---
 
 @eel.expose
+def update_dataset_whitelist(name, whitelist):
+    return label_train_page.update_dataset_whitelist(name, whitelist)
+
+@eel.expose
 def video_has_labels(dataset_name: str, video_path: str) -> bool:
     return label_train_page.video_has_labels(dataset_name, video_path)
 

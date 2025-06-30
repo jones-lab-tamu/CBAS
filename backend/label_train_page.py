@@ -491,7 +491,29 @@ def _start_labeling_worker(name: str, video_to_open: str = None, preloaded_insta
         traceback.print_exc()
         eel.showErrorOnLabelTrainPage(f"Failed to start labeling session: {e}")()
 
-
+def update_dataset_whitelist(dataset_name: str, new_whitelist: list[str]) -> bool:
+    """
+    Updates the 'whitelist' key in a dataset's config.yaml file.
+    """
+    if not gui_state.proj or dataset_name not in gui_state.proj.datasets:
+        print(f"Error: Could not find dataset '{dataset_name}' to update.")
+        return False
+    
+    try:
+        dataset = gui_state.proj.datasets[dataset_name]
+        # Update the whitelist in the in-memory config
+        dataset.config['whitelist'] = new_whitelist
+        
+        # Write the entire updated config back to the file
+        with open(dataset.config_path, 'w') as f:
+            yaml.dump(dataset.config, f, allow_unicode=True)
+        
+        workthreads.log_message(f"Updated labeled directories for dataset '{dataset_name}'.", "INFO")
+        return True
+    except Exception as e:
+        workthreads.log_message(f"Failed to update whitelist for '{dataset_name}': {e}", "ERROR")
+        traceback.print_exc()
+        return False
 
 def start_labeling(name: str, video_to_open: str = None, preloaded_instances: list = None) -> bool:
     """

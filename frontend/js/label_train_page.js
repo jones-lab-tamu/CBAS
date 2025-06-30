@@ -5,6 +5,7 @@
  */
 
 let cardRefreshTimeoutId = null;
+let editWhitelistBsModal = document.getElementById('editWhitelistModal') ? new bootstrap.Modal(document.getElementById('editWhitelistModal')) : null;
 
 // =================================================================
 // EEL-EXPOSED & LOG PANEL FUNCTIONS
@@ -141,9 +142,38 @@ function getTextColorForBg(hexColor) {
     return luminance > 0.5 ? '#000000' : '#FFFFFF';
 }
 
-function showManageDatasetModal(datasetName) {
+async function showManageDatasetModal(datasetName) {
     if (!manageDatasetBsModal) return;
     document.getElementById('md-dataset-name').innerText = datasetName;
+
+    // Populate the whitelist section
+    const whitelistContainer = document.getElementById('md-whitelist-container');
+    const editWhitelistBtn = document.getElementById('editWhitelistButton');
+    
+    // Show a loading state while we fetch the data
+    if(whitelistContainer) whitelistContainer.innerHTML = 'Loading...'; 
+
+    try {
+        // Fetch the latest dataset configs to get the current whitelist
+        const datasets = await eel.load_dataset_configs()();
+        const currentWhitelist = datasets[datasetName]?.whitelist || [];
+        
+        if (whitelistContainer) {
+            if (currentWhitelist.length > 0) {
+                // Use a list for better formatting
+                whitelistContainer.innerHTML = `<ul class="list-unstyled mb-0">${currentWhitelist.map(dir => `<li><small>${dir}</small></li>`).join('')}</ul>`;
+            } else {
+                whitelistContainer.innerHTML = '<p class="text-muted small m-1">No directories are currently selected.</p>';
+            }
+        }
+
+        if (editWhitelistBtn) {
+            editWhitelistBtn.onclick = () => showEditWhitelistModal(datasetName, currentWhitelist);
+        }
+    } catch (e) {
+        if(whitelistContainer) whitelistContainer.innerHTML = '<p class="text-danger small m-1">Could not load directories.</p>';
+        console.error("Error loading whitelist:", e);
+    }
 
     // Attach event for the "Show Files" button
     const revealBtn = document.getElementById('revealFilesButton');
@@ -154,32 +184,30 @@ function showManageDatasetModal(datasetName) {
         };
     }
 
-    // Attach event for the  "Recalculate Stats" button
+    // Attach event for the "Recalculate Stats" button
     const recalcBtn = document.getElementById('recalculateStatsButton');
     if (recalcBtn) {
-        recalcBtn.onclick = async () => { // Make this function async
-            if (confirm(`Are you sure you want to recalculate stats for '${datasetName}'? ...`)) {
-                
-                // Show a spinner while waiting
+        recalcBtn.onclick = async () => {
+            if (confirm(`Are you sure you want to recalculate stats for '${datasetName}'? This will reset your performance metrics to 'N/A'.`)) {
                 document.getElementById('cover-spin').style.visibility = 'visible';
-                
-                // Call the Eel function and AWAIT its response
-                const updatedDatasets = await eel.recalculate_dataset_stats(datasetName)();
-                
-                if (updatedDatasets) {
-                    // Pass the new data directly to the rendering function
-                    loadInitialDatasetCards(updatedDatasets);
-                } else {
-                    showErrorOnLabelTrainPage("Failed to get updated stats from the backend.");
+                try {
+                    const updatedDatasets = await eel.recalculate_dataset_stats(datasetName)();
+                    if (updatedDatasets) {
+                        loadInitialDatasetCards(updatedDatasets);
+                    } else {
+                        showErrorOnLabelTrainPage("Failed to get updated stats from the backend.");
+                    }
+                } catch (e) {
+                    showErrorOnLabelTrainPage(`An error occurred: ${e.message}`);
+                } finally {
+                    document.getElementById('cover-spin').style.visibility = 'hidden';
+                    manageDatasetBsModal.hide();
                 }
-                
-                document.getElementById('cover-spin').style.visibility = 'hidden';
-                manageDatasetBsModal.hide();
             }
         };
     }
 	
-    // Event listener for the  delete button
+    // Event listener for the delete button
     const deleteBtn = document.getElementById('deleteDatasetButton');
     if (deleteBtn) {
         deleteBtn.onclick = async () => {
@@ -190,7 +218,7 @@ function showManageDatasetModal(datasetName) {
                     const success = await eel.delete_dataset(datasetName)();
                     if (success) {
                         manageDatasetBsModal.hide();
-                        refreshAllDatasets(); // Reload the cards to show the deletion
+                        refreshAllDatasets();
                     } else {
                         showErrorOnLabelTrainPage(`Failed to delete dataset '${datasetName}'. Check the logs for more information.`);
                     }
@@ -205,6 +233,84 @@ function showManageDatasetModal(datasetName) {
 
     manageDatasetBsModal.show();
 }
+
+// To show and populate the whitelist editing modal
+async function showEditWhitelistModal(datasetName, currentWhitelist) {
+    if (!editWhitelistBsModal) return;
+    
+    document.getElementById('ew-dataset-name').innerText = datasetName;
+    const treeContainer = document.getElementById('ew-recording-tree');
+    treeContainer.innerHTML = 'Loading recording tree...';
+
+    // We can reuse the existing eel.get_record_tree() function
+    const fetchedRecordingTree = await eel.get_record_tree()();
+    recordingDirTree = fetchedRecordingTree || {}; // Update global tree
+
+    let treeHTML = '';
+    if (fetchedRecordingTree && Object.keys(fetchedRecordingTree).length > 0) {
+        for (const dateDir in fetchedRecordingTree) {
+            // Check if the parent directory is in the whitelist
+            const isParentChecked = currentWhitelist.includes(dateDir);
+            treeHTML += `<div class="form-check"><input class="form-check-input" type="checkbox" id="ew-${dateDir}" ${isParentChecked ? 'checked' : ''} onchange="updateChildrenCheckboxes('ew-${dateDir}')"><label class="form-check-label" for="ew-${dateDir}">${dateDir}</label></div>`;
+            
+            let sessionsHTML = "<div style='margin-left:20px'>";
+            fetchedRecordingTree[dateDir].forEach(sessionDir => {
+                const fullPath = `${dateDir}/${sessionDir}`;
+                // Check if the specific subdirectory is in the whitelist
+                const isChildChecked = currentWhitelist.includes(fullPath);
+                sessionsHTML += `<div class="form-check"><input class="form-check-input" type="checkbox" id="ew-${fullPath}" ${isChildChecked ? 'checked' : ''}><label class="form-check-label" for="ew-${fullPath}">${sessionDir}</label></div>`;
+            });
+            sessionsHTML += `</div>`;
+            treeHTML += sessionsHTML;
+        }
+    } else {
+        treeHTML = '<p class="text-muted">No recording directories found in this project.</p>';
+    }
+    treeContainer.innerHTML = treeHTML;
+
+    // Attach the save handler
+    document.getElementById('saveWhitelistButton').onclick = () => saveWhitelistChanges(datasetName);
+
+    manageDatasetBsModal.hide(); // Hide the first modal
+    editWhitelistBsModal.show(); // Show the new one
+}
+
+// To collect the new whitelist and save it
+async function saveWhitelistChanges(datasetName) {
+    const newWhitelist = [];
+    // This logic is similar to how we collect directories for inference/creation
+    Object.keys(recordingDirTree).forEach(dir => {
+        const dirCheckbox = document.getElementById(`ew-${dir}`);
+        if (dirCheckbox?.checked) {
+            newWhitelist.push(dir);
+        } else {
+            recordingDirTree[dir]?.forEach(subdir => {
+                const fullPath = `${dir}/${subdir}`;
+                const subdirCheckbox = document.getElementById(`ew-${fullPath}`);
+                if (subdirCheckbox?.checked) {
+                    newWhitelist.push(fullPath);
+                }
+            });
+        }
+    });
+
+    document.getElementById('cover-spin').style.visibility = 'visible';
+    try {
+        const success = await eel.update_dataset_whitelist(datasetName, newWhitelist)();
+        if (success) {
+            editWhitelistBsModal.hide();
+            // Optional: Re-open the manage modal to show the updated list, or just close.
+            // For simplicity, we'll just close. The change is saved.
+        } else {
+            showErrorOnLabelTrainPage("Failed to save the new directory list.");
+        }
+    } catch (e) {
+        showErrorOnLabelTrainPage(`An error occurred: ${e.message}`);
+    } finally {
+        document.getElementById('cover-spin').style.visibility = 'hidden';
+    }
+}
+
 
 function createCountCellHTML(data) {
     if (!data || typeof data.inst === 'undefined') {
