@@ -1076,7 +1076,7 @@ async function loadInitialDatasetCards(datasets = null) {
                             <p class="card-text small text-muted mt-auto">Pre-trained model for general inference.</p>
                         </div>
                         <div class="card-footer text-end">
-                            <button class="btn btn-sm btn-outline-warning" type="button" onclick="showInferenceModal('JonesLabModel')" data-bs-toggle="tooltip" data-bs-placement="top" title="Use this model to classify unlabeled videos">Infer</button>
+                            <button class="btn btn-sm btn-warning" type="button" onclick="showInferenceModal('JonesLabModel')" data-bs-toggle="tooltip" data-bs-placement="top" title="Use this model to classify unlabeled videos">Infer</button>
                         </div>
                     </div>
                 </div>`;
@@ -1088,7 +1088,7 @@ async function loadInitialDatasetCards(datasets = null) {
                 if (datasetName === "JonesLabModel") continue;
                 
                 const config = datasets[datasetName];
-                const state = config.state || 'new'; // Default to 'new' if state is missing
+                const state = config.state || 'new';
                 const behaviors = config.behaviors || [];
                 const metrics = config.metrics || {};
 
@@ -1108,8 +1108,7 @@ async function loadInitialDatasetCards(datasets = null) {
                 htmlContent += `
                     <div class="card-state-view" id="state-view-new-${datasetName}" style="display: ${state === 'new' ? 'flex' : 'none'};">
                         <div class="text-center my-auto">
-                            <h6 class="text-muted">Empty Dataset</h6>
-                            <p class="small text-muted">Start by labeling your first video.</p>
+                            <p class="text-muted">Your dataset is empty.</p>
                             <button class="btn btn-primary" onclick="showPreLabelOptions('${datasetName}')">
                                 <i class="bi bi-pen-fill me-2"></i>Label First Video
                             </button>
@@ -1118,9 +1117,10 @@ async function loadInitialDatasetCards(datasets = null) {
 
                 // --- STATE: LABELED (Has labels, not yet trained) ---
                 htmlContent += `
-                    <div class="card-state-view" id="state-view-labeled-${datasetName}" style="display: ${state === 'labeled' ? 'flex' : 'none'};">
+                    <div class="card-state-view" id="state-view-labeled-${datasetName}" style="display: ${state === 'labeled' ? 'flex' : 'none'}; flex-direction: column;">
                         <div>
-                            <p class="small text-muted mb-1">Instance Counts (Train/Test):</p>
+                            <!-- FIX: Replaced incorrect text with the correct instructional text for this state. -->
+                            <p class="small text-muted mb-2">You have labeled examples. You can add more, or train your first model.</p>
                             <div class="table-responsive" style="max-height: 150px;">
                                 <table class="table table-sm table-hover small">
                                     <tbody>
@@ -1128,20 +1128,14 @@ async function loadInitialDatasetCards(datasets = null) {
                                     </tbody>
                                 </table>
                             </div>
-                            <div class="mt-3 text-center">
-                                <p class="small text-muted">Ready to train, or add more labels.</p>
-                                <div class="btn-group">
-                                    <button class="btn btn-outline-primary" onclick="showPreLabelOptions('${datasetName}')">Label More</button>
-                                    <button class="btn btn-success" onclick="checkAndShowTrainModal('${datasetName}')">Train Model</button>
-                                </div>
-                            </div>
                         </div>
                     </div>`;
                 
                 // --- STATE: TRAINED (Has labels and a model) ---
                 const metricHeaders = ['Train Inst<br><small>(Frames)</small>', 'Test Inst<br><small>(Frames)</small>', 'Precision', 'Recall', 'F1 Score'];
                 htmlContent += `
-                    <div class="card-state-view" id="state-view-trained-${datasetName}" style="display: ${state === 'trained' ? 'flex' : 'none'}; font-size: 0.85rem;">
+                    <div class="card-state-view" id="state-view-trained-${datasetName}" style="display: ${state === 'trained' ? 'flex' : 'none'}; flex-direction: column; font-size: 0.85rem;">
+                        <p class="small text-muted mb-2">Your model is trained. Use it to infer on new videos, or improve it by adding more labels.</p>
                         <div class="table-responsive">
                             <table class="table table-sm table-hover small">
                                 <thead><tr><th>Behavior</th>${metricHeaders.map(h => `<th class="text-center">${h}</th>`).join('')}</tr></thead>
@@ -1177,31 +1171,28 @@ async function loadInitialDatasetCards(datasets = null) {
                             <div class="card-footer d-flex justify-content-end align-items-center">
                                 <button class="btn btn-sm btn-outline-secondary me-auto" type="button" onclick="showManageDatasetModal('${datasetName}')" data-bs-toggle="tooltip" title="View dataset files"><i class="bi bi-folder2-open"></i> Manage</button>`;
                 
-                // Augment/Sync buttons
                 if (datasetName.endsWith('_aug')) {
                     const sourceName = datasetName.replace('_aug', '');
-                    htmlContent += `<button class="btn btn-sm btn-outline-info me-1" type="button" onclick="showSyncModal('${sourceName}', '${datasetName}')" data-bs-toggle="tooltip" title="Re-sync labels from the original '${sourceName}' dataset."><i class="bi bi-arrow-repeat"></i> Sync from Source</button>`;
-                } else {
+                    htmlContent += `<button class="btn btn-sm btn-info me-1" type="button" onclick="showSyncModal('${sourceName}', '${datasetName}')" data-bs-toggle="tooltip" title="Re-sync labels from the original '${sourceName}' dataset."><i class="bi bi-arrow-repeat"></i> Sync from Source</button>`;
+                } else if (state !== 'new') {
                     htmlContent += `<button class="btn btn-sm btn-outline-info me-1" type="button" onclick="showAugmentModal('${datasetName}')" data-bs-toggle="tooltip" title="Create an augmented version of this dataset."><i class="bi bi-images"></i> Augment</button>`;
                 }
                 
-                // Label button (only for non-augmented datasets and if not in 'new' state)
                 if (!datasetName.endsWith('_aug') && state !== 'new') {
-                     htmlContent += `<button class="btn btn-sm btn-outline-primary me-1" type="button" onclick="showPreLabelOptions('${datasetName}')">Label</button>`;
+                     htmlContent += `<button class="btn btn-sm btn-primary me-1" type="button" onclick="showPreLabelOptions('${datasetName}')" data-bs-toggle="tooltip" title="Add or correct labels for this dataset.">Label More</button>`;
                 }
                 
-                // Train button (only if labeled or already trained)
                 if (state === 'labeled' || state === 'trained') {
                     const trainText = state === 'trained' ? 'Re-Train' : 'Train';
-                    htmlContent += `<button class="btn btn-sm btn-outline-success me-1" type="button" onclick="checkAndShowTrainModal('${datasetName}')">${trainText}</button>`;
+                    const trainTooltip = state === 'trained' ? 'Re-train the model, potentially with new labels or different settings.' : 'Train a new model using the labels in this dataset.';
+                    htmlContent += `<button class="btn btn-sm btn-success me-1" type="button" onclick="checkAndShowTrainModal('${datasetName}')" data-bs-toggle="tooltip" title="${trainTooltip}">${trainText}</button>`;
                 }
                 
-                // Infer button (only if trained)
                 if (state === 'trained') {
-                    htmlContent += `<button class="btn btn-sm btn-outline-warning" type="button" onclick="showInferenceModal('${datasetName}')">Infer</button>`;
+                    htmlContent += `<button class="btn btn-sm btn-warning" type="button" onclick="showInferenceModal('${datasetName}')" data-bs-toggle="tooltip" title="Use this trained model to classify new, unlabeled videos.">Infer</button>`;
                 }
                 
-                htmlContent += `</div></div></div>`; // End card, col
+                htmlContent += `</div></div></div>`;
             }
         }
 
@@ -1216,6 +1207,7 @@ async function loadInitialDatasetCards(datasets = null) {
         console.error("Error loading initial dataset configs:", error);
     }
 }
+
 
 /**
  * Checks if all necessary H5 files for a dataset exist on the backend
