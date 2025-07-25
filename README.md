@@ -11,9 +11,12 @@
 # CBAS v3 (BETA)
 
 > [!WARNING]
-> **This is the development branch for the upcoming CBAS v3.** This version is a complete architectural and functional overhaul and should be considered **experimental**. It may contain bugs or undergo significant changes.
+> **You are viewing the development branch for the upcoming CBAS v3.** This version is a complete architectural and functional overhaul and should be considered **experimental**. It may contain bugs or undergo significant changes.
 
-> For the current stable version (v2), please see the [**`v2-stable` branch**](https://github.com/jones-lab-tamu/CBAS/tree/v2-stable).
+> [!IMPORTANT]
+> **For Scientific Reproducibility:** To access the stable code used in our recent publication, please use the `v2-stable` branch.
+> *   [**Click here to browse the `v2-stable` branch**](https://github.com/jones-lab-tamu/CBAS/tree/v2-stable)
+> *   [**Click here to download a `.zip` of the `v2-stable` code directly**](https://github.com/jones-lab-tamu/CBAS/archive/refs/heads/v2-stable.zip)
 
 ---
 
