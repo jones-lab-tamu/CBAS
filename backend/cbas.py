@@ -474,7 +474,9 @@ class Dataset:
             block_label = df['label_for_grouping'].iloc[start_idx]
             if pd.isna(block_label): continue
             block_confidence = df['max_prob'].iloc[start_idx:end_idx + 1].mean()
-            new_instance = {"video": csv_path.replace(f"_{model_name}_outputs.csv", ".mp4"),"start": start_idx,"end": end_idx,"label": block_label,"confidence": block_confidence}
+            absolute_video_path = csv_path.replace(f"_{model_name}_outputs.csv", ".mp4")
+            relative_video_path = os.path.relpath(absolute_video_path, start=gui_state.proj.path).replace('\\', '/')
+            new_instance = {"video": relative_video_path, "start": start_idx,"end": end_idx,"label": block_label,"confidence": block_confidence}
             instances.append(new_instance)
         return instances, df
 
