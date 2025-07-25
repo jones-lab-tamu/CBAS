@@ -2,6 +2,13 @@
     <img src="./assets/CBAS_logo.png" alt="CBAS Logo" style="width: 800px; height: auto;">
 </p>
 
+> [!NOTE]
+> **You are viewing the `v2-stable` branch.** This version corresponds to the code used in our publication and is maintained for reproducibility.
+>
+> For the latest features and active development, please see the [**`main` branch (v3 Beta)**](https://github.com/jones-lab-tamu/CBAS/tree/main).
+
+---
+
 # CBAS (Circadian Behavioral Analysis Suite)
 
 CBAS is a suite of tools for phenotyping complex animal behaviors. It is designed to automate classification of behaviors from video data and provide a simple interface for visualizing and analyzing the results.
