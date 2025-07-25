@@ -53,6 +53,57 @@
   MODALS (Pop-up Dialogs)
   ================================================================== -->
 
+  <!-- Modal for Cropping Videos on Import -->
+  <div class="modal" tabindex="-1" id="cropOnImportModal">
+    <div class="modal-dialog modal-dialog-centered modal-lg"> <!-- Use modal-lg for more space -->
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title">Set Crop for Import Batch</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <p class="text-muted small">Draw a rectangle on the preview below to define the region of interest. This crop will be applied to all videos in this batch before they are added to your project.</p>
+        
+          <!-- Canvas for drawing the preview and crop overlay -->
+          <div id="import-crop-canvas-container" style="position: relative; width: 100%; max-width: 700px; margin: auto; margin-bottom: 20px; background-color: #000;">
+            <canvas id="import-crop-image-canvas" width="700" height="400"></canvas>
+            <canvas id="import-crop-overlay-canvas" width="700" height="400" style="position: absolute; top: 0; left: 0; cursor: crosshair;"></canvas>
+          </div>
+
+          <!-- Checkbox to apply to all -->
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox" id="apply-crop-to-all-toggle" checked>
+            <label class="form-check-label" for="apply-crop-to-all-toggle">
+              Apply this crop to all <strong id="import-batch-file-count">0</strong> videos in this batch.
+            </label>
+          </div>
+        
+          <!-- CHECKBOX FOR STRETCHING -->
+          <div class="form-check mt-2">
+            <input class="form-check-input" type="checkbox" id="stretch-to-square-toggle">
+            <label class="form-check-label" for="stretch-to-square-toggle">
+              Stretch cropped region to fill 256x256 square (disregards aspect ratio)
+            </label>
+            <i class="bi bi-info-circle-fill ms-1" data-bs-toggle="tooltip" data-bs-placement="top" 
+               title="Enable this if your training data was also stretched. This can improve model performance by ensuring data consistency, but will distort the image."></i>
+          </div>
+
+          <!-- Hidden inputs to store crop values -->
+          <div id="import-crop-values" style="display: none;">
+            <input type="number" id="import-crop-x" value="0.0">
+            <input type="number" id="import-crop-y" value="0.0">
+            <input type="number" id="import-crop-width" value="1.0">
+            <input type="number" id="import-crop-height" value="1.0">
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel Import</button>
+          <button type="button" class="btn btn-primary" id="confirm-crop-and-proceed-btn">Next: Set Session Info</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div class="modal" tabindex="-1" id="importVideosModal">
     <div class="modal-dialog modal-dialog-centered">
       <div class="modal-content">
@@ -81,8 +132,15 @@
 			
           </div>
 		  
-          <hr>
-          <div class="form-check form-switch">
+		  <hr>
+		  <div class="d-grid gap-2">
+			  <button type="button" class="btn btn-outline-info" id="set-crop-for-import-btn">
+				  <i class="bi bi-crop me-2"></i>Set Crop for Batch (Optional)
+			  </button>
+		  </div>
+		  <hr>
+		  <div class="form-check form-switch">
+
             <input class="form-check-input" type="checkbox" role="switch" id="standardize-video-toggle" checked>
             <label class="form-check-label" for="standardize-video-toggle">Standardize videos on import</label>
           </div>
@@ -563,12 +621,21 @@
   <div class="card bg-dark">
     <div class="card-header d-flex justify-content-between align-items-center">
       <h5 class="mb-0 text-success"><i class="bi bi-robot me-2"></i>Review Mode Controls</h5>
-      <div id="confidence-filter-container" class="d-flex align-items-center w-50" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Filter out high-confidence predictions to focus on mistakes">
-        <label for="confidence-slider" class="form-label me-3 mb-0 text-nowrap text-light">Filter Confidence < </label>
-        <input type="range" class="form-range" min="0" max="100" step="1" value="100" id="confidence-slider">
-        <span id="slider-value-display" class="ms-3 badge bg-info" style="width: 55px;">100%</span>
-		<button id="reset-slider-btn" class="btn btn-sm btn-outline-secondary ms-2">Reset</button>
-      </div>
+      <div id="confidence-filter-container" class="d-flex align-items-center w-50">
+		  <!-- Filter Mode Selector -->
+		  <div class="btn-group btn-group-sm me-3" role="group" aria-label="Filter mode">
+			<input type="radio" class="btn-check" name="filter-mode" id="filter-mode-below" autocomplete="off" checked>
+			<label class="btn btn-outline-info" for="filter-mode-below" data-bs-toggle="tooltip" title="Show instances BELOW this confidence (for finding errors)"><</label>
+		  
+			<input type="radio" class="btn-check" name="filter-mode" id="filter-mode-above" autocomplete="off">
+			<label class="btn btn-outline-info" for="filter-mode-above" data-bs-toggle="tooltip" title="Show instances ABOVE this confidence (for curating examples)">></label>
+		  </div>
+
+		  <label for="confidence-slider" class="form-label me-2 mb-0 text-nowrap text-light">Confidence</label>
+		  <input type="range" class="form-range" min="0" max="100" step="1" value="100" id="confidence-slider">
+		  <span id="slider-value-display" class="ms-3 badge bg-info" style="width: 55px;">100%</span>
+		  <button id="reset-slider-btn" class="btn btn-sm btn-outline-secondary ms-2">Reset</button>
+		</div>
     </div>
     <div class="card-body" style="font-size: 0.9rem;">
       <div class="row">

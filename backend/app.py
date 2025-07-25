@@ -110,6 +110,10 @@ def stop_live_preview():
 # --- Label/Train Page Functions ---
 
 @eel.expose
+def get_frame_from_video(video_path):
+    return label_train_page.get_frame_from_video(video_path)
+
+@eel.expose
 def update_dataset_whitelist(name, whitelist):
     return label_train_page.update_dataset_whitelist(name, whitelist)
 
@@ -154,8 +158,8 @@ def get_existing_session_names():
     return label_train_page.get_existing_session_names()
     
 @eel.expose
-def import_videos(s_name, sub_name, paths, standardize):
-    return label_train_page.import_videos(s_name, sub_name, paths, standardize)
+def import_videos(s_name, sub_name, paths, standardize, crop_data):
+    return label_train_page.import_videos(s_name, sub_name, paths, standardize, crop_data)
 
 @eel.expose
 def get_model_configs():
@@ -174,8 +178,8 @@ def save_session_labels():
     return label_train_page.save_session_labels()
 
 @eel.expose
-def refilter_instances(threshold):
-    return label_train_page.refilter_instances(threshold)
+def refilter_instances(threshold, mode):
+    return label_train_page.refilter_instances(threshold, mode)
 
 @eel.expose
 def jump_to_frame(frame_num):

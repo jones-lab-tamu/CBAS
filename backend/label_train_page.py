@@ -37,15 +37,13 @@ import time
 # HELPER FUNCTIONS
 # =================================================================
 
-def _video_import_worker(session_name: str, subject_name: str, video_paths: list[str], standardize: bool):
+def _video_import_worker(session_name: str, subject_name: str, video_paths: list[str], standardize: bool, crop_data: dict):
     """
-    (WORKER) Runs in a separate thread. Copies or standardizes imported videos based on user selection
+    (WORKER) Runs in a separate thread. Copies or standardizes/crops imported videos
     before queuing them for encoding.
     """
     try:
-        # Determine action for logging based on the 'standardize' flag
-        action_str = "Standardizing" if standardize else "Copying"
-        workthreads.log_message(f"Starting import: {action_str} {len(video_paths)} videos for session '{session_name}'...", "INFO")
+        workthreads.log_message(f"Starting import: Processing {len(video_paths)} videos for session '{session_name}'...", "INFO")
 
         session_dir = os.path.join(gui_state.proj.recordings_dir, session_name)
         final_dest_dir = os.path.join(session_dir, subject_name)
@@ -58,26 +56,46 @@ def _video_import_worker(session_name: str, subject_name: str, video_paths: list
                 basename = os.path.basename(video_path)
                 dest_path = os.path.join(final_dest_dir, basename)
 
-                # --- CONDITIONAL LOGIC BASED ON USER'S CHOICE ---
-                if standardize:
-                    # --- Path A: Standardize the video using ffmpeg ---
-                    workthreads.log_message(f"Standardizing '{basename}' to 10fps / 256p...", "INFO")
-                    command = [
-                        'ffmpeg', '-hide_banner', '-loglevel', 'warning', '-y',
-                        '-i', video_path,
-                        '-vf', 'fps=10,scale=256:256:force_original_aspect_ratio=decrease,pad=256:256:(ow-iw)/2:(oh-ih)/2',
-                        '-an', # Remove audio track
-                        dest_path
-                    ]
-                    # Use subprocess.run to wait for ffmpeg to finish for this file
-                    subprocess.run(command, check=True, capture_output=True, text=True)
+                command = ['ffmpeg', '-hide_banner', '-loglevel', 'warning', '-y', '-i', video_path]
                 
-                else:
-                    # --- Path B: Just copy the original file as-is ---
+                video_filters = []
+                
+                if crop_data and crop_data.get('apply', False):
+                    crop_w = crop_data.get('w', 1.0)
+                    crop_h = crop_data.get('h', 1.0)
+                    crop_x = crop_data.get('x', 0.0)
+                    crop_y = crop_data.get('y', 0.0)
+                    if not (crop_w == 1.0 and crop_h == 1.0 and crop_x == 0.0 and crop_y == 0.0):
+                        video_filters.append(f"crop=iw*{crop_w}:ih*{crop_h}:iw*{crop_x}:ih*{crop_y}")
+
+                if standardize:
+                    video_filters.append('fps=10')
+                    
+                    should_stretch = crop_data.get('stretch', False)
+                    if should_stretch:
+                        video_filters.append('scale=256:256')
+                    else:
+                        video_filters.append('scale=256:256:force_original_aspect_ratio=decrease,pad=256:256:(ow-iw)/2:(oh-ih)/2')
+
+                if video_filters:
+                    command.extend(['-vf', ",".join(video_filters)])
+
+                command.extend(['-an', dest_path])
+                
+                is_cropping = any('crop' in f for f in video_filters)
+                
+                if not video_filters and not standardize:
                     workthreads.log_message(f"Copying '{basename}' without changes...", "INFO")
                     shutil.copy(video_path, dest_path)
-
-                # Whichever path was taken, the `dest_path` is the file to be encoded
+                else:
+                    action_str = "Cropping and standardizing" if is_cropping and standardize else "Cropping" if is_cropping else "Standardizing"
+                    workthreads.log_message(f"{action_str} '{basename}'...", "INFO")
+                    
+                    creation_flags = 0
+                    if sys.platform == "win32":
+                        creation_flags = subprocess.CREATE_NO_WINDOW
+                    subprocess.run(command, check=True, capture_output=True, text=True, creationflags=creation_flags)
+                
                 files_for_queue.append(dest_path)
 
             except subprocess.CalledProcessError as cpe:
@@ -85,21 +103,23 @@ def _video_import_worker(session_name: str, subject_name: str, video_paths: list
             except Exception as e:
                 workthreads.log_message(f"An unexpected error occurred while processing '{os.path.basename(video_path)}'. Skipping. Error: {e}", "ERROR")
 
-        # --- The rest of the logic is now common to both paths ---
         if files_for_queue:
             with gui_state.encode_lock:
                 new_files_to_queue = [f for f in files_for_queue if f not in gui_state.encode_tasks]
                 gui_state.encode_tasks.extend(new_files_to_queue)
             workthreads.log_message(f"Queued {len(new_files_to_queue)} files for encoding.", "INFO")
         
-        # Clear the watcher queue to prevent duplicate encoding
         if workthreads.file_watcher_handler:
             with workthreads.file_watcher_handler.pending_files_lock:
                 workthreads.file_watcher_handler.pending_files.clear()
             workthreads.log_message("Cleared automatic file watcher queue to prevent duplicate encoding.", "INFO")
 
-        # Notify the UI that the import process is complete
-        success_msg_action = "imported and standardized" if standardize else "imported"
+        success_msg_action = "imported"
+        if crop_data and crop_data.get('apply', False) and not (crop_data.get('w') == 1.0 and crop_data.get('h') == 1.0 and crop_data.get('x') == 0.0 and crop_data.get('y') == 0.0):
+            success_msg_action += " and cropped"
+        if standardize:
+            success_msg_action += " and standardized"
+            
         workthreads.log_message(f"Successfully {success_msg_action} {len(files_for_queue)} video(s).", "INFO")
         eel.notify_import_complete(True, f"Successfully {success_msg_action} {len(files_for_queue)} video(s) to session '{session_name}' under subject '{subject_name}'.")
 
@@ -359,7 +379,7 @@ def get_existing_session_names() -> list[str]:
 
 
 
-def import_videos(session_name: str, subject_name: str, video_paths: list[str], standardize: bool) -> bool:
+def import_videos(session_name: str, subject_name: str, video_paths: list[str], standardize: bool, crop_data: dict):
     """
     (LAUNCHER) Spawns the video import process in a background thread,
     passing the user's choice for standardization.
@@ -371,7 +391,7 @@ def import_videos(session_name: str, subject_name: str, video_paths: list[str], 
     
     import_thread = threading.Thread(
         target=_video_import_worker,
-        args=(session_name, subject_name, video_paths, standardize)
+        args=(session_name, subject_name, video_paths, standardize, crop_data)
     )
     
     import_thread.daemon = True
@@ -446,30 +466,35 @@ def _start_labeling_worker(name: str, video_to_open: str = None, preloaded_insta
         # that matches the format stored in labels.yaml
         relative_video_path = os.path.relpath(video_to_open, start=gui_state.proj.path).replace('\\', '/')
 
-        # Now, compare against the new relative path
+        # Step A: ALWAYS load existing human-verified labels from labels.yaml first.
+        human_labels = []
         for b_name, b_insts in gui_state.label_dataset.labels["labels"].items():
             for inst in b_insts:
-                if inst.get("video") == relative_video_path: # This check will now work
-                    gui_state.label_session_buffer.append(inst)
-        
-        print(f"Loaded {len(gui_state.label_session_buffer)} existing human labels for '{relative_video_path}' into buffer.")
+                if inst.get("video") == relative_video_path:
+                    human_labels.append(inst)
+
+        gui_state.label_session_buffer.extend(human_labels)
+        print(f"Loaded {len(human_labels)} existing human labels for '{relative_video_path}' into buffer.")
 
         labeling_mode = 'scratch'
         model_name_for_ui = ''
+
+        # Step B: If this is a guided session, add the model predictions, avoiding overlaps.
         if preloaded_instances:
             labeling_mode = 'review'
-            model_name_for_ui = name
+            model_name_for_ui = name 
 
             gui_state.label_unfiltered_instances = preloaded_instances.copy()
             
             initial_threshold = gui_state.label_confidence_threshold / 100.0
-            filtered_instances = [
+            filtered_predictions = [
                 p for p in preloaded_instances if p.get('confidence', 1.0) < initial_threshold
             ]
             
-            print(f"Applying {len(filtered_instances)} initially filtered instances.")
-            for pred_inst in filtered_instances:
-                is_overlapping = any(max(pred_inst['start'], h['start']) <= min(pred_inst['end'], h['end']) for h in gui_state.label_session_buffer)
+            print(f"Processing {len(filtered_predictions)} initially filtered model predictions.")
+            for pred_inst in filtered_predictions:
+                # Check for overlap against the already-loaded human labels
+                is_overlapping = any(max(pred_inst['start'], h['start']) <= min(pred_inst['end'], h['end']) for h in human_labels)
                 if not is_overlapping:
                     gui_state.label_session_buffer.append(pred_inst)
         
@@ -634,20 +659,27 @@ def save_session_labels():
     render_image()
 
 
-def refilter_instances(new_threshold: int):
+def refilter_instances(new_threshold: int, mode: str = 'below'):
     """
-    Re-filters the session buffer based on a new confidence threshold and re-renders.
+    Re-filters the session buffer based on a confidence threshold and mode ('above' or 'below').
     """
-    print(f"Refiltering instances with threshold < {new_threshold}%")
+    print(f"Refiltering instances with mode '{mode}' and threshold {new_threshold}%")
     gui_state.label_confidence_threshold = new_threshold
     
     unfiltered = gui_state.label_unfiltered_instances
     human_labels = [inst for inst in gui_state.label_session_buffer if 'confidence' not in inst]
     
     threshold_float = new_threshold / 100.0
-    newly_filtered = [
-        p for p in unfiltered if p.get('confidence', 1.0) < threshold_float
-    ]
+    newly_filtered = []
+
+    if mode == 'above':
+        newly_filtered = [
+            p for p in unfiltered if p.get('confidence', 0.0) >= threshold_float
+        ]
+    else: # Default to 'below'
+        newly_filtered = [
+            p for p in unfiltered if p.get('confidence', 1.0) < threshold_float
+        ]
     
     gui_state.label_session_buffer = human_labels + newly_filtered
     
@@ -661,6 +693,31 @@ def refilter_instances(new_threshold: int):
 # EEL-EXPOSED FUNCTIONS: IN-SESSION LABELING ACTIONS
 # =================================================================
 
+def get_frame_from_video(video_path: str) -> str | None:
+    """Extracts the first frame of a video and returns it as a base64 string."""
+    if not os.path.exists(video_path):
+        print(f"Video path not found for frame extraction: {video_path}")
+        return None
+    try:
+        command = [
+            'ffmpeg', '-hide_banner', '-loglevel', 'error',
+            '-i', video_path,
+            '-vframes', '1',
+            '-f', 'image2pipe',
+            '-c:v', 'mjpeg',
+            '-'
+        ]
+        
+        creation_flags = 0
+        if sys.platform == "win32":
+            creation_flags = subprocess.CREATE_NO_WINDOW
+
+        result = subprocess.run(command, capture_output=True, check=True, timeout=15, creationflags=creation_flags)
+        
+        return base64.b64encode(result.stdout).decode('utf-8')
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
+        print(f"Error extracting frame from {video_path}: {e}")
+        return None
 
 def jump_to_frame(frame_number: int):
     """Jumps the video playhead to a specific frame number."""

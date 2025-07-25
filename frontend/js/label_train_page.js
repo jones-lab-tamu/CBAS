@@ -110,6 +110,7 @@ const importVideosModalElement = document.getElementById('importVideosModal');
 const manageDatasetModalElement = document.getElementById('manageDatasetModal');
 const augmentDatasetModalElement = document.getElementById('augmentDatasetModal');
 const syncDatasetModalElement = document.getElementById('syncDatasetModal');
+const cropOnImportModalElement = document.getElementById('cropOnImportModal');
 
 let addDatasetBsModal = addDatasetModalElement ? new bootstrap.Modal(addDatasetModalElement) : null;
 let trainBsModal = trainModalElement ? new bootstrap.Modal(trainModalElement) : null;
@@ -120,6 +121,17 @@ let importVideosBsModal = importVideosModalElement ? new bootstrap.Modal(importV
 let manageDatasetBsModal = manageDatasetModalElement ? new bootstrap.Modal(manageDatasetModalElement) : null;
 let augmentDatasetBsModal = augmentDatasetModalElement ? new bootstrap.Modal(augmentDatasetModalElement) : null;
 let syncDatasetBsModal = syncDatasetModalElement ? new bootstrap.Modal(syncDatasetModalElement) : null;
+let cropOnImportBsModal = cropOnImportModalElement ? new bootstrap.Modal(cropOnImportModalElement) : null;
+
+// --- Import Cropping State ---
+let importCropData = { x: 0.0, y: 0.0, w: 1.0, h: 1.0, apply: true, stretch: false };
+let importCropCanvas, importCropCtx, importImageCanvas, importImageCtx;
+let importCropRect = { x: 0, y: 0, w: 0, h: 0 };
+let isImportCropping_Dragging = false;
+let isImportCropping_Resizing = false;
+let importCrop_ResizeHandle = null;
+const importCrop_HandleSize = 8;
+let importPreviewImage = new Image();
 
 let currentLabelingMode = 'scratch'; // Default to 'scratch'
 
@@ -385,6 +397,119 @@ async function startSync(sourceDatasetName, targetDatasetName) {
 }
 
 // =================================================================
+// IMPORT & CROPPING WORKFLOW
+// =================================================================
+
+async function setupCropOnImportModal(videoPath, fileCount) {
+    document.getElementById('import-batch-file-count').textContent = fileCount;
+    document.getElementById('cover-spin').style.visibility = 'visible';
+
+    try {
+        const base64Frame = await eel.get_frame_from_video(videoPath)();
+        if (!base64Frame) {
+            showErrorOnLabelTrainPage("Could not read the first video file to generate a preview for cropping.");
+            cropOnImportBsModal?.hide();
+            return;
+        }
+
+        importPreviewImage.onload = () => {
+            initializeImportCropper(importPreviewImage);
+            document.getElementById('cover-spin').style.visibility = 'hidden';
+        };
+        importPreviewImage.src = `data:image/jpeg;base64,${base64Frame}`;
+    } catch (e) {
+        showErrorOnLabelTrainPage(`Error setting up crop preview: ${e.message}`);
+        document.getElementById('cover-spin').style.visibility = 'hidden';
+    }
+}
+
+function initializeImportCropper(img) {
+    importImageCanvas = document.getElementById("import-crop-image-canvas");
+    importCropCanvas = document.getElementById("import-crop-overlay-canvas");
+    if (!importImageCanvas || !importCropCanvas) return;
+    
+    importImageCtx = importImageCanvas.getContext("2d");
+    importCropCtx = importCropCanvas.getContext("2d");
+
+    const container = document.getElementById('import-crop-canvas-container');
+    const aspectRatio = img.naturalWidth / img.naturalHeight;
+    const canvasWidth = container.clientWidth;
+    const canvasHeight = canvasWidth / aspectRatio;
+
+    importImageCanvas.width = importCropCanvas.width = canvasWidth;
+    importImageCanvas.height = importCropCanvas.height = canvasHeight;
+    container.style.height = `${canvasHeight}px`;
+
+    importImageCtx.drawImage(img, 0, 0, canvasWidth, canvasHeight);
+
+    importCropRect = { x: 0, y: 0, w: canvasWidth, h: canvasHeight };
+    updateInputsFromImportCropRect();
+    drawImportCropOverlay();
+}
+
+function drawImportCropOverlay() {
+    if (!importCropCtx || !importCropCanvas) return;
+    importCropCtx.clearRect(0, 0, importCropCanvas.width, importCropCanvas.height);
+    importCropCtx.fillStyle = "rgba(0, 0, 0, 0.5)";
+    importCropCtx.fillRect(0, 0, importCropCanvas.width, importCropCanvas.height);
+    importCropCtx.clearRect(importCropRect.x, importCropRect.y, importCropRect.w, importCropRect.h);
+    importCropCtx.strokeStyle = "rgba(255, 0, 0, 0.9)";
+    importCropCtx.lineWidth = 2;
+    importCropCtx.strokeRect(importCropRect.x, importCropRect.y, importCropRect.w, importCropRect.h);
+    drawImportCropHandles();
+}
+
+function drawImportCropHandles() {
+    if (!importCropCtx) return;
+    const { x, y, w, h } = importCropRect;
+    const handles = {
+        tl: { x: x, y: y }, tr: { x: x + w, y: y },
+        bl: { x: x, y: y + h }, br: { x: x + w, y: y + h },
+    };
+    importCropCtx.fillStyle = "rgba(255, 0, 0, 0.9)";
+    for (const handle in handles) {
+        importCropCtx.fillRect(handles[handle].x - importCrop_HandleSize / 2, handles[handle].y - importCrop_HandleSize / 2, importCrop_HandleSize, importCrop_HandleSize);
+    }
+}
+
+function getImportCropHandleAt(mouseX, mouseY) {
+    const { x, y, w, h } = importCropRect;
+    const handles = {
+        tl: { x: x, y: y }, tr: { x: x + w, y: y },
+        bl: { x: x, y: y + h }, br: { x: x + w, y: y + h },
+        t: { x: x + w / 2, y: y }, b: { x: x + w / 2, y: y + h },
+        l: { x: x, y: y + h / 2 }, r: { x: x + w, y: y + h / 2 }
+    };
+    for (const handle in handles) {
+        if (Math.abs(mouseX - handles[handle].x) < importCrop_HandleSize && Math.abs(mouseY - handles[handle].y) < importCrop_HandleSize) {
+            return handle;
+        }
+    }
+    return null;
+}
+
+function updateInputsFromImportCropRect() {
+    if (!importCropCanvas || importCropCanvas.width === 0 || importCropCanvas.height === 0) return;
+    document.getElementById('import-crop-x').value = (importCropRect.x / importCropCanvas.width).toFixed(4);
+    document.getElementById('import-crop-y').value = (importCropRect.y / importCropCanvas.height).toFixed(4);
+    document.getElementById('import-crop-width').value = (importCropRect.w / importCropCanvas.width).toFixed(4);
+    document.getElementById('import-crop-height').value = (importCropRect.h / importCropCanvas.height).toFixed(4);
+}
+
+async function populateSessionDatalist() {
+    const sessionDatalist = document.getElementById('session-names-list');
+    if (sessionDatalist) {
+        sessionDatalist.innerHTML = '';
+        const sessionNames = await eel.get_existing_session_names()();
+        sessionNames.forEach(name => {
+            const option = document.createElement('option');
+            option.value = name;
+            sessionDatalist.appendChild(option);
+        });
+    }
+}
+
+// =================================================================
 // EEL-EXPOSED FUNCTIONS (Called FROM Python)
 // =================================================================
 
@@ -610,7 +735,7 @@ function setLabelingModeUI(mode, modelName = '') {
 
     const controlsHeader = document.querySelector('#controls .card-header');
     const cheatSheet = document.getElementById('labeling-cheat-sheet');
-    const saveBtn = document.getElementById('save-labels-btn'); // Get the save button
+    const saveBtn = document.getElementById('save-labels-btn');
 
     if (!controlsHeader || !cheatSheet || !saveBtn) return true;
 
@@ -619,12 +744,19 @@ function setLabelingModeUI(mode, modelName = '') {
         controlsHeader.classList.add('bg-success');
         controlsHeader.querySelector('h5').innerHTML = `Reviewing: <span class="badge bg-light text-dark">${modelName}</span>`;
         
+        // The innerHTML now matches the HTML file we just changed
         cheatSheet.innerHTML = `
             <div class="card bg-dark">
               <div class="card-header d-flex justify-content-between align-items-center">
                 <h5 class="mb-0 text-success"><i class="bi bi-robot me-2"></i>Review Mode Controls</h5>
                 <div id="confidence-filter-container" class="d-flex align-items-center w-50">
-                  <label for="confidence-slider" class="form-label me-3 mb-0 text-nowrap text-light">Filter Confidence < </label>
+                  <div class="btn-group btn-group-sm me-3" role="group" aria-label="Filter mode">
+                    <input type="radio" class="btn-check" name="filter-mode" id="filter-mode-below" autocomplete="off" checked>
+                    <label class="btn btn-outline-info" for="filter-mode-below" data-bs-toggle="tooltip" title="Show instances BELOW this confidence (for finding errors)"><</label>
+                    <input type="radio" class="btn-check" name="filter-mode" id="filter-mode-above" autocomplete="off">
+                    <label class="btn btn-outline-info" for="filter-mode-above" data-bs-toggle="tooltip" title="Show instances ABOVE this confidence (for curating examples)">></label>
+                  </div>
+                  <label for="confidence-slider" class="form-label me-2 mb-0 text-nowrap text-light">Confidence</label>
                   <input type="range" class="form-range" min="0" max="100" step="1" value="100" id="confidence-slider">
                   <span id="slider-value-display" class="ms-3 badge bg-info" style="width: 55px;">100%</span>
                   <button id="reset-slider-btn" class="btn btn-sm btn-outline-secondary ms-2">Reset</button>
@@ -652,7 +784,6 @@ function setLabelingModeUI(mode, modelName = '') {
                 </div>
               </div>
             </div>`;
-        // Set button text for review mode
         saveBtn.innerHTML = '<i class="bi bi-save-fill me-2"></i>Commit Corrections';
     } else { // 'scratch' mode
         controlsHeader.classList.remove('bg-success');
@@ -683,39 +814,54 @@ function setLabelingModeUI(mode, modelName = '') {
                 </div>
               </div>
             </div>`;
-        // Set button text for scratch/manual mode
         saveBtn.innerHTML = '<i class="bi bi-save-fill me-2"></i>Save New Labels';       
     }
 
-    // This part for the slider remains the same and is correct.
+    // --- ROBUST EVENT LISTENER ATTACHMENT ---
+    const filterModeBelow = document.getElementById('filter-mode-below');
+    const filterModeAbove = document.getElementById('filter-mode-above');
     const confidenceSlider = document.getElementById('confidence-slider');
     const sliderValueDisplay = document.getElementById('slider-value-display');
     const resetSliderBtn = document.getElementById('reset-slider-btn');
     const timelineContainer = document.getElementById('full-timeline-section');
-    if (confidenceSlider && sliderValueDisplay) {
+
+    // This check is the crucial fix: only add listeners if the elements exist.
+    if (filterModeBelow && filterModeAbove && confidenceSlider) {
+        function triggerRefilter() {
+            const threshold = parseInt(confidenceSlider.value);
+            const mode = filterModeAbove.checked ? 'above' : 'below';
+            eel.refilter_instances(threshold, mode)();
+        }
+
+        filterModeBelow.addEventListener('change', triggerRefilter);
+        filterModeAbove.addEventListener('change', triggerRefilter);
+
         confidenceSlider.addEventListener('input', function() {
-            sliderValueDisplay.textContent = `${this.value}%`;
+            if (sliderValueDisplay) sliderValueDisplay.textContent = `${this.value}%`;
             if (timelineContainer) {
                 timelineContainer.classList.toggle('timeline-filtered', parseInt(this.value) < 100);
             }
             clearTimeout(confidenceFilterDebounceTimer);
-            confidenceFilterDebounceTimer = setTimeout(() => {
-                eel.refilter_instances(parseInt(this.value))();
-            }, 400);
+            confidenceFilterDebounceTimer = setTimeout(triggerRefilter, 400);
         });
-    }
-    if (resetSliderBtn) {
-        resetSliderBtn.addEventListener('click', function() {
-            if (confidenceSlider && sliderValueDisplay) {
+
+        if (resetSliderBtn) {
+            resetSliderBtn.addEventListener('click', function() {
                 confidenceSlider.value = 100;
-                sliderValueDisplay.textContent = '100%';
-                if (timelineContainer) {
-                    timelineContainer.classList.remove('timeline-filtered');
-                }
-                eel.refilter_instances(100)();
-            }
-        });
+                if (sliderValueDisplay) sliderValueDisplay.textContent = '100%';
+                if (timelineContainer) timelineContainer.classList.remove('timeline-filtered');
+                filterModeBelow.checked = true;
+                triggerRefilter();
+            });
+        }
     }
+
+    // Re-initialize tooltips for any newly created elements
+    var tooltipTriggerList = [].slice.call(cheatSheet.querySelectorAll('[data-bs-toggle="tooltip"]'));
+    tooltipTriggerList.map(function (tooltipTriggerEl) {
+        return new bootstrap.Tooltip(tooltipTriggerEl);
+    });
+
     return true;
 }
 
@@ -977,12 +1123,21 @@ async function startPreLabeling() {
     const datasetName = document.getElementById('pl-dataset-name').innerText;
     const modelName = document.getElementById('pl-model-select').value;
     const videoPath = document.getElementById('pl-video-select').value;
-
-    // --- Get the value from the smoothing window input ---
     const smoothingWindow = parseInt(document.getElementById('pl-smoothing-window').value) || 1;
 
     if (!modelName || modelName.includes("...")) { showErrorOnLabelTrainPage("Please select a model."); return; }
     if (!videoPath || videoPath.includes("...")) { showErrorOnLabelTrainPage("Please select a video."); return; }
+
+    // Ask the backend if this video already has human-verified labels.
+    const hasLabels = await eel.video_has_labels(datasetName, videoPath)();
+
+    if (hasLabels) {
+        const confirmationMessage = "This video already contains human-verified labels.\n\nStarting a 'Review & Correct' session will load these labels alongside the model's predictions. When you 'Commit Corrections', only the instances you explicitly confirm or modify in THIS session will be saved, overwriting the previous labels for this video.\n\nAre you sure you want to proceed?";
+        
+        if (!confirm(confirmationMessage)) {
+            return; // User clicked cancel, so we stop here.
+        }
+    }
 
     preLabelBsModal?.hide();
     document.getElementById('cover-spin').style.visibility = 'visible';
@@ -1019,21 +1174,24 @@ async function showImportVideosDialog() {
         const filePaths = await window.electronAPI.invoke('show-open-video-dialog');
         if (filePaths?.length > 0) {
             selectedVideoPathsForImport = filePaths;
+            
+            // Reset crop data for this new batch
+            importCropData = { x: 0.0, y: 0.0, w: 1.0, h: 1.0, apply: true, stretch: false };
+
+            // Populate and show the MAIN import modal
             document.getElementById('import-file-count').textContent = filePaths.length;
             document.getElementById('import-session-name').value = '';
             document.getElementById('import-subject-name').value = '';
-            
-            const sessionDatalist = document.getElementById('session-names-list');
-            if (sessionDatalist) {
-                sessionDatalist.innerHTML = ''; 
-                const sessionNames = await eel.get_existing_session_names()();
-                sessionNames.forEach(name => {
-                    const option = document.createElement('option');
-                    option.value = name;
-                    sessionDatalist.appendChild(option);
-                });
-            }
+            await populateSessionDatalist();
             importVideosBsModal?.show();
+
+            // Attach a listener to our new button
+            document.getElementById('set-crop-for-import-btn').onclick = () => {
+                importVideosBsModal.hide();
+                setupCropOnImportModal(filePaths[0], filePaths.length);
+                cropOnImportBsModal.show();
+            };
+
         } else {
             console.log("User cancelled video selection.");
         }
@@ -1045,9 +1203,8 @@ async function showImportVideosDialog() {
 async function handleImportSubmit() {
     const sessionName = document.getElementById('import-session-name').value;
     const subjectName = document.getElementById('import-subject-name').value;
-	const shouldStandardize = document.getElementById('standardize-video-toggle').checked;
+    const shouldStandardize = document.getElementById('standardize-video-toggle').checked;
 
-	
     if (!sessionName.trim() || !subjectName.trim()) {
         showErrorOnLabelTrainPage("Session Name and Subject Name cannot be empty.");
         return;
@@ -1061,13 +1218,13 @@ async function handleImportSubmit() {
     document.getElementById('cover-spin').style.visibility = 'visible';
 
     try {
-        // Pass the new boolean flag to the backend
-        await eel.import_videos(sessionName, subjectName, selectedVideoPathsForImport, shouldStandardize)();
+        await eel.import_videos(sessionName, subjectName, selectedVideoPathsForImport, shouldStandardize, importCropData)();
     } catch (error) {
         showErrorOnLabelTrainPage("An error occurred while trying to start the import task: " + error.message);
         document.getElementById('cover-spin').style.visibility = 'hidden';
     }
 }
+
 async function showAddDatasetModal() {
     try {
         const treeContainer = document.getElementById('ad-recording-tree');
@@ -1515,6 +1672,71 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('trainModelButton')?.addEventListener('click', submitTrainModel);
 	document.getElementById('startClassificationButton')?.addEventListener('click', submitStartClassification);
     
+	// --- Listeners for the NEW Import Cropping Modal ---
+	document.getElementById('confirm-crop-and-proceed-btn')?.addEventListener('click', async () => {
+		importCropData = {
+			x: parseFloat(document.getElementById('import-crop-x').value),
+			y: parseFloat(document.getElementById('import-crop-y').value),
+			w: parseFloat(document.getElementById('import-crop-width').value),
+			h: parseFloat(document.getElementById('import-crop-height').value),
+			apply: document.getElementById('apply-crop-to-all-toggle').checked,
+			stretch: document.getElementById('stretch-to-square-toggle').checked
+		};
+		cropOnImportBsModal?.hide();
+		importVideosBsModal?.show();
+	});
+
+	const importCropOverlay = document.getElementById("import-crop-overlay-canvas");
+	if (importCropOverlay) {
+		importCropOverlay.addEventListener('mousedown', (e) => {
+			const { offsetX, offsetY } = e;
+			importCrop_ResizeHandle = getImportCropHandleAt(offsetX, offsetY);
+			if (importCrop_ResizeHandle) {
+				isImportCropping_Resizing = true;
+			} else if (offsetX > importCropRect.x && offsetX < importCropRect.x + importCropRect.w && offsetY > importCropRect.y && offsetY < importCropRect.y + importCropRect.h) {
+				isImportCropping_Dragging = true;
+			}
+		});
+
+		importCropOverlay.addEventListener('mousemove', (e) => {
+			const { offsetX, offsetY, movementX, movementY } = e;
+			if (isImportCropping_Dragging) {
+				importCropRect.x += movementX;
+				importCropRect.y += movementY;
+			} else if (isImportCropping_Resizing) {
+				if (importCrop_ResizeHandle.includes('l')) { importCropRect.x += movementX; importCropRect.w -= movementX; }
+				if (importCrop_ResizeHandle.includes('r')) { importCropRect.w += movementX; }
+				if (importCrop_ResizeHandle.includes('t')) { importCropRect.y += movementY; importCropRect.h -= movementY; }
+				if (importCrop_ResizeHandle.includes('b')) { importCropRect.h += movementY; }
+			} else {
+				const handle = getImportCropHandleAt(offsetX, offsetY);
+				if (handle) {
+					if (handle.includes('n') || handle.includes('s')) importCropOverlay.style.cursor = 'ns-resize';
+					else if (handle.includes('e') || handle.includes('w')) importCropOverlay.style.cursor = 'ew-resize';
+				} else if (offsetX > importCropRect.x && offsetX < importCropRect.x + importCropRect.w && offsetY > importCropRect.y && offsetY < importCropRect.y + importCropRect.h) {
+					importCropOverlay.style.cursor = 'move';
+				} else {
+					importCropOverlay.style.cursor = 'crosshair';
+				}
+			}
+			if (isImportCropping_Dragging || isImportCropping_Resizing) {
+				drawImportCropOverlay();
+				updateInputsFromImportCropRect();
+			}
+		});
+
+		importCropOverlay.addEventListener('mouseup', () => {
+			isImportCropping_Dragging = false;
+			isImportCropping_Resizing = false;
+			importCrop_ResizeHandle = null;
+		});
+
+		importCropOverlay.addEventListener('mouseleave', () => {
+			isImportCropping_Dragging = false;
+			isImportCropping_Resizing = false;
+		});
+	}
+	
     // --- Listeners for the Labeling UI ---
     const fullTimelineElement = document.getElementById('full-timeline-image');
     if (fullTimelineElement) {
