@@ -373,3 +373,13 @@ kbd {
 #datasets .container-fluid {
     padding-bottom: 100px; /* Add enough padding to clear the FABs */
 }
+
+/* =================================================================
+   CATEGORY REVIEW MODAL FIX
+   ================================================================= */
+
+/* Target the list items inside our specific playlist modal */
+#cr-video-playlist .list-group-item .fw-bold {
+    /* Allow the browser to break long strings (like file paths) */
+    word-break: break-all;
+}

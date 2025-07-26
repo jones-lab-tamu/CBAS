@@ -53,6 +53,53 @@
   MODALS (Pop-up Dialogs)
   ================================================================== -->
 
+<!-- Modal for Selecting a Behavior to Review -->
+<div class="modal" tabindex="-1" id="behaviorSelectModal">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Review Labels by Behavior</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p>Please select the behavior you would like to review for dataset: <strong id="bs-dataset-name"></strong></p>
+        <div class="mb-3">
+          <label for="bs-behavior-select" class="form-label">Behavior:</label>
+          <select class="form-select" id="bs-behavior-select">
+            <!-- Options will be populated by JavaScript -->
+          </select>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-primary" id="bs-confirm-review-btn">Review Selected Behavior</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal for Category Review Playlist -->
+<div class="modal" tabindex="-1" id="categoryReviewModal">
+  <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Reviewing Behavior: <span id="cr-behavior-name" class="fw-bold text-primary"></span></h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p class="small text-muted">Select a video below to review all instances of this behavior within that file.</p>
+        <ul class="list-group" id="cr-video-playlist">
+          <!-- Playlist will be dynamically generated here by JavaScript -->
+          <li class="list-group-item text-center">Loading...</li>
+        </ul>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
   <!-- Modal for Cropping Videos on Import -->
   <div class="modal" tabindex="-1" id="cropOnImportModal">
     <div class="modal-dialog modal-dialog-centered modal-lg"> <!-- Use modal-lg for more space -->
@@ -281,7 +328,20 @@
             </button>
         </div>
         <hr>
-	  
+		
+		<!-- ========================================================= -->
+		<!-- DATA QUALITY TOOLS SECTION -->
+		<!-- ========================================================= -->
+		<h6 class="mt-3">Data Quality Tools</h6>
+		<p class="small text-muted">Use these tools to harmonize and improve the consistency of your labeled data across the entire dataset.</p>
+		<div class="d-grid gap-2">
+			<button class="btn btn-outline-success" id="reviewByCategoryButton">
+				<i class="bi bi-tags-fill me-2"></i>Review Labels by Behavior
+			</button>
+		</div>
+		<hr>
+		<!-- ========================================================= -->
+			  
         <p class="text-muted">This is an advanced action for power users.</p>
         <p>To rename, merge, or delete behaviors, you must edit the dataset's configuration files (<code>config.yaml</code> and <code>labels.yaml</code>) directly.</p>
         <div class="alert alert-warning" role="alert">

@@ -111,6 +111,8 @@ const manageDatasetModalElement = document.getElementById('manageDatasetModal');
 const augmentDatasetModalElement = document.getElementById('augmentDatasetModal');
 const syncDatasetModalElement = document.getElementById('syncDatasetModal');
 const cropOnImportModalElement = document.getElementById('cropOnImportModal');
+const categoryReviewModalElement = document.getElementById('categoryReviewModal');
+const behaviorSelectModalElement = document.getElementById('behaviorSelectModal');
 
 let addDatasetBsModal = addDatasetModalElement ? new bootstrap.Modal(addDatasetModalElement) : null;
 let trainBsModal = trainModalElement ? new bootstrap.Modal(trainModalElement) : null;
@@ -122,6 +124,9 @@ let manageDatasetBsModal = manageDatasetModalElement ? new bootstrap.Modal(manag
 let augmentDatasetBsModal = augmentDatasetModalElement ? new bootstrap.Modal(augmentDatasetModalElement) : null;
 let syncDatasetBsModal = syncDatasetModalElement ? new bootstrap.Modal(syncDatasetModalElement) : null;
 let cropOnImportBsModal = cropOnImportModalElement ? new bootstrap.Modal(cropOnImportModalElement) : null;
+let categoryReviewBsModal = categoryReviewModalElement ? new bootstrap.Modal(categoryReviewModalElement) : null;
+let behaviorSelectBsModal = behaviorSelectModalElement ? new bootstrap.Modal(behaviorSelectModalElement) : null;
+
 
 // --- Import Cropping State ---
 let importCropData = { x: 0.0, y: 0.0, w: 1.0, h: 1.0, apply: true, stretch: false };
@@ -162,17 +167,14 @@ async function showManageDatasetModal(datasetName) {
     const whitelistContainer = document.getElementById('md-whitelist-container');
     const editWhitelistBtn = document.getElementById('editWhitelistButton');
     
-    // Show a loading state while we fetch the data
     if(whitelistContainer) whitelistContainer.innerHTML = 'Loading...'; 
 
     try {
-        // Fetch the latest dataset configs to get the current whitelist
         const datasets = await eel.load_dataset_configs()();
         const currentWhitelist = datasets[datasetName]?.whitelist || [];
         
         if (whitelistContainer) {
             if (currentWhitelist.length > 0) {
-                // Use a list for better formatting
                 whitelistContainer.innerHTML = `<ul class="list-unstyled mb-0">${currentWhitelist.map(dir => `<li><small>${dir}</small></li>`).join('')}</ul>`;
             } else {
                 whitelistContainer.innerHTML = '<p class="text-muted small m-1">No directories are currently selected.</p>';
@@ -218,7 +220,7 @@ async function showManageDatasetModal(datasetName) {
             }
         };
     }
-	
+    
     // Event listener for the delete button
     const deleteBtn = document.getElementById('deleteDatasetButton');
     if (deleteBtn) {
@@ -241,6 +243,12 @@ async function showManageDatasetModal(datasetName) {
                 }
             }
         };
+    }
+
+    // Attach event for the "Review by Category" button
+    const reviewBtn = document.getElementById('reviewByCategoryButton');
+    if (reviewBtn) {
+        reviewBtn.onclick = () => showReviewByCategoryModal(datasetName);
     }
 
     manageDatasetBsModal.show();
@@ -376,6 +384,87 @@ function showSyncModal(sourceDatasetName, targetDatasetName) {
     startBtn.onclick = () => startSync(sourceDatasetName, targetDatasetName);
 
     syncDatasetBsModal.show();
+}
+
+async function showReviewByCategoryModal(datasetName) {
+    // This function now opens the behavior selection modal.
+    if (!behaviorSelectBsModal) return;
+
+    const datasets = await eel.load_dataset_configs()();
+    const behaviors = datasets[datasetName]?.behaviors || [];
+    
+    if (behaviors.length === 0) {
+        showErrorOnLabelTrainPage("This dataset has no behaviors defined.");
+        return;
+    }
+
+    // Populate the modal
+    document.getElementById('bs-dataset-name').textContent = datasetName;
+    const behaviorSelect = document.getElementById('bs-behavior-select');
+    behaviorSelect.innerHTML = behaviors.map(b => `<option value="${b}">${b}</option>`).join('');
+
+    // Show the modal
+    manageDatasetBsModal.hide(); // Hide the manage modal first
+    behaviorSelectBsModal.show();
+
+    // Wire up the confirm button inside the new modal
+    document.getElementById('bs-confirm-review-btn').onclick = () => {
+        const selectedBehavior = behaviorSelect.value;
+        if (selectedBehavior) {
+            behaviorSelectBsModal.hide();
+            // Call a new helper function to build the playlist
+            buildAndShowPlaylist(datasetName, selectedBehavior);
+        }
+    };
+}
+
+async function buildAndShowPlaylist(datasetName, behaviorToReview) {
+    // This new helper function contains the logic that used to be in the second half
+    // of the old showReviewByCategoryModal function.
+    
+    // Show the playlist modal and set its title
+    if (categoryReviewBsModal) {
+        document.getElementById('cr-behavior-name').textContent = behaviorToReview;
+        const playlistContainer = document.getElementById('cr-video-playlist');
+        playlistContainer.innerHTML = '<li class="list-group-item text-center">Searching for instances...</li>';
+        categoryReviewBsModal.show();
+    }
+
+    // Fetch the instance data from the backend
+    const instancesByVideo = await eel.get_instances_for_behavior(datasetName, behaviorToReview)();
+    
+    const playlistContainer = document.getElementById('cr-video-playlist');
+    playlistContainer.innerHTML = ''; // Clear the loading message
+
+    if (Object.keys(instancesByVideo).length > 0) {
+        const projectRoot = await eel.get_project_root()(); // Get root path once
+        for (const videoPath in instancesByVideo) {
+            const videoData = instancesByVideo[videoPath];
+            const listItem = document.createElement('li');
+            listItem.className = 'list-group-item d-flex justify-content-between align-items-center';
+            
+            // Construct the absolute path
+            const videoAbsPath = `${projectRoot}/${videoData.display_name}`.replace(/\\/g, '/');
+
+            listItem.innerHTML = `
+                <div>
+                    <span class="fw-bold">${videoData.display_name}</span>
+                    <br>
+                    <small class="text-muted">${videoData.instance_count} instance(s)</small>
+                </div>
+                <button class="btn btn-sm btn-primary">Start Review</button>
+            `;
+            
+            listItem.querySelector('button').onclick = () => {
+                categoryReviewBsModal.hide();
+                prepareAndShowLabelModal(datasetName, videoAbsPath, behaviorToReview);
+            };
+
+            playlistContainer.appendChild(listItem);
+        }
+    } else {
+        playlistContainer.innerHTML = '<li class="list-group-item text-center text-muted">No instances of this behavior found in the dataset.</li>';
+    }
 }
 
 async function startSync(sourceDatasetName, targetDatasetName) {
@@ -1153,12 +1242,19 @@ async function startPreLabeling() {
     }
 }
 
-async function prepareAndShowLabelModal(datasetName, videoToOpen) {
+async function prepareAndShowLabelModal(datasetName, videoToOpen, filterForBehavior = null) {
     try {
-        // This function is now only used for scratch/edit, so always set mode to 'scratch'
-        setLabelingModeUI('scratch'); 
+		// If a behavior is being filtered, it's a 'review' like mode, but we still want the 'scratch' UI.
+		setLabelingModeUI('scratch'); // Always start with the simple UI
+		if (filterForBehavior) {
+			// If we are in category review, just change the header text
+			const controlsHeader = document.querySelector('#controls .card-header h5');
+			if (controlsHeader) {
+				controlsHeader.innerHTML = `Reviewing: <span class="badge bg-primary">${filterForBehavior}</span>`;
+			}
+		}		
         
-        const success = await eel.start_labeling(datasetName, videoToOpen, null)();
+        const success = await eel.start_labeling(datasetName, videoToOpen, null, filterForBehavior)();
         if (!success) showErrorOnLabelTrainPage('Backend failed to start the labeling task.');
     } catch (error) {
         showErrorOnLabelTrainPage(`Error initializing labeling interface: ${error.message || 'Unknown error'}`);

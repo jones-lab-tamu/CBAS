@@ -28,6 +28,12 @@ import gui_state
 # =================================================================
 
 @eel.expose
+def get_project_root():
+    if gui_state.proj:
+        return gui_state.proj.path
+    return None
+
+@eel.expose
 def get_encoding_queue_status():
     return workthreads.get_encoding_queue_status()
 
@@ -110,6 +116,10 @@ def stop_live_preview():
 # --- Label/Train Page Functions ---
 
 @eel.expose
+def get_instances_for_behavior(dataset_name, behavior_name):
+    return label_train_page.get_instances_for_behavior(dataset_name, behavior_name)
+
+@eel.expose
 def get_frame_from_video(video_path):
     return label_train_page.get_frame_from_video(video_path)
 
@@ -166,8 +176,8 @@ def get_model_configs():
     return label_train_page.get_model_configs()
 
 @eel.expose
-def start_labeling(name, video, instances):
-    return label_train_page.start_labeling(name, video, instances)
+def start_labeling(name, video, instances, filter_for_behavior=None):
+    return label_train_page.start_labeling(name, video, instances, filter_for_behavior)
 
 @eel.expose
 def start_labeling_with_preload(d_name, m_name, path, smoothing_window):

@@ -424,7 +424,7 @@ def get_model_configs() -> dict:
         return {}
     return {name: model.config for name, model in gui_state.proj.models.items()}
 
-def _start_labeling_worker(name: str, video_to_open: str = None, preloaded_instances: list = None, probability_df: pd.DataFrame = None):
+def _start_labeling_worker(name: str, video_to_open: str = None, preloaded_instances: list = None, probability_df: pd.DataFrame = None, filter_for_behavior: str = None):
     """
     (WORKER) This is the background task that prepares the labeling session. It handles
     all state setup and then calls back to the JavaScript UI when ready.
@@ -452,18 +452,14 @@ def _start_labeling_worker(name: str, video_to_open: str = None, preloaded_insta
         eel.setConfirmationModeUI(False)()
         
         # 1. Force a reload of the specific dataset object from disk.
-        # This ensures we are ALWAYS working with the latest saved labels.
         gui_state.proj.datasets[name] = cbas.Dataset(gui_state.proj.datasets[name].path)
         dataset: cbas.Dataset = gui_state.proj.datasets[name]
         gui_state.label_dataset = dataset
                
-        
         gui_state.label_col_map = Colormap("seaborn:tab20")
         print("Loading session buffer...")
         gui_state.label_videos = [video_to_open]
         
-        # Convert the absolute path from the frontend to a relative path
-        # that matches the format stored in labels.yaml
         relative_video_path = os.path.relpath(video_to_open, start=gui_state.proj.path).replace('\\', '/')
 
         # Step A: ALWAYS load existing human-verified labels from labels.yaml first.
@@ -498,6 +494,20 @@ def _start_labeling_worker(name: str, video_to_open: str = None, preloaded_insta
                 if not is_overlapping:
                     gui_state.label_session_buffer.append(pred_inst)
         
+        # =========================================================
+        # Filter the buffer if a specific behavior is requested
+        # This now runs AFTER all data has been loaded into the buffer.
+        # =========================================================
+        if filter_for_behavior:
+            # We only keep human-verified labels that match the behavior.
+            # Model predictions are discarded in this mode, as the goal is to review ground truth.
+            gui_state.label_session_buffer[:] = [
+                inst for inst in gui_state.label_session_buffer 
+                if 'confidence' not in inst and inst.get('label') == filter_for_behavior
+            ]
+            print(f"Filtered session buffer to show only '{filter_for_behavior}' instances.")
+        # =========================================================
+        
         dataset_behaviors = gui_state.label_dataset.labels.get("behaviors", [])
         behavior_colors = [str(gui_state.label_col_map(tab20_map(i))) for i in range(len(dataset_behaviors))]
         gui_state.label_behavior_colors = behavior_colors
@@ -515,6 +525,43 @@ def _start_labeling_worker(name: str, video_to_open: str = None, preloaded_insta
         print(f"FATAL ERROR in labeling worker: {e}")
         traceback.print_exc()
         eel.showErrorOnLabelTrainPage(f"Failed to start labeling session: {e}")()
+
+def get_instances_for_behavior(dataset_name: str, behavior_name: str) -> dict:
+    """
+    Finds all instances of a specific behavior in a dataset and groups them by video.
+    """
+    if not gui_state.proj or dataset_name not in gui_state.proj.datasets:
+        return {}
+
+    dataset = gui_state.proj.datasets[dataset_name]
+    # Ensure we have the latest labels from disk
+    with open(dataset.labels_path, 'r') as f:
+        labels_data = yaml.safe_load(f)
+
+    instances_by_video = {}
+    
+    # Find the list of instances for the requested behavior
+    all_instances_for_behavior = labels_data.get("labels", {}).get(behavior_name, [])
+
+    for instance in all_instances_for_behavior:
+        video_path = instance.get("video")
+        if not video_path:
+            continue
+
+        # Group by the video path
+        if video_path not in instances_by_video:
+            instances_by_video[video_path] = {
+                "instance_count": 0,
+                "display_name": video_path.replace('\\', '/') # Standardize slashes for display
+            }
+        
+        instances_by_video[video_path]["instance_count"] += 1
+    
+    # Sort the results by display name for a consistent UI
+    sorted_videos = sorted(instances_by_video.items(), key=lambda item: item[1]['display_name'])
+    
+    return dict(sorted_videos)
+
 
 def update_dataset_whitelist(dataset_name: str, new_whitelist: list[str]) -> bool:
     """
@@ -540,12 +587,12 @@ def update_dataset_whitelist(dataset_name: str, new_whitelist: list[str]) -> boo
         traceback.print_exc()
         return False
 
-def start_labeling(name: str, video_to_open: str = None, preloaded_instances: list = None) -> bool:
+def start_labeling(name: str, video_to_open: str = None, preloaded_instances: list = None, filter_for_behavior: str = None) -> bool:
     """
     (LAUNCHER) Lightweight function to spawn the labeling worker in the background.
     """
     try:
-        eel.spawn(_start_labeling_worker, name, video_to_open, preloaded_instances, None)
+        eel.spawn(_start_labeling_worker, name, video_to_open, preloaded_instances, None, filter_for_behavior)
         print(f"Spawned labeling worker for dataset '{name}'.")
         return True
     except Exception as e:
