@@ -611,15 +611,22 @@
           <div id="file-info" class="col-md-9">
             <!-- Current video path is injected here -->
           </div>
-          <div class="col-md-3 text-end">
-            <button id="save-labels-btn" class="btn btn-success" onclick="handleCommitClick()" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Save confirmed labels (Ctrl+S)">
-			  <i class="bi bi-save-fill me-2"></i>Commit Corrections
-			</button>
-			<button id="cancel-commit-btn" class="btn btn-secondary ms-2" onclick="eel.cancel_commit_stage()()" style="display: none;">
-			  Cancel
-			</button>
-          </div>
+	  
+		  <div class="col-md-3 text-end">
+		  <!-- NEW BUTTON: Hidden by default -->
+		  <button id="mark-reviewed-btn" class="btn btn-info me-2" style="display: none;">
+			<i class="bi bi-check-square-fill me-2"></i>Mark as Reviewed
+		  </button>
+
+		  <button id="save-labels-btn" class="btn btn-success" onclick="handleCommitClick()" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Save confirmed labels (Ctrl+S)">
+			<i class="bi bi-save-fill me-2"></i>Commit Corrections
+		  </button>
+		  <button id="cancel-commit-btn" class="btn btn-secondary ms-2" onclick="eel.cancel_commit_stage()()" style="display: none;">
+			Cancel
+		  </button>
+		</div>
         </div>
+		
         <!-- Main Content: Video and Controls Panel -->
         <div class="row flex-grow-1">
           

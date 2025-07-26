@@ -438,6 +438,10 @@ async function buildAndShowPlaylist(datasetName, behaviorToReview) {
 
     if (Object.keys(instancesByVideo).length > 0) {
         const projectRoot = await eel.get_project_root()(); // Get root path once
+        
+        // Get the list of reviewed videos ONCE before the loop
+        const reviewedVideos = JSON.parse(sessionStorage.getItem('categoryReviewedVideos') || '[]');
+
         for (const videoPath in instancesByVideo) {
             const videoData = instancesByVideo[videoPath];
             const listItem = document.createElement('li');
@@ -446,19 +450,33 @@ async function buildAndShowPlaylist(datasetName, behaviorToReview) {
             // Construct the absolute path
             const videoAbsPath = `${projectRoot}/${videoData.display_name}`.replace(/\\/g, '/');
 
+            // =========================================================
+            // Check if this video has been reviewed
+            // =========================================================
+            const isReviewed = reviewedVideos.includes(videoData.display_name);
+            
+            let statusIndicator = '<button class="btn btn-sm btn-primary">Start Review</button>';
+            if (isReviewed) {
+                statusIndicator = '<span class="badge bg-success"><i class="bi bi-check-lg"></i> Reviewed</span>';
+            }
+            // =========================================================
+
             listItem.innerHTML = `
                 <div>
                     <span class="fw-bold">${videoData.display_name}</span>
                     <br>
                     <small class="text-muted">${videoData.instance_count} instance(s)</small>
                 </div>
-                <button class="btn btn-sm btn-primary">Start Review</button>
+                ${statusIndicator} 
             `;
             
-            listItem.querySelector('button').onclick = () => {
-                categoryReviewBsModal.hide();
-                prepareAndShowLabelModal(datasetName, videoAbsPath, behaviorToReview);
-            };
+            // Only add the click listener if the video is NOT reviewed
+            if (!isReviewed) {
+                listItem.querySelector('button').onclick = () => {
+                    categoryReviewBsModal.hide();
+                    prepareAndShowLabelModal(datasetName, videoAbsPath, behaviorToReview);
+                };
+            }
 
             playlistContainer.appendChild(listItem);
         }
@@ -1018,6 +1036,28 @@ function setConfirmationModeUI(isConfirming) {
 // UI INTERACTION & EVENT HANDLERS
 // =================================================================
 
+function handleMarkAsReviewed() {
+    // This function is for when no changes were made, but the user wants to mark the video as done.
+    const fileInfoElem = document.getElementById('file-info');
+    if (fileInfoElem && fileInfoElem.innerText) {
+        const reviewedVideoPath = fileInfoElem.innerText;
+        
+        let reviewedVideos = JSON.parse(sessionStorage.getItem('categoryReviewedVideos') || '[]');
+        if (!reviewedVideos.includes(reviewedVideoPath)) {
+            reviewedVideos.push(reviewedVideoPath);
+        }
+        sessionStorage.setItem('categoryReviewedVideos', JSON.stringify(reviewedVideos));
+        
+        // Close the labeling UI and go back to the main view
+        document.getElementById('label').style.display = 'none';
+        document.getElementById('labeling-cheat-sheet').style.display = 'none';
+        document.getElementById('datasets').style.display = 'block';
+        labelingInterfaceActive = false;
+        // No need to reload all cards, the playlist will update itself when re-opened.
+    }
+}
+
+
 function jumpToFrame() {
     const input = document.getElementById('frame-jump-input');
     if (input && input.value) {
@@ -1026,19 +1066,31 @@ function jumpToFrame() {
     }
 }
 
-function handleCommitClick() {
+async function handleCommitClick() { 
     const commitBtn = document.getElementById('save-labels-btn');
     const isConfirming = commitBtn.innerText.includes("Confirm & Save");
 
-    // Define messages based on the current mode
     const confirmationMessage = currentLabelingMode === 'review' 
         ? "Are you sure you want to commit these verified labels? This will overwrite previous labels for this video file."
         : "Are you sure you want to save these new labels? This will overwrite any previous labels for this video file.";
 
     if (isConfirming) {
         if (confirm(confirmationMessage)) {
-            eel.save_session_labels()();
             
+            // Use await to get the return value from the backend
+            const reviewedVideoPath = await eel.save_session_labels()();
+
+
+            // =========================================================
+            if (reviewedVideoPath) {
+                let reviewedVideos = JSON.parse(sessionStorage.getItem('categoryReviewedVideos') || '[]');
+                if (!reviewedVideos.includes(reviewedVideoPath)) {
+                    reviewedVideos.push(reviewedVideoPath);
+                }
+                sessionStorage.setItem('categoryReviewedVideos', JSON.stringify(reviewedVideos));
+            }
+            // =========================================================
+
             commitBtn.innerHTML = '<i class="bi bi-check-lg"></i> Saved!';
             commitBtn.classList.add('btn-info');
             commitBtn.classList.remove('btn-primary');
@@ -1054,6 +1106,7 @@ function handleCommitClick() {
         eel.stage_for_commit()();
     }
 }
+
 
 function jumpToInstance(direction) {
     eel.jump_to_instance(direction)();
@@ -1244,15 +1297,20 @@ async function startPreLabeling() {
 
 async function prepareAndShowLabelModal(datasetName, videoToOpen, filterForBehavior = null) {
     try {
-		// If a behavior is being filtered, it's a 'review' like mode, but we still want the 'scratch' UI.
-		setLabelingModeUI('scratch'); // Always start with the simple UI
-		if (filterForBehavior) {
-			// If we are in category review, just change the header text
-			const controlsHeader = document.querySelector('#controls .card-header h5');
-			if (controlsHeader) {
-				controlsHeader.innerHTML = `Reviewing: <span class="badge bg-primary">${filterForBehavior}</span>`;
-			}
-		}		
+        const markReviewedBtn = document.getElementById('mark-reviewed-btn'); // Get the new button
+        
+        setLabelingModeUI('scratch'); 
+        if (filterForBehavior) {
+            const controlsHeader = document.querySelector('#controls .card-header h5');
+            if (controlsHeader) {
+                controlsHeader.innerHTML = `Reviewing: <span class="badge bg-primary">${filterForBehavior}</span>`;
+            }
+            // SHOW the button only in category review mode
+            if (markReviewedBtn) markReviewedBtn.style.display = 'inline-block';
+        } else {
+            // HIDE the button in all other modes
+            if (markReviewedBtn) markReviewedBtn.style.display = 'none';
+        }
         
         const success = await eel.start_labeling(datasetName, videoToOpen, null, filterForBehavior)();
         if (!success) showErrorOnLabelTrainPage('Backend failed to start the labeling task.');
@@ -1765,6 +1823,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // --- Listeners for various modal/page buttons ---
     document.getElementById('createDatasetButton')?.addEventListener('click', submitCreateDataset);
     document.getElementById('modal-import-button-final')?.addEventListener('click', handleImportSubmit);
+	document.getElementById('mark-reviewed-btn')?.addEventListener('click', handleMarkAsReviewed);
     document.getElementById('trainModelButton')?.addEventListener('click', submitTrainModel);
 	document.getElementById('startClassificationButton')?.addEventListener('click', submitStartClassification);
     

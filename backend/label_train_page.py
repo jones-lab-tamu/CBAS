@@ -664,34 +664,48 @@ def start_labeling_with_preload(dataset_name: str, model_name: str, video_path_t
 
 def save_session_labels():
     """
-    Filters for only human-verified/confirmed instances and saves them.
+    Filters for only human-verified/confirmed instances and saves them, correctly
+    overwriting previous labels for the specific video file.
     """
     if not gui_state.label_dataset or not gui_state.label_videos: return
 
-    final_labels_to_save = []
+    # Get the absolute and relative paths for the video being edited
+    current_video_path_abs = gui_state.label_videos[0]
+    current_video_path_rel = os.path.relpath(current_video_path_abs, start=gui_state.proj.path).replace('\\', '/')
+
+    # --- Step 1: Prepare the new, corrected labels for this video ---
+    final_labels_for_this_video = []
     for inst in gui_state.label_session_buffer:
+        # We only care about instances that were "touched" (confirmed or created from scratch)
         if 'confidence' not in inst or inst.get('_confirmed', False):
             final_inst = inst.copy()
+            # Clean up all internal-use keys before saving
             for key in ['confidence', 'confidences', '_original_start', '_original_end', '_confirmed']:
                 final_inst.pop(key, None)
-            final_labels_to_save.append(final_inst)
+            
+            # CRITICAL: Ensure the video path is the correct relative path
+            final_inst['video'] = current_video_path_rel
+            final_labels_for_this_video.append(final_inst)
 
-    current_video_path = gui_state.label_videos[0]
-    all_labels = gui_state.label_dataset.labels["labels"]
+    # --- Step 2: Load the master label data ---
+    all_labels_data = gui_state.label_dataset.labels["labels"]
 
-    for behavior_name in all_labels:
-        all_labels[behavior_name][:] = [
-            inst for inst in all_labels[behavior_name] if inst.get("video") != current_video_path
+    # --- Step 3: Remove ALL old labels for this specific video ---
+    for behavior_name in all_labels_data:
+        # This creates a new list, filtering out the old entries
+        all_labels_data[behavior_name] = [
+            inst for inst in all_labels_data[behavior_name] if inst.get("video") != current_video_path_rel
         ]
     
-    for corrected_inst in final_labels_to_save:
-        all_labels.setdefault(corrected_inst['label'], []).append(corrected_inst)
+    # --- Step 4: Add the new, corrected labels back in ---
+    for corrected_inst in final_labels_for_this_video:
+        all_labels_data.setdefault(corrected_inst['label'], []).append(corrected_inst)
     
+    # --- Step 5: Save the updated master label file ---
     with open(gui_state.label_dataset.labels_path, "w") as file:
         yaml.dump(gui_state.label_dataset.labels, file, allow_unicode=True)
     
-    # After saving, immediately update the instance counts in the config file.
-    # This ensures that the next time the frontend loads configs, the counts are fresh.
+    # --- Step 6: Recalculate stats and update UI ---
     try:
         workthreads.log_message(f"Recalculating instance counts for '{gui_state.label_dataset.name}'...", "INFO")
         gui_state.label_dataset.update_instance_counts_in_config(gui_state.proj)
@@ -699,12 +713,12 @@ def save_session_labels():
     except Exception as e:
         workthreads.log_message(f"Could not update instance counts after saving: {e}", "ERROR")
 
-    print(f"Saved {len(final_labels_to_save)} human-verified/corrected labels for video {os.path.basename(current_video_path)}.")
+    print(f"Saved {len(final_labels_for_this_video)} human-verified/corrected labels for video {os.path.basename(current_video_path_abs)}.")
     
     gui_state.label_confirmation_mode = False
     eel.setConfirmationModeUI(False)()
     render_image()
-
+    return current_video_path_rel
 
 def refilter_instances(new_threshold: int, mode: str = 'below'):
     """
