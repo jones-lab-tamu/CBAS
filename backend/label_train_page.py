@@ -754,6 +754,20 @@ def refilter_instances(new_threshold: int, mode: str = 'below'):
 # EEL-EXPOSED FUNCTIONS: IN-SESSION LABELING ACTIONS
 # =================================================================
 
+def get_current_labeling_video_path() -> str | None:
+    """
+    Returns the relative path of the video currently loaded in the labeling interface.
+    """
+    if not gui_state.proj or not gui_state.label_videos or gui_state.label_vid_index == -1:
+        return None
+    
+    try:
+        absolute_path = gui_state.label_videos[gui_state.label_vid_index]
+        relative_path = os.path.relpath(absolute_path, start=gui_state.proj.path).replace('\\', '/')
+        return relative_path
+    except Exception:
+        return None
+
 def get_frame_from_video(video_path: str) -> str | None:
     """Extracts the first frame of a video and returns it as a base64 string."""
     if not os.path.exists(video_path):

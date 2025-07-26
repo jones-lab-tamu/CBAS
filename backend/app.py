@@ -236,6 +236,10 @@ def pop_instance_from_buffer():
     return label_train_page.pop_instance_from_buffer()
 
 @eel.expose
+def get_current_labeling_video_path():
+    return label_train_page.get_current_labeling_video_path()
+
+@eel.expose
 def stage_for_commit():
     return label_train_page.stage_for_commit()
 

@@ -1036,24 +1036,28 @@ function setConfirmationModeUI(isConfirming) {
 // UI INTERACTION & EVENT HANDLERS
 // =================================================================
 
-function handleMarkAsReviewed() {
+async function handleMarkAsReviewed() {
     // This function is for when no changes were made, but the user wants to mark the video as done.
-    const fileInfoElem = document.getElementById('file-info');
-    if (fileInfoElem && fileInfoElem.innerText) {
-        const reviewedVideoPath = fileInfoElem.innerText;
-        
+    
+    // Step 1: Ask the backend for the authoritative, correctly formatted path of the current video.
+    const reviewedVideoPath = await eel.get_current_labeling_video_path()();
+
+    if (reviewedVideoPath) {
+        // Step 2: Save this canonical path to sessionStorage.
         let reviewedVideos = JSON.parse(sessionStorage.getItem('categoryReviewedVideos') || '[]');
         if (!reviewedVideos.includes(reviewedVideoPath)) {
             reviewedVideos.push(reviewedVideoPath);
         }
         sessionStorage.setItem('categoryReviewedVideos', JSON.stringify(reviewedVideos));
         
-        // Close the labeling UI and go back to the main view
+        // Step 3: Close the labeling UI and return to the main dataset view.
         document.getElementById('label').style.display = 'none';
         document.getElementById('labeling-cheat-sheet').style.display = 'none';
         document.getElementById('datasets').style.display = 'block';
         labelingInterfaceActive = false;
-        // No need to reload all cards, the playlist will update itself when re-opened.
+    } else {
+        // This is a fallback in case something went wrong on the backend.
+        showErrorOnLabelTrainPage("Could not identify the current video to mark as reviewed.");
     }
 }
 
