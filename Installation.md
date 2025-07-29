@@ -6,10 +6,16 @@ This guide provides step-by-step instructions for installing the CBAS v3 (Beta) 
 
 1.  **Git:** Download from [https://git-scm.com/download/win](https://git-scm.com/download/win) and install using the default settings.
 
-2.  **Python 3.11 (64-bit):**
-    *   **CRITICAL:** This specific version of Python is required for compatibility with the GPU-accelerated libraries.
+2.  **Python (64-bit, version 3.11 or 3.12):**
+
+    > [!IMPORTANT]
+    > **You must use a 64-bit version of either Python 3.11 or Python 3.12.**
+    > Due to strict dependencies for the GPU-accelerated libraries, using an unsupported Python version (like 3.10 or 3.13+) or a 32-bit installation will cause the installation to fail with a `No matching distribution found for torch` error.
+
     *   **Uninstall any other Python versions** from your system via "Add or remove programs" to avoid conflicts.
-    *   Download the **"Windows installer (64-bit)" for Python 3.11.9** from the official site: [https://www.python.org/downloads/release/python-3119/](https://www.python.org/downloads/release/python-3119/)
+    *   Download the **"Windows installer (64-bit)"** for your chosen version from the official site:
+        *   [**Python 3.11.9** (Recommended for maximum compatibility)](https://www.python.org/downloads/release/python-3119/)
+        *   [**Python 3.12.6** (Known to be working)](https://www.python.org/downloads/release/python-3126/)
     *   Run the installer. On the first screen, **check the box that says "Add python.exe to PATH"**.
 
 3.  **Node.js (LTS version):** Download the LTS version from [https://nodejs.org/](https://nodejs.org/) and install with default settings.
