@@ -44,15 +44,28 @@ This guide provides step-by-step instructions for installing the CBAS v3 (Beta) 
     ```
 
 5.  **Install All Python Dependencies:**
+
     *   First, upgrade `pip` within the virtual environment:
-        ```
+        ```bash
         python.exe -m pip install --upgrade pip
         ```
-    *   Then, install the packages from the requirements file and the specific PyTorch version:
+
+    *   Next, install the specific PyTorch version required for GPU acceleration.
+        The following command is tailored for systems with an NVIDIA GPU and CUDA 12.1 drivers:
+        ```bash
+        pip install torch==2.5.1+cu121 torchvision==0.20.1+cu121 torchaudio==2.5.1+cu121 --extra-index-url https://download.pytorch.org/whl/cu121
         ```
+
+    *   Finally, install the remaining application dependencies from the `requirements.txt` file:
+        ```bash
         pip install -r requirements.txt
-        pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
         ```
+
+    > **Note for Non-GPU Systems:**
+	> If you do not have an NVIDIA GPU, or if the command above fails, you can install the CPU-only version of PyTorch. **Please be aware that all AI-related tasks will be significantly slower.**
+	> ```bash
+	> pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1
+	> ```
 
 6.  **Install Node.js Dependencies:**
     ```
