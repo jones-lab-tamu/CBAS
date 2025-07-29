@@ -554,14 +554,14 @@ class TrainingThread(threading.Thread):
                         task.name, 
                         seq_len=task.sequence_length, 
                         progress_callback=update_progress, 
-                        seed=run_num  # Pass the current run number as the seed
+                        seed=run_num
                     )
                 else:
                     train_ds, test_ds, _, _ = gui_state.proj.load_dataset(
                         task.name, 
                         seq_len=task.sequence_length, 
                         progress_callback=update_progress, 
-                        seed=run_num  # Pass the current run number as the seed
+                        seed=run_num
                     )
                     weights = None
                 
@@ -582,15 +582,10 @@ class TrainingThread(threading.Thread):
                     
                     def training_progress_updater(message: str):
                         f1_match = re.search(r"Val F1: ([\d\.]+)", message)
-                        
-                        # Determine the best F1 seen so far in this run
                         current_best = run_best_f1
                         if f1_match:
                             current_best = max(run_best_f1, float(f1_match.group(1)))
-
-                        # Format the F1 score for display, showing "N/A" if it's still negative
                         f1_text = f"{current_best:.4f}" if current_best >= 0 else "N/A"
-                        
                         display_message = f"Run {run_num + 1}/{task.num_runs}, Trial {i + 1}/{NUM_INNER_TRIALS}... Best F1: {f1_text}"
                         eel.spawn(eel.updateTrainingStatusOnUI(task.name, display_message, message))
 
@@ -638,7 +633,6 @@ class TrainingThread(threading.Thread):
         avg_report = {}
         for b in task.behaviors:
             avg_report[b] = {
-                # Cast each result to a standard Python float()
                 'precision': float(np.mean([r.get(b, {}).get('precision', 0) for r in all_reports])),
                 'recall': float(np.mean([r.get(b, {}).get('recall', 0) for r in all_reports])),
                 'f1-score': float(np.mean([r.get(b, {}).get('f1-score', 0) for r in all_reports])),
@@ -665,7 +659,6 @@ class TrainingThread(threading.Thread):
         task.dataset.update_instance_counts_in_config(gui_state.proj)
         for b in task.behaviors:
             b_metrics = avg_report.get(b, {})
-            # Use task.dataset, not the undefined 'dataset'
             task.dataset.update_metric(b, "F1 Score", round(b_metrics.get('f1-score', 0), 2))
             task.dataset.update_metric(b, "Recall", round(b_metrics.get('recall', 0), 2))
             task.dataset.update_metric(b, "Precision", round(b_metrics.get('precision', 0), 2))

@@ -12,7 +12,8 @@ import math
 import shutil
 import subprocess
 from datetime import datetime
-import random
+import random as global_random # Keep the global one for old code
+import random # Import it again to use the class
 import yaml
 import re
 import threading
@@ -785,23 +786,40 @@ class Project:
         seqs, labels = zip(*shuffled_pairs)
         return list(seqs), list(labels)
         
-    def _load_dataset_common(self, name, split):
+    def _load_dataset_common(self, name, split, seed):
+        """
+        Internal method to load and split datasets.
+        Uses a local Random instance for reproducible, isolated shuffling.
+        """
+        # Create a new, isolated random number generator instance from the seed
+        local_rng = random.Random(seed)
+
         dataset_path = os.path.join(self.datasets_dir, name)
         if not os.path.isdir(dataset_path): raise FileNotFoundError(dataset_path)
-        with open(os.path.join(dataset_path, "labels.yaml"), "r") as f: label_config = yaml.safe_load(f)
+        
+        # Use FullLoader to handle potential Python-specific tags like defaultdict
+        with open(os.path.join(dataset_path, "labels.yaml"), "r") as f: 
+            label_config = yaml.load(f, Loader=yaml.FullLoader)
+            
         behaviors = label_config.get("behaviors", [])
         if not behaviors: return None, None, None
+        
         all_insts = [inst for b in behaviors for inst in label_config.get("labels", {}).get(b, [])]
         if not all_insts: return [], [], behaviors
-        random.shuffle(all_insts)
+        
+        # Use the local RNG instance for all shuffling
+        local_rng.shuffle(all_insts)
+        
         group_to_behaviors, group_to_instances = {}, {}
         for inst in all_insts:
             if 'video' in inst and inst['video']:
                 group_key = os.path.basename(os.path.dirname(inst['video']))
                 group_to_instances.setdefault(group_key, []).append(inst)
                 group_to_behaviors.setdefault(group_key, set()).add(inst['label'])
+        
         all_groups = list(group_to_instances.keys())
-        random.shuffle(all_groups)
+        local_rng.shuffle(all_groups)
+        
         test_groups, behaviors_needed_in_test = set(), set(behaviors)
         while behaviors_needed_in_test:
             best_group, best_group_coverage = None, -1
@@ -818,68 +836,73 @@ class Project:
                 test_groups.add(best_group)
                 behaviors_needed_in_test.difference_update(group_to_behaviors.get(best_group, set()))
             else: break
+            
         remaining_groups = [g for g in all_groups if g not in test_groups]
         remaining_groups.sort(key=lambda g: len(group_to_instances.get(g, [])), reverse=True)
         current_test_size = sum(len(group_to_instances.get(g, [])) for g in test_groups)
         total_size = len(all_insts)
+        
         for group in remaining_groups:
             if current_test_size / total_size >= split: break
             if group not in test_groups:
                 test_groups.add(group)
                 current_test_size += len(group_to_instances.get(group, []))
+                
         train_groups = [g for g in all_groups if g not in test_groups]
         train_insts = [inst for group in train_groups for inst in group_to_instances[group]]
-        
         test_insts = [inst for group in test_groups for inst in group_to_instances[group]]
-        random.shuffle(train_insts)
-        random.shuffle(test_insts)
-        print(f"Stratified Group Split: {len(train_insts)} train instances, {len(test_insts)} test instances.")
+        
+        # Use the local RNG instance for final shuffles
+        local_rng.shuffle(train_insts)
+        local_rng.shuffle(test_insts)
+        
+        print(f"Stratified Group Split (Seed: {seed}): {len(train_insts)} train instances, {len(test_insts)} test instances.")
         print(f"  - Train groups: {len(train_groups)}, Test groups: {len(test_groups)}")
         
-        # If stratification results in an empty training set but a populated test set,
-        # (common when only one group exists), fall back to a simple 80/20 split.
         if not train_insts and test_insts:
-            print("  - [WARN] All labeled data belongs to a single group. Subject-level split is not possible. Falling back to a random 80/20 instance split. Model performance will reflect generalization on new data from the *same* subject, not a new, unseen subject.")
-            # Use all instances from the test set for the split
+            print("  - [WARN] All labeled data belongs to a single group. Subject-level split is not possible. Falling back to a random 80/20 instance split.")
             all_insts = test_insts
-            random.shuffle(all_insts)
+            local_rng.shuffle(all_insts)
             split_idx = int(len(all_insts) * (1 - split))
             return all_insts[:split_idx], all_insts[split_idx:], behaviors        
         
         if not test_insts and train_insts:
             print("  - Warning: Stratified split resulted in an empty test set. Falling back to 80/20 instance split.")
-            # Re-use all_insts from the top of the function if this logic is kept
-            # Or, more robustly: all_insts = train_insts
             all_insts = train_insts
-            random.shuffle(all_insts)
+            local_rng.shuffle(all_insts)
             split_idx = int(len(all_insts) * (1 - split))
             return all_insts[:split_idx], all_insts[split_idx:], behaviors
 
         return train_insts, test_insts, behaviors
         
     def load_dataset(self, name: str, seed: int = 42, split: float = 0.2, seq_len: int = 15, progress_callback=None) -> tuple:
-        random.seed(seed)
-        train_insts, test_insts, behaviors = self._load_dataset_common(name, split)
+        # The random.seed() call is removed from here.
+        train_insts, test_insts, behaviors = self._load_dataset_common(name, split, seed)
         if train_insts is None: return None, None, None, None
+        
         def train_prog(p): progress_callback(p*0.5) if progress_callback else None
         def test_prog(p): progress_callback(50 + p*0.5) if progress_callback else None
+        
         train_seqs, train_labels = self.convert_instances(self.path, train_insts, seq_len, behaviors, train_prog)
         test_seqs, test_labels = self.convert_instances(self.path, test_insts, seq_len, behaviors, test_prog)
+        
         return BalancedDataset(train_seqs, train_labels, behaviors), StandardDataset(test_seqs, test_labels), train_insts, test_insts
         
     def load_dataset_for_weighted_loss(self, name, seed=42, split=0.2, seq_len=15, progress_callback=None) -> tuple:
-        random.seed(seed)
-        train_insts, test_insts, behaviors = self._load_dataset_common(name, split)
+        # The random.seed() call is removed from here.
+        train_insts, test_insts, behaviors = self._load_dataset_common(name, split, seed)
         if train_insts is None: return None, None, None, None, None
         
         def train_prog(p): progress_callback(p*0.5) if progress_callback else None
-        
         def test_prog(p): progress_callback(50 + p*0.5) if progress_callback else None
+        
         train_seqs, train_labels = self.convert_instances(self.path, train_insts, seq_len, behaviors, train_prog)
         if not train_labels: return None, None, None, None, None
+        
         class_counts = np.bincount([lbl.item() for lbl in train_labels], minlength=len(behaviors))
         weights = [sum(class_counts) / (len(behaviors) * c) if c > 0 else 0 for c in class_counts]
         test_seqs, test_labels = self.convert_instances(self.path, test_insts, seq_len, behaviors, test_prog)
+        
         return StandardDataset(train_seqs, train_labels), StandardDataset(test_seqs, test_labels), weights, train_insts, test_insts
 
 def collate_fn(batch):
