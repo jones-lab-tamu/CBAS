@@ -787,15 +787,14 @@ class Project:
         
     def _load_dataset_common(self, name, split, seed):
         """
-        Internal method to load and split datasets.
-        Uses a dedicated NumPy Random Generator for reproducible, isolated shuffling.
+        Internal method to load and split datasets with heavy debugging.
         """
         # =========================================================
-        # Use NumPy's robust random number generator
+        # DIAGNOSTIC PRINT 1: Confirm function is running with unique time
+        print(f"DEBUG: _load_dataset_common called at {time.time_ns()} with seed {seed}")
         # =========================================================
-        # Create a new, isolated random number generator instance from the seed
-        rng = np.random.default_rng(seed)
-        # =========================================================
+
+        rng = np.random.default_rng() # Use system entropy
 
         dataset_path = os.path.join(self.datasets_dir, name)
         if not os.path.isdir(dataset_path): raise FileNotFoundError(dataset_path)
@@ -809,11 +808,6 @@ class Project:
         all_insts = [inst for b in behaviors for inst in label_config.get("labels", {}).get(b, [])]
         if not all_insts: return [], [], behaviors
         
-        # Use the NumPy RNG to shuffle in place.
-        # Note: rng.shuffle requires a NumPy array for multi-dimensional shuffling,
-        # but works fine on a list of objects for 1D shuffling.
-        rng.shuffle(all_insts)
-        
         group_to_behaviors, group_to_instances = {}, {}
         for inst in all_insts:
             if 'video' in inst and inst['video']:
@@ -821,9 +815,20 @@ class Project:
                 group_to_instances.setdefault(group_key, []).append(inst)
                 group_to_behaviors.setdefault(group_key, set()).add(inst['label'])
         
-        all_groups = list(group_to_instances.keys())
-        # Use the NumPy RNG to shuffle the groups
+        all_groups = sorted(list(group_to_instances.keys())) # Sort alphabetically for a deterministic starting point
+
+        # =========================================================
+        # DIAGNOSTIC PRINT 2: Show the list BEFORE shuffling
+        print(f"DEBUG: Group list before shuffle: {all_groups[:5]}...") # Print first 5
+        # =========================================================
+
+        # Shuffle the list
         rng.shuffle(all_groups)
+
+        # =========================================================
+        # DIAGNOSTIC PRINT 3: Show the list AFTER shuffling
+        print(f"DEBUG: Group list AFTER shuffle: {all_groups[:5]}...") # Print first 5 again
+        # =========================================================
         
         test_groups, behaviors_needed_in_test = set(), set(behaviors)
         while behaviors_needed_in_test:
@@ -857,7 +862,6 @@ class Project:
         train_insts = [inst for group in train_groups for inst in group_to_instances[group]]
         test_insts = [inst for group in test_groups for inst in group_to_instances[group]]
         
-        # Use the NumPy RNG for the final shuffles
         rng.shuffle(train_insts)
         rng.shuffle(test_insts)
         
@@ -867,14 +871,14 @@ class Project:
         if not train_insts and test_insts:
             print("  - [WARN] All labeled data belongs to a single group. Subject-level split is not possible. Falling back to a random 80/20 instance split. Model performance will reflect generalization on new data from the *same* subject, not a new, unseen subject.")
             all_insts = test_insts
-            rng.shuffle(all_insts) # Use NumPy RNG here too
+            rng.shuffle(all_insts)
             split_idx = int(len(all_insts) * (1 - split))
             return all_insts[:split_idx], all_insts[split_idx:], behaviors        
         
         if not test_insts and train_insts:
             print("  - Warning: Stratified split resulted in an empty test set. Falling back to 80/20 instance split.")
             all_insts = train_insts
-            rng.shuffle(all_insts) # And here
+            rng.shuffle(all_insts)
             split_idx = int(len(all_insts) * (1 - split))
             return all_insts[:split_idx], all_insts[split_idx:], behaviors
 
