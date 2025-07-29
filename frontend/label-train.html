@@ -512,6 +512,21 @@
 			  </div>
 			</div>
 
+			<!-- ========================================================= -->
+			<!-- Number of Data Splits for Averaging -->
+			<!-- ========================================================= -->		
+			<div class="row g-3 mb-3">
+			  <div class="col">
+				<label for="tm-runs" class="form-label" data-bs-toggle="tooltip" data-bs-placement="top" title="Number of different random train/validation splits to run. Averaging across runs provides a more stable performance estimate.">Number of Runs (Splits):</label>
+				<input type="number" class="form-control" id="tm-runs" value="3" step="1" min="1" max="10">
+			  </div>
+			  <div class="col">
+				<label for="tm-trials" class="form-label" data-bs-toggle="tooltip" data-bs-placement="top" title="For each run, the number of times to train a model from scratch. Helps overcome randomness from model weight initialization.">Trials per Run:</label>
+				<input type="number" class="form-control" id="tm-trials" value="5" step="1" min="1" max="20">
+			  </div>
+			</div>
+			<!-- ========================================================= -->
+
 			<!-- Group label and input together inside each column -->
 			<div class="row g-3">
 			  <div class="col">

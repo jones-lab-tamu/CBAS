@@ -1458,7 +1458,11 @@ async function submitTrainModel() {
     const trainMethod = document.getElementById('tm-method').value;
     const patience = document.getElementById('tm-patience').value;
 
-    if (!batchSize || !seqLen || !learningRate || !epochsCount || !patience) {
+    const numRuns = document.getElementById('tm-runs').value;
+	const numTrials = document.getElementById('tm-trials').value;
+
+
+    if (!batchSize || !seqLen || !learningRate || !epochsCount || !patience || !numRuns || !numTrials) {
         showErrorOnLabelTrainPage("All training parameters must be filled.");
         return;
     }
@@ -1479,7 +1483,7 @@ async function submitTrainModel() {
     
     // Call the backend to start the training process. This is a non-blocking,
     // "fire-and-forget" call. The UI thread is now free.
-    eel.train_model(datasetName, batchSize, learningRate, epochsCount, seqLen, trainMethod, patience)();
+    eel.train_model(datasetName, batchSize, learningRate, epochsCount, seqLen, trainMethod, patience, numRuns, numTrials)();
 }
 
 async function showInferenceModal(datasetName) {

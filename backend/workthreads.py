@@ -504,7 +504,6 @@ class TrainingThread(threading.Thread):
 
     def queue_task(self, task: "TrainingTask"):
         """Adds a new training task to this thread's queue."""
-        # Reset the cancel event every time a new task is queued
         self.cancel_event.clear()
         with self.training_queue_lock:
             self.training_queue.append(task)
@@ -514,7 +513,7 @@ class TrainingThread(threading.Thread):
         """The main loop for the thread. Pulls tasks from its internal queue."""
         while True:
             if self.cancel_event.is_set():
-                time.sleep(1) # Wait if cancelled
+                time.sleep(1)
                 continue
 
             task_to_run = None
@@ -533,268 +532,127 @@ class TrainingThread(threading.Thread):
                 time.sleep(1)
 
     def _execute_training_task(self, task: "TrainingTask"):
-        """Orchestrates the training process: data loading, trials, and result saving."""
+        """Orchestrates the training process across multiple random data splits."""
+        overall_best_model = None
+        overall_best_f1 = -1.0
+        all_run_reports = []
+        NUM_INNER_TRIALS = task.num_trials
+
         try:
-            if self.cancel_event.is_set():
-                log_message(f"Skipping task for '{task.name}' due to cancellation.", "WARN")
-                return
+            for run_num in range(task.num_runs):
+                if self.cancel_event.is_set():
+                    log_message(f"Skipping run {run_num + 1} for '{task.name}' due to cancellation.", "WARN")
+                    break
 
-            eel.spawn(eel.updateTrainingStatusOnUI(task.name, "Loading dataset..."))
-            log_message(f"Loading and processing dataset '{task.name}' for training...", "INFO")
-            def update_progress(p): eel.spawn(eel.updateDatasetLoadProgress(task.name, p))
-            
-            train_insts, test_insts = None, None # Initialize
-            if task.training_method == "weighted_loss":
-                train_ds, test_ds, weights, train_insts, test_insts = gui_state.proj.load_dataset_for_weighted_loss(task.name, seq_len=task.sequence_length, progress_callback=update_progress)
-            else:
-                train_ds, test_ds, train_insts, test_insts = gui_state.proj.load_dataset(task.name, seq_len=task.sequence_length, progress_callback=update_progress)
-                weights = None
-            
-            if train_ds is None or test_ds is None or train_insts is None or test_insts is None:
-                raise ValueError("Dataset loading returned None. Check for empty labels or other data issues.")
-            
-            eel.spawn(eel.updateDatasetLoadProgress(task.name, 100))
-            log_message(f"Dataset '{task.name}' loaded successfully.", "INFO")
- 
-            if not train_ds or len(train_ds) == 0:
-                if test_ds and len(test_ds) > 0:
-                    error_message = (
-                        f"Training failed for '{task.name}' because the training set is empty. "
-                        "This typically happens when only one video has been labeled, forcing the entire video "
-                        "into the test set. Please label a second video or use the 'Augment' feature."
-                    )
+                log_message(f"--- Starting Run {run_num + 1}/{task.num_runs} for Dataset: {task.name} ---", "INFO")
+                eel.spawn(eel.updateTrainingStatusOnUI(task.name, f"Run {run_num + 1}/{task.num_runs}: Loading new data split..."))
+                
+                def update_progress(p): eel.spawn(eel.updateDatasetLoadProgress(task.name, p))
+                
+                if task.training_method == "weighted_loss":
+                    train_ds, test_ds, weights, _, _ = gui_state.proj.load_dataset_for_weighted_loss(task.name, seq_len=task.sequence_length, progress_callback=update_progress)
                 else:
-                    error_message = f"Training failed for '{task.name}'. The dataset contains no valid labeled instances to train on."
+                    train_ds, test_ds, _, _ = gui_state.proj.load_dataset(task.name, seq_len=task.sequence_length, progress_callback=update_progress)
+                    weights = None
+                
+                if train_ds is None or len(train_ds) == 0:
+                    log_message(f"Dataset loading for run {run_num + 1} failed or produced an empty training set. Aborting task.", "ERROR")
+                    eel.spawn(eel.updateTrainingStatusOnUI(task.name, "Training failed: Empty training set in data split."))
+                    return
+                
+                eel.spawn(eel.updateDatasetLoadProgress(task.name, 100))
+                log_message(f"Dataset for run {run_num + 1} loaded successfully.", "INFO")
 
-                log_message(error_message, "ERROR")
-                eel.spawn(eel.updateTrainingStatusOnUI(task.name, error_message))
-                eel.spawn(eel.updateDatasetLoadProgress(task.name, -1))
-                return
-        except Exception as e:
-            log_message(f"Critical error loading dataset {task.name}: {e}", "ERROR")
-            eel.spawn(eel.updateTrainingStatusOnUI(task.name, f"Error loading dataset: {e}"))
-            eel.spawn(eel.updateDatasetLoadProgress(task.name, -1))
-            return
+                run_best_model, run_best_f1 = None, -1.0
+                run_best_reports, run_best_epoch = None, -1
 
-        best_model, best_reports, best_epoch = None, None, -1
-        best_f1 = -1.0
-        NUM_TRIALS = 10
+                for i in range(NUM_INNER_TRIALS):
+                    if self.cancel_event.is_set(): break
+                    log_message(f"Run {run_num + 1}, Trial {i + 1}/{NUM_INNER_TRIALS} for '{task.name}'.", "INFO")
+                    
+                    def training_progress_updater(message: str):
+                        f1_match = re.search(r"Val F1: ([\d\.]+)", message)
+                        f1_text = f"{max(run_best_f1, float(f1_match.group(1)) if f1_match else -1.0):.4f}"
+                        display_message = f"Run {run_num + 1}/{task.num_runs}, Trial {i + 1}/{NUM_INNER_TRIALS}... Best F1: {f1_text}"
+                        eel.spawn(eel.updateTrainingStatusOnUI(task.name, display_message, message))
 
-        # PROGRESS UPDATER
-        def training_progress_updater(message: str):
-            # Check if the message contains an F1 score from the cbas module
-            f1_match = re.search(r"Val F1: ([\d\.]+)", message)
-            
-            # The text we will actually display on the UI
-            display_message = ""
+                    trial_model, trial_reports, trial_best_epoch = cbas.train_lstm_model(
+                        train_ds, test_ds, task.sequence_length, task.behaviors, self.cancel_event,
+                        lr=task.learning_rate, batch_size=task.batch_size,
+                        epochs=task.epochs, device=self.device, class_weights=weights,
+                        patience=task.patience, progress_callback=training_progress_updater
+                    )
 
-            if f1_match:
-                # This is an F1 score update from within an epoch
-                epoch_f1 = float(f1_match.group(1))
-                # We show the BEST F1 score seen so far across all trials and epochs
-                display_message = f"Trial {i + 1}/{NUM_TRIALS}... Best F1: {max(best_f1, epoch_f1):.4f}"
-            else:
-                # This is a message like "Training Epoch X/Y..."
-                # We still want to show the trial count and the best F1 so far.
-                # If best_f1 is -1.0, we display N/A.
-                f1_text = f"{best_f1:.4f}" if best_f1 >= 0 else "N/A"
-                display_message = f"Trial {i + 1}/{NUM_TRIALS}... Best F1: {f1_text}"
-            
-            # We also pass the original message, which contains the epoch info for the progress bar
-            eel.spawn(eel.updateTrainingStatusOnUI(task.name, display_message, message))
+                    if trial_model and trial_reports and trial_best_epoch != -1:
+                        f1 = trial_reports[trial_best_epoch].val_report.get("weighted avg", {}).get("f1-score", -1.0)
+                        if f1 > run_best_f1:
+                            run_best_f1, run_best_model, run_best_reports, run_best_epoch = f1, trial_model, trial_reports, trial_best_epoch
+                
+                if self.cancel_event.is_set(): break
 
-        for i in range(NUM_TRIALS):
+                if run_best_model:
+                    all_run_reports.append(run_best_reports[run_best_epoch].val_report)
+                    if run_best_f1 > overall_best_f1:
+                        log_message(f"New overall best model found in Run {run_num + 1} with F1: {run_best_f1:.4f}", "INFO")
+                        overall_best_f1 = run_best_f1
+                        overall_best_model = run_best_model
+
             if self.cancel_event.is_set():
-                log_message(f"Cancelling training for '{task.name}' before trial {i+1}.", "WARN")
+                log_message(f"Training for '{task.name}' was cancelled by user.", "WARN")
                 eel.spawn(eel.updateTrainingStatusOnUI(task.name, "Training cancelled."))
                 return
 
-            log_message(f"Starting training trial {i + 1}/{NUM_TRIALS} for '{task.name}'.", "INFO")
-            
-            # Initial message for the trial before epochs start
-            f1_text = f"{best_f1:.4f}" if best_f1 >= 0 else "N/A"
-            eel.spawn(eel.updateTrainingStatusOnUI(task.name, f"Trial {i + 1}/{NUM_TRIALS}... Best F1: {f1_text}", f"Trial {i + 1}/{NUM_TRIALS}..."))
+            if overall_best_model and all_run_reports:
+                self._save_averaged_training_results(task, overall_best_model, all_run_reports)
+            else:
+                log_message(f"Training failed for '{task.name}'. No valid model could be trained.", "ERROR")
+                eel.spawn(eel.updateTrainingStatusOnUI(task.name, "Training failed."))
 
-            trial_model, trial_reports, trial_best_epoch = cbas.train_lstm_model(
-                train_ds, test_ds, task.sequence_length, task.behaviors, self.cancel_event,
-                lr=task.learning_rate, batch_size=task.batch_size,
-                epochs=task.epochs, device=self.device, class_weights=weights,
-                patience=task.patience,
-                progress_callback=training_progress_updater
-            )
+        except Exception as e:
+            log_message(f"Critical error during training task for {task.name}: {e}", "ERROR")
+            traceback.print_exc()
+            eel.spawn(eel.updateTrainingStatusOnUI(task.name, f"Training Error: {e}"))
 
-            if trial_model and trial_reports and trial_best_epoch != -1:
-                best_epoch_report = trial_reports[trial_best_epoch]
-                f1 = best_epoch_report.val_report.get("weighted avg", {}).get("f1-score", -1.0)
-                                              
-                if f1 > best_f1:
-                    log_message(f"New best model in Trial {i + 1} with F1: {f1:.4f}", "INFO")
-                    best_f1, best_model, best_reports, best_epoch = f1, trial_model, trial_reports, trial_best_epoch
+    def _save_averaged_training_results(self, task, best_model, all_reports):
+        """Averages reports from multiple runs and saves the single best model."""
+        log_message(f"Averaging results from {len(all_reports)} runs...", "INFO")
 
-            if best_model is None and trial_model is not None:
-                log_message("No validation data available to select best model. Saving model from final trial.", "WARN")
-                best_model = trial_model
-                best_reports = trial_reports
-                best_epoch = trial_best_epoch
-
-        if best_model:
-            self._save_training_results(task, best_model, best_reports, best_epoch, train_insts, test_insts)
-        else:
-            log_message(f"Training failed for '{task.name}' after {NUM_TRIALS} trials. No valid model could be trained.", "ERROR")
-            eel.spawn(eel.updateTrainingStatusOnUI(task.name, f"Training failed after {NUM_TRIALS} trials."))
-
-    def _save_training_results(self, task, model, reports, best_epoch_idx, train_insts, test_insts):
-        """Saves the best model, performance reports, and plots."""
-        # Get the specific report for the best epoch
-        best_report_obj = reports[best_epoch_idx]
+        avg_report = {}
+        for b in task.behaviors:
+            avg_report[b] = {
+                'precision': np.mean([r.get(b, {}).get('precision', 0) for r in all_reports]),
+                'recall': np.mean([r.get(b, {}).get('recall', 0) for r in all_reports]),
+                'f1-score': np.mean([r.get(b, {}).get('f1-score', 0) for r in all_reports]),
+            }
         
-        # The report to save to disk and display should be from the VALIDATION set
-        best_validation_report = best_report_obj.val_report
-        best_validation_cm = best_report_obj.val_cm
-        
-        # Check if the validation report is populated before trying to access it.
-        if best_validation_report and 'weighted avg' in best_validation_report:
-            val_f1_score = best_validation_report['weighted avg'].get('f1-score', 0.0)
-            log_message(f"Saving results for best model (Validation F1: {val_f1_score:.4f})...", "INFO")
-            # The UI update is now safely inside this block
-            eel.updateTrainingStatusOnUI(task.name, f"Training complete. Best Validation F1: {val_f1_score:.4f}")()
-        else:
-            # This branch executes if there was no validation data.
-            log_message("Saving results for best model (no validation data was available).", "INFO")
-            # The UI update is also safely inside this block
-            eel.updateTrainingStatusOnUI(task.name, "Training complete (no validation data).")()
+        avg_f1 = np.mean([r.get('weighted avg', {}).get('f1-score', 0) for r in all_reports])
+        log_message(f"Final Averaged F1 Score: {avg_f1:.4f}", "INFO")
+        eel.updateTrainingStatusOnUI(task.name, f"Training complete. Averaged F1: {avg_f1:.4f}")()
 
-        # Update the UI metrics table. This function is now robust to an empty report.
-                              
         model_dir = os.path.join(gui_state.proj.models_dir, task.name)
         os.makedirs(model_dir, exist_ok=True)
-        torch.save(model.state_dict(), os.path.join(model_dir, "model.pth"))
-        
+        torch.save(best_model.state_dict(), os.path.join(model_dir, "model.pth"))
         with open(os.path.join(model_dir, "config.yaml"), "w") as f:
             yaml.dump({"seq_len": task.sequence_length, "behaviors": task.behaviors}, f)
         
-        # Save the validation report to the dataset folder
         with open(os.path.join(task.dataset.path, "performance_report.yaml"), 'w') as f:
-            yaml.dump(best_validation_report, f)
+            yaml.dump(avg_report, f)
         
-        # Save the validation confusion matrix
-        save_confusion_matrix_plot(best_validation_cm, os.path.join(task.dataset.path, "confusion_matrix_BEST.png"))
-        
-        cm_dir = os.path.join(task.dataset.path, "epoch_confusion_matrices")
-        os.makedirs(cm_dir, exist_ok=True)
-        for i, r in enumerate(reports):
-            # Save the validation CM for each epoch for potential review
-            if r.val_cm.size > 0:
-                save_confusion_matrix_plot(r.val_cm, os.path.join(cm_dir, f"epoch_{i+1}_cm.png"))
-
-        # Now, call the plotting function with the full list of epoch reports
-        for metric in ["f1-score", "recall", "precision"]:
-            plot_report_list_metric(reports, metric, task.behaviors, task.dataset.path)
-            
         gui_state.proj.models[task.name] = cbas.Model(model_dir)
-        
-        # Update the dataset's config file to link it to the newly created model.
         task.dataset.config['model'] = task.name 
         with open(task.dataset.config_path, 'w') as f:
             yaml.dump(task.dataset.config, f, allow_unicode=True)       
-                
-        # The UI metrics should reflect the model's performance on unseen (validation) data
-        self._update_metrics_in_ui(task.name, best_validation_report, task.behaviors, task.dataset, train_insts, test_insts)
         
-        # This log message is now the very last thing that happens.
-        log_message(f"Training for '{task.name}' complete. Model and reports saved.", "INFO")
+        task.dataset.update_instance_counts_in_config(gui_state.proj)
+        for b in task.behaviors:
+            b_metrics = avg_report.get(b, {})
+            # Use task.dataset, not the undefined 'dataset'
+            task.dataset.update_metric(b, "F1 Score", round(b_metrics.get('f1-score', 0), 2))
+            task.dataset.update_metric(b, "Recall", round(b_metrics.get('recall', 0), 2))
+            task.dataset.update_metric(b, "Precision", round(b_metrics.get('precision', 0), 2))
 
-    def _update_metrics_in_ui(self, dataset_name, report_dict, behaviors, dataset_obj, train_insts, test_insts):
-        """
-        Helper to calculate final instance/frame counts, check for imbalance (both low and high),
-        push all metrics to the UI table, and save them to the dataset's config file.
-        """
-        from collections import Counter
-        import numpy as np
-
-        # --- 1. Count INSTANCES and FRAMES per behavior ---
-        train_instance_counts = Counter(inst['label'] for inst in train_insts)
-        test_instance_counts = Counter(inst['label'] for inst in test_insts)
-        train_frame_counts = Counter()
-        for inst in train_insts:
-            train_frame_counts[inst['label']] += (inst['end'] - inst['start'] + 1)
-        test_frame_counts = Counter()
-        for inst in test_insts:
-            test_frame_counts[inst['label']] += (inst['end'] - inst['start'] + 1)
-
-        # --- 2. Check for Class Imbalance (Low and High) ---
-        total_behaviors = len(behaviors)
-        if total_behaviors > 1:
-            avg_train_inst = sum(train_instance_counts.values()) / total_behaviors
-            avg_test_inst = sum(test_instance_counts.values()) / total_behaviors
-            avg_train_frame = sum(train_frame_counts.values()) / total_behaviors
-            avg_test_frame = sum(test_frame_counts.values()) / total_behaviors
-            
-            LOW_THRESHOLD = 0.25
-            HIGH_THRESHOLD = 3.0 
-        else:
-            avg_train_inst, avg_test_inst, avg_train_frame, avg_test_frame = 0, 0, 0, 0
-
-        # --- 3. Update all metrics and counts ---
-        for b in behaviors:
-            # Safely get metrics from the report_dict, which might be empty
-            metrics = report_dict.get(b, {})
-            
-            f1 = round(metrics.get("f1-score", 0), 2)
-            recall = round(metrics.get("recall", 0), 2)
-            precision = round(metrics.get("precision", 0), 2)
-            
-            train_n_inst = train_instance_counts.get(b, 0)
-            test_n_inst = test_instance_counts.get(b, 0)
-            train_n_frame = train_frame_counts.get(b, 0)
-            test_n_frame = test_frame_counts.get(b, 0)
-
-            # --- Build structured dictionaries for the UI ---
-            train_data = {
-                'inst': train_n_inst,
-                'frame': int(train_n_frame),
-                'inst_status': 'none',
-                'frame_status': 'none'
-            }
-            if total_behaviors > 1:
-                # Check for low representation (critical warning)
-                if train_n_inst < avg_train_inst * LOW_THRESHOLD: train_data['inst_status'] = 'low'
-                # Check for high representation (informational notice)
-                elif train_n_inst > avg_train_inst * HIGH_THRESHOLD: train_data['inst_status'] = 'high'
-                
-                if train_n_frame < avg_train_frame * LOW_THRESHOLD: train_data['frame_status'] = 'low'
-            
-            test_data = {
-                'inst': test_n_inst,
-                'frame': int(test_n_frame),
-                'inst_status': 'none',
-                'frame_status': 'none'
-            }
-            if total_behaviors > 1:
-                 if test_n_inst < avg_test_inst * LOW_THRESHOLD: test_data['inst_status'] = 'low'
-                 if test_n_frame < avg_test_frame * LOW_THRESHOLD: test_data['frame_status'] = 'low'
-
-            # Save raw values to the config file
-            # Get the display strings we already created
-            train_display = f"{train_n_inst} ({int(train_n_frame)})"
-            test_display = f"{test_n_inst} ({int(test_n_frame)})"
-
-            # Save the final, formatted DISPLAY STRING to the config file
-            dataset_obj.update_metric(b, "Train #", train_display)
-            dataset_obj.update_metric(b, "Test #", test_display)
-            
-            # Keep saving raw numbers for other metrics
-            dataset_obj.update_metric(b, "F1 Score", f1)
-            dataset_obj.update_metric(b, "Recall", recall)
-            dataset_obj.update_metric(b, "Precision", precision)
-            # ... (we can optionally remove the now-redundant raw count saving)
-
-            # Send all new values to the live UI via Eel
-            eel.updateMetricsOnPage(dataset_name, b, "F1 Score", f1, "none")()
-            eel.updateMetricsOnPage(dataset_name, b, "Recall", recall, "none")()
-            eel.updateMetricsOnPage(dataset_name, b, "Precision", precision, "none")()
-            eel.updateMetricsOnPage(dataset_name, b, "Train #", train_data, "none")()
-            eel.updateMetricsOnPage(dataset_name, b, "Test #", test_data, "none")()
+        log_message(f"Training for '{task.name}' complete. Model and averaged reports saved.", "INFO")
+        eel.refreshAllDatasets()()
     
     def get_id(self):
         if hasattr(self, "_thread_id"): return self._thread_id
@@ -814,12 +672,14 @@ class TrainingThread(threading.Thread):
 
 class TrainingTask():
     """A simple data class to hold all parameters for a single training job."""
-    def __init__(self, name, dataset, behaviors, batch_size, learning_rate, epochs, sequence_length, training_method, patience): # Add patience
+    def __init__(self, name, dataset, behaviors, batch_size, learning_rate, epochs, sequence_length, training_method, patience, num_runs, num_trials):
         self.name, self.dataset, self.behaviors = name, dataset, behaviors
         self.batch_size, self.learning_rate = batch_size, learning_rate
         self.epochs, self.sequence_length = epochs, sequence_length
         self.training_method = training_method
-        self.patience = patience # Store patience
+        self.patience = patience
+        self.num_runs = num_runs
+        self.num_trials = num_trials        
 
 def cancel_training_task(dataset_name: str):
     """Finds the running training task and signals it to cancel."""

@@ -1218,7 +1218,7 @@ def create_dataset(name: str, behaviors: list[str], recordings_whitelist: list[s
 
 
 
-def train_model(name: str, batch_size: str, learning_rate: str, epochs: str, sequence_length: str, training_method: str, patience: str):
+def train_model(name: str, batch_size: str, learning_rate: str, epochs: str, sequence_length: str, training_method: str, patience: str, num_runs: str, num_trials: str):
     """Queues a training task for the specified dataset."""
     if not gui_state.proj or name not in gui_state.proj.datasets: return
     if not gui_state.training_thread: return
@@ -1230,7 +1230,9 @@ def train_model(name: str, batch_size: str, learning_rate: str, epochs: str, seq
             batch_size=int(batch_size), learning_rate=float(learning_rate),
             epochs=int(epochs), sequence_length=int(sequence_length),
             training_method=training_method,
-            patience=int(patience)
+            patience=int(patience),
+            num_runs=int(num_runs),
+            num_trials=int(num_trials)        
         )
         gui_state.training_thread.queue_task(task)
         eel.updateTrainingStatusOnUI(name, "Training task queued...")()
