@@ -550,9 +550,19 @@ class TrainingThread(threading.Thread):
                 def update_progress(p): eel.spawn(eel.updateDatasetLoadProgress(task.name, p))
                 
                 if task.training_method == "weighted_loss":
-                    train_ds, test_ds, weights, _, _ = gui_state.proj.load_dataset_for_weighted_loss(task.name, seq_len=task.sequence_length, progress_callback=update_progress)
+                    train_ds, test_ds, weights, _, _ = gui_state.proj.load_dataset_for_weighted_loss(
+                        task.name, 
+                        seq_len=task.sequence_length, 
+                        progress_callback=update_progress, 
+                        seed=run_num  # Pass the current run number as the seed
+                    )
                 else:
-                    train_ds, test_ds, _, _ = gui_state.proj.load_dataset(task.name, seq_len=task.sequence_length, progress_callback=update_progress)
+                    train_ds, test_ds, _, _ = gui_state.proj.load_dataset(
+                        task.name, 
+                        seq_len=task.sequence_length, 
+                        progress_callback=update_progress, 
+                        seed=run_num  # Pass the current run number as the seed
+                    )
                     weights = None
                 
                 if train_ds is None or len(train_ds) == 0:
