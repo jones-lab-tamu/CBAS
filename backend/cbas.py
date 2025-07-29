@@ -405,7 +405,7 @@ class Dataset:
             
     def update_instance_counts_in_config(self, project: 'Project'):
         from collections import Counter
-        train_insts, test_insts, _ = project._load_dataset_common(self.name, 0.2)
+        train_insts, test_insts, _ = project._load_dataset_common(self.name, 0.2, seed=42) # Provide a default seed
         if train_insts is None or test_insts is None: return
         train_instance_counts = Counter(inst['label'] for inst in train_insts)
         test_instance_counts = Counter(inst['label'] for inst in test_insts)
