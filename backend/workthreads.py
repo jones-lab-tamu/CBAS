@@ -572,7 +572,15 @@ class TrainingThread(threading.Thread):
                     
                     def training_progress_updater(message: str):
                         f1_match = re.search(r"Val F1: ([\d\.]+)", message)
-                        f1_text = f"{max(run_best_f1, float(f1_match.group(1)) if f1_match else -1.0):.4f}"
+                        
+                        # Determine the best F1 seen so far in this run
+                        current_best = run_best_f1
+                        if f1_match:
+                            current_best = max(run_best_f1, float(f1_match.group(1)))
+
+                        # Format the F1 score for display, showing "N/A" if it's still negative
+                        f1_text = f"{current_best:.4f}" if current_best >= 0 else "N/A"
+                        
                         display_message = f"Run {run_num + 1}/{task.num_runs}, Trial {i + 1}/{NUM_INNER_TRIALS}... Best F1: {f1_text}"
                         eel.spawn(eel.updateTrainingStatusOnUI(task.name, display_message, message))
 
@@ -620,9 +628,10 @@ class TrainingThread(threading.Thread):
         avg_report = {}
         for b in task.behaviors:
             avg_report[b] = {
-                'precision': np.mean([r.get(b, {}).get('precision', 0) for r in all_reports]),
-                'recall': np.mean([r.get(b, {}).get('recall', 0) for r in all_reports]),
-                'f1-score': np.mean([r.get(b, {}).get('f1-score', 0) for r in all_reports]),
+                # Cast each result to a standard Python float()
+                'precision': float(np.mean([r.get(b, {}).get('precision', 0) for r in all_reports])),
+                'recall': float(np.mean([r.get(b, {}).get('recall', 0) for r in all_reports])),
+                'f1-score': float(np.mean([r.get(b, {}).get('f1-score', 0) for r in all_reports])),
             }
         
         avg_f1 = np.mean([r.get('weighted avg', {}).get('f1-score', 0) for r in all_reports])
