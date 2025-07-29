@@ -12,8 +12,7 @@ import math
 import shutil
 import subprocess
 from datetime import datetime
-import random as global_random # Keep the global one for old code
-import random # Import it again to use the class
+import random # Other parts of the code still use it
 import yaml
 import re
 import threading
@@ -789,15 +788,18 @@ class Project:
     def _load_dataset_common(self, name, split, seed):
         """
         Internal method to load and split datasets.
-        Uses a local Random instance for reproducible, isolated shuffling.
+        Uses a dedicated NumPy Random Generator for reproducible, isolated shuffling.
         """
+        # =========================================================
+        # Use NumPy's robust random number generator
+        # =========================================================
         # Create a new, isolated random number generator instance from the seed
-        local_rng = random.Random(seed)
+        rng = np.random.default_rng(seed)
+        # =========================================================
 
         dataset_path = os.path.join(self.datasets_dir, name)
         if not os.path.isdir(dataset_path): raise FileNotFoundError(dataset_path)
         
-        # Use FullLoader to handle potential Python-specific tags like defaultdict
         with open(os.path.join(dataset_path, "labels.yaml"), "r") as f: 
             label_config = yaml.load(f, Loader=yaml.FullLoader)
             
@@ -807,8 +809,10 @@ class Project:
         all_insts = [inst for b in behaviors for inst in label_config.get("labels", {}).get(b, [])]
         if not all_insts: return [], [], behaviors
         
-        # Use the local RNG instance for all shuffling
-        local_rng.shuffle(all_insts)
+        # Use the NumPy RNG to shuffle in place.
+        # Note: rng.shuffle requires a NumPy array for multi-dimensional shuffling,
+        # but works fine on a list of objects for 1D shuffling.
+        rng.shuffle(all_insts)
         
         group_to_behaviors, group_to_instances = {}, {}
         for inst in all_insts:
@@ -818,7 +822,8 @@ class Project:
                 group_to_behaviors.setdefault(group_key, set()).add(inst['label'])
         
         all_groups = list(group_to_instances.keys())
-        local_rng.shuffle(all_groups)
+        # Use the NumPy RNG to shuffle the groups
+        rng.shuffle(all_groups)
         
         test_groups, behaviors_needed_in_test = set(), set(behaviors)
         while behaviors_needed_in_test:
@@ -843,7 +848,7 @@ class Project:
         total_size = len(all_insts)
         
         for group in remaining_groups:
-            if current_test_size / total_size >= split: break
+            if total_size > 0 and current_test_size / total_size >= split: break
             if group not in test_groups:
                 test_groups.add(group)
                 current_test_size += len(group_to_instances.get(group, []))
@@ -852,24 +857,24 @@ class Project:
         train_insts = [inst for group in train_groups for inst in group_to_instances[group]]
         test_insts = [inst for group in test_groups for inst in group_to_instances[group]]
         
-        # Use the local RNG instance for final shuffles
-        local_rng.shuffle(train_insts)
-        local_rng.shuffle(test_insts)
+        # Use the NumPy RNG for the final shuffles
+        rng.shuffle(train_insts)
+        rng.shuffle(test_insts)
         
         print(f"Stratified Group Split (Seed: {seed}): {len(train_insts)} train instances, {len(test_insts)} test instances.")
         print(f"  - Train groups: {len(train_groups)}, Test groups: {len(test_groups)}")
         
         if not train_insts and test_insts:
-            print("  - [WARN] All labeled data belongs to a single group. Subject-level split is not possible. Falling back to a random 80/20 instance split.")
+            print("  - [WARN] All labeled data belongs to a single group. Subject-level split is not possible. Falling back to a random 80/20 instance split. Model performance will reflect generalization on new data from the *same* subject, not a new, unseen subject.")
             all_insts = test_insts
-            local_rng.shuffle(all_insts)
+            rng.shuffle(all_insts) # Use NumPy RNG here too
             split_idx = int(len(all_insts) * (1 - split))
             return all_insts[:split_idx], all_insts[split_idx:], behaviors        
         
         if not test_insts and train_insts:
             print("  - Warning: Stratified split resulted in an empty test set. Falling back to 80/20 instance split.")
             all_insts = train_insts
-            local_rng.shuffle(all_insts)
+            rng.shuffle(all_insts) # And here
             split_idx = int(len(all_insts) * (1 - split))
             return all_insts[:split_idx], all_insts[split_idx:], behaviors
 
