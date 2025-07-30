@@ -537,6 +537,8 @@ class TrainingThread(threading.Thread):
         overall_best_model = None
         overall_best_f1 = -1.0
         all_run_reports = []
+        overall_best_reports_history = None
+        overall_best_cm = None  
         NUM_INNER_TRIALS = task.num_trials
 
         try:
@@ -610,6 +612,8 @@ class TrainingThread(threading.Thread):
                         log_message(f"New overall best model found in Run {run_num + 1} with F1: {run_best_f1:.4f}", "INFO")
                         overall_best_f1 = run_best_f1
                         overall_best_model = run_best_model
+                        overall_best_reports_history = run_best_reports
+                        overall_best_cm = run_best_reports[run_best_epoch].val_cm
 
             if self.cancel_event.is_set():
                 log_message(f"Training for '{task.name}' was cancelled by user.", "WARN")
@@ -617,7 +621,10 @@ class TrainingThread(threading.Thread):
                 return
 
             if overall_best_model and all_run_reports:
-                self._save_averaged_training_results(task, overall_best_model, all_run_reports)
+                self._save_averaged_training_results(
+                    task, overall_best_model, all_run_reports, 
+                    overall_best_reports_history, overall_best_cm
+                )
             else:
                 log_message(f"Training failed for '{task.name}'. No valid model could be trained.", "ERROR")
                 eel.spawn(eel.updateTrainingStatusOnUI(task.name, "Training failed."))
@@ -627,7 +634,7 @@ class TrainingThread(threading.Thread):
             traceback.print_exc()
             eel.spawn(eel.updateTrainingStatusOnUI(task.name, f"Training Error: {e}"))
 
-    def _save_averaged_training_results(self, task, best_model, all_reports):
+    def _save_averaged_training_results(self, task, best_model, all_reports, best_run_history, best_run_cm):
         """Averages reports from multiple runs and saves the single best model."""
         log_message(f"Averaging results from {len(all_reports)} runs...", "INFO")
 
@@ -663,6 +670,24 @@ class TrainingThread(threading.Thread):
             task.dataset.update_metric(b, "F1 Score", round(b_metrics.get('f1-score', 0), 2))
             task.dataset.update_metric(b, "Recall", round(b_metrics.get('recall', 0), 2))
             task.dataset.update_metric(b, "Precision", round(b_metrics.get('precision', 0), 2))
+            
+        # Generate and save plots from the single best run's history
+        if best_run_history:
+            # The plots are saved in the dataset directory, not the model directory.
+            plot_dir = task.dataset.path
+            for metric in ['f1-score', 'precision', 'recall']:
+                plot_report_list_metric(
+                    reports=best_run_history,
+                    metric=metric,
+                    behaviors=task.behaviors,
+                    out_dir=plot_dir
+                )
+            log_message(f"Performance plots for the best run saved to '{plot_dir}'.", "INFO")
+
+        if best_run_cm is not None:
+            cm_path = os.path.join(task.dataset.path, "confusion_matrix_BEST.png")
+            save_confusion_matrix_plot(best_run_cm, cm_path)
+            log_message(f"Best confusion matrix saved to '{cm_path}'.", "INFO")
 
         log_message(f"Training for '{task.name}' complete. Model and averaged reports saved.", "INFO")
         eel.refreshAllDatasets()()
