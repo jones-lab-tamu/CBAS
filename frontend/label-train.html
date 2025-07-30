@@ -53,29 +53,6 @@
   MODALS (Pop-up Dialogs)
   ================================================================== -->
 
-<!-- Modal for Resolving Label Conflicts -->
-<div class="modal" tabindex="-1" id="conflictResolutionModal">
-  <div class="modal-dialog modal-dialog-centered modal-lg">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h5 class="modal-title text-warning"><i class="bi bi-exclamation-triangle-fill me-2"></i>Conflict Detected</h5>
-        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-      </div>
-      <div class="modal-body">
-        <p>Your changes to the reviewed behavior have created overlaps with existing, untouched labels. Please choose how to resolve each conflict before saving.</p>
-        <hr>
-        <div id="conflict-list-container">
-          <!-- Conflicts will be dynamically inserted here by JavaScript -->
-        </div>
-      </div>
-      <div class="modal-footer">
-        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel Save</button>
-        <button type="button" class="btn btn-primary" id="apply-resolutions-btn">Apply Resolutions and Save</button>
-      </div>
-    </div>
-  </div>
-</div>
-
 <!-- Modal for Selecting a Behavior to Review -->
 <div class="modal" tabindex="-1" id="behaviorSelectModal">
   <div class="modal-dialog modal-dialog-centered">

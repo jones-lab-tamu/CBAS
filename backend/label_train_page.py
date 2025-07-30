@@ -430,6 +430,7 @@ def _start_labeling_worker(name: str, video_to_open: str = None, preloaded_insta
     all state setup and then calls back to the JavaScript UI when ready.
     """
     try:
+        gui_state.label_filter_for_behavior = filter_for_behavior
         print("Labeling worker started.")
         if gui_state.proj is None: raise ValueError("Project is not loaded.")
         if name not in gui_state.proj.datasets: raise ValueError(f"Dataset '{name}' not found.")
@@ -489,32 +490,36 @@ def _start_labeling_worker(name: str, video_to_open: str = None, preloaded_insta
             ]
             
             print(f"Processing {len(filtered_predictions)} initially filtered model predictions.")
+
             for pred_inst in filtered_predictions:
-                # Check for overlap against the already-loaded human labels
-                is_overlapping = any(max(pred_inst['start'], h['start']) <= min(pred_inst['end'], h['end']) for h in human_labels)
-                if not is_overlapping:
-                    gui_state.label_session_buffer.append(pred_inst)
-        
-        # =========================================================
-        # Filter the buffer if a specific behavior is requested
-        # This now runs AFTER all data has been loaded into the buffer.
-        # =========================================================
-        if filter_for_behavior:
-            # We only keep human-verified labels that match the behavior.
-            # Model predictions are discarded in this mode, as the goal is to review ground truth.
-            gui_state.label_session_buffer[:] = [
-                inst for inst in gui_state.label_session_buffer 
-                if 'confidence' not in inst and inst.get('label') == filter_for_behavior
-            ]
-            print(f"Filtered session buffer to show only '{filter_for_behavior}' instances.")
-        # =========================================================
-        
+                intervals = [[pred_inst['start'], pred_inst['end']]]
+                for h_label in human_labels:
+                    next_intervals = []
+                    for interval in intervals:
+                        pred_start, pred_end = interval
+                        human_start, human_end = h_label['start'], h_label['end']
+                        if pred_start < human_start:
+                            next_intervals.append([pred_start, min(pred_end, human_start - 1)])
+                        if pred_end > human_end:
+                            next_intervals.append([max(pred_start, human_end + 1), pred_end])
+                    intervals = next_intervals
+                for start, end in intervals:
+                    if start < end:
+                        new_inst = pred_inst.copy()
+                        new_inst['start'] = start
+                        new_inst['end'] = end
+                        gui_state.label_session_buffer.append(new_inst)
+
+
         dataset_behaviors = gui_state.label_dataset.labels.get("behaviors", [])
         behavior_colors = [str(gui_state.label_col_map(tab20_map(i))) for i in range(len(dataset_behaviors))]
-        gui_state.label_behavior_colors = behavior_colors
+        
+        # Populate the new, safe state variables
+        gui_state.label_session_behaviors = dataset_behaviors
+        gui_state.label_session_colors = behavior_colors
 
         print("Setup complete. Calling frontend to build UI.")
-        eel.buildLabelingUI(dataset_behaviors, behavior_colors)()
+        eel.buildLabelingUI(dataset_behaviors, behavior_colors, filter_for_behavior)()
         eel.setLabelingModeUI(labeling_mode, model_name_for_ui)()
         eel.setConfirmationModeUI(False)()
 
@@ -661,14 +666,11 @@ def start_labeling_with_preload(dataset_name: str, model_name: str, video_path_t
         eel.showErrorOnLabelTrainPage(f"Failed to start pre-labeling: {e}")()
         return False
 
-def save_session_labels(resolutions=None):
+def save_session_labels():
     """
-    Saves labels from the session buffer. This function is now robust and handles
-    all labeling modes (Manual, Guided, Review by Behavior) safely.
-
-    It performs a pre-save conflict check. If conflicts are found during a
-    'Review by Behavior' session, it halts and returns a conflict object to the UI.
-    If resolutions are provided, it applies them before saving.
+    Saves labels from the session buffer. The buffer is now always the complete
+    source of truth for the video. This function filters for confirmed/human
+    labels and overwrites the file for the specific video being edited.
     """
     if not gui_state.label_dataset or not gui_state.label_videos:
         return {'status': 'error', 'message': 'Labeling session not active.'}
@@ -676,123 +678,55 @@ def save_session_labels(resolutions=None):
     current_video_path_abs = gui_state.label_videos[0]
     current_video_path_rel = os.path.relpath(current_video_path_abs, start=gui_state.proj.path).replace('\\', '/')
 
-    # --- 1. Identify what was changed during this session ---
-    # This is an initial check to see if ANY changes were made.
-    dirty_instances_in_buffer = [
-        inst for inst in gui_state.label_session_buffer if id(inst) in gui_state.label_dirty_instances
-    ]
-    initial_dirty_behaviors = {inst['label'] for inst in dirty_instances_in_buffer}
-    for item in gui_state.label_dirty_instances:
-        if isinstance(item, str) and item.startswith('deleted_'):
-            initial_dirty_behaviors.add(item.replace('deleted_', ''))
-
-    if not initial_dirty_behaviors:
-        workthreads.log_message("No changes detected in labeling session. Nothing to save.", "INFO")
-        return {'status': 'no_changes'}
-    
-    # --- 2. Filter buffer for final ground truth ---
-    # An instance is considered ground truth if it's a human label (no confidence score)
-    # or if it's a model prediction that the user has explicitly confirmed.
+    # --- 1. Filter the buffer for the final ground truth to be committed ---
+    # An instance is ground truth if it's human-made (no confidence) or user-confirmed.
     final_commit_list = [
         inst for inst in gui_state.label_session_buffer
         if 'confidence' not in inst or inst.get('_confirmed', False)
     ]
-    # Re-calculate dirty behaviors based on this FINAL list.
-    # This prevents unconfirmed predictions from making a category "dirty".
-    dirty_behaviors_from_commit = {inst['label'] for inst in final_commit_list if id(inst) in gui_state.label_dirty_instances}
-    for item in gui_state.label_dirty_instances:
-        if isinstance(item, str) and item.startswith('deleted_'):
-            dirty_behaviors_from_commit.add(item.replace('deleted_', ''))
-    
-    if not dirty_behaviors_from_commit:
-        workthreads.log_message("No confirmed changes detected in labeling session. Nothing to save.", "INFO")
-        return {'status': 'no_changes'}
 
-    # --- 3. Pre-Save Conflict Check (for Review by Behavior mode) ---
-    behaviors_in_buffer = {inst.get('label') for inst in gui_state.label_session_buffer}
-    is_review_session = len(behaviors_in_buffer) == 1
+    if not gui_state.label_dirty_instances and not any(inst.get('_confirmed') for inst in gui_state.label_session_buffer):
+         workthreads.log_message("No changes detected in labeling session. Nothing to save.", "INFO")
+         return {'status': 'no_changes'}
 
-    if is_review_session and not resolutions:
-        with open(gui_state.label_dataset.labels_path, "r") as f:
-            master_labels_data = yaml.safe_load(f).get("labels", {})
-        
-        conflicts = []
-        # First, get a list of only the instances that were actually modified by the user
-        modified_instances = [inst for inst in final_commit_list if id(inst) in gui_state.label_dirty_instances]
+    workthreads.log_message(f"Saving {len(final_commit_list)} labels for {current_video_path_rel}.", "INFO")
 
-        # Now, check each modified instance against all OTHER behaviors in the master file
-        for dirty_inst in modified_instances:
-            for behavior, instances in master_labels_data.items():
-                if behavior in behaviors_in_buffer: continue # Don't check against its own category
-                for master_inst in instances:
-                    if master_inst.get("video") == current_video_path_rel:
-                        if max(dirty_inst['start'], master_inst['start']) <= min(dirty_inst['end'], master_inst['end']):
-                            conflicts.append({'user_instance': dirty_inst, 'existing_instance': master_inst})
-        
-        if conflicts:
-            workthreads.log_message(f"Save halted. Found {len(conflicts)} conflicts.", "WARN")
-            return {'status': 'conflict', 'conflicts': conflicts}
-
-    # --- 4. If checks pass or resolutions are provided, proceed with save ---
-    workthreads.log_message(f"Saving labels for {current_video_path_rel}. Dirty behaviors: {dirty_behaviors_from_commit}", "INFO")
-    
+    # --- 2. Load the master label file ---
     with open(gui_state.label_dataset.labels_path, "r") as f:
         master_labels = yaml.safe_load(f)
 
-    # Apply resolutions if any were provided by the user
-    if resolutions:
-        for res in resolutions:
-            b = res['behavior']
-            start = res['start']
-            video = res['video']
-            
-            target_list = master_labels["labels"].get(b, [])
-            instance_found = False
-            for i, inst in enumerate(target_list):
-                if inst.get("video") == video and inst.get("start") == start:
-                    if res['action'] == 'delete':
-                        target_list.pop(i)
-                    elif res['action'] == 'truncate_start':
-                        target_list[i]['start'] = res['new_start']
-                    elif res['action'] == 'truncate_end':
-                        target_list[i]['end'] = res['new_end']
-                    instance_found = True
-                    break
-            if not instance_found:
-                 workthreads.log_message(f"Could not find instance to apply resolution: {res}", "WARN")
-
-    # --- 5. Surgical Overwrite of Dirty Categories ---
-    for behavior in dirty_behaviors_from_commit:
-        # Remove all old instances for this video from the dirty behavior category
+    # --- 3. "Scorched Earth" removal for the specific video ---
+    # Go through every behavior and remove all old instances for this video.
+    for behavior in master_labels["labels"]:
         master_labels["labels"][behavior] = [
             inst for inst in master_labels["labels"].get(behavior, [])
             if inst.get("video") != current_video_path_rel
         ]
-        # Add back all instances of this dirty behavior from the FINAL COMMIT LIST
-        for inst_in_commit_list in final_commit_list:
-            if inst_in_commit_list.get('label') == behavior:
-                # Clean the instance before saving
-                final_inst = inst_in_commit_list.copy()
-                for key in ['confidence', 'confidences', '_original_start', '_original_end', '_confirmed']:
-                    final_inst.pop(key, None)
-                master_labels["labels"][behavior].append(final_inst)
 
-    # --- 6. Write the fully merged data back to the file ---
+    # --- 4. Add back the new, complete set of labels from the commit list ---
+    for final_inst in final_commit_list:
+        # Clean the instance before saving
+        inst_to_save = final_inst.copy()
+        for key in ['confidence', 'confidences', '_original_start', '_original_end', '_confirmed']:
+            inst_to_save.pop(key, None)
+        master_labels["labels"].setdefault(inst_to_save['label'], []).append(inst_to_save)
+
+    # --- 5. Write the updated data back to the file ---
     with open(gui_state.label_dataset.labels_path, "w") as file:
         yaml.dump(master_labels, file, allow_unicode=True)
 
-    # --- 7. Finalize and Update UI ---
+    # --- 6. Finalize and Update UI ---
     try:
         gui_state.label_dataset.update_instance_counts_in_config(gui_state.proj)
     except Exception as e:
         workthreads.log_message(f"Could not update instance counts after saving: {e}", "ERROR")
 
     workthreads.log_message(f"Successfully saved labels for {os.path.basename(current_video_path_abs)}.", "INFO")
-    
+
     gui_state.label_confirmation_mode = False
     eel.setConfirmationModeUI(False)()
     render_image()
-    
+
     return {'status': 'success', 'video_path': current_video_path_rel}
 
 def refilter_instances(new_threshold: int, mode: str = 'below'):
@@ -828,15 +762,6 @@ def refilter_instances(new_threshold: int, mode: str = 'below'):
 # =================================================================
 # EEL-EXPOSED FUNCTIONS: IN-SESSION LABELING ACTIONS
 # =================================================================
-
-def save_with_resolutions(resolutions):
-    """
-    A separate entry point to re-try saving after the user has provided
-    explicit resolutions for any boundary conflicts.
-    """
-    workthreads.log_message(f"Re-attempting save with {len(resolutions)} resolutions.", "INFO")
-    # We simply call the main save function, passing the resolutions along.
-    return save_session_labels(resolutions=resolutions)
 
 def get_current_labeling_video_path() -> str | None:
     """
@@ -1463,8 +1388,10 @@ def render_image():
 
 def fill_colors(canvas_img: np.ndarray, total_frames: int, view_start_frame: int = 0, view_end_frame: int = -1):
     """
-    Draws solid colored bars on a timeline canvas.
-    Transparency/alpha based on confidence has been removed for clarity.
+    Draws colored bars on a timeline. It now handles three states:
+    1. Solid: Human-verified labels or confirmed model predictions.
+    2. Semi-Transparent: Unconfirmed model predictions in Guided Mode.
+    3. Ghosted/Inactive: Labels not being reviewed in Review by Behavior mode.
     """
     if view_end_frame == -1:
         view_end_frame = total_frames
@@ -1472,40 +1399,63 @@ def fill_colors(canvas_img: np.ndarray, total_frames: int, view_start_frame: int
     view_duration = view_end_frame - view_start_frame
     if view_duration <= 0: return
 
-    behaviors = gui_state.label_dataset.labels.get("behaviors", [])
+    behaviors = gui_state.label_session_behaviors
+    colors = gui_state.label_session_colors
     timeline_w = canvas_img.shape[1]
+    
+    is_review_mode = gui_state.label_filter_for_behavior is not None
 
     for inst in gui_state.label_session_buffer:
-        is_confirmed = inst.get('_confirmed', False)
-        
-        # In confirmation mode, only show confirmed/human labels.
-        if gui_state.label_confirmation_mode and not ('confidence' not in inst or is_confirmed):
+        if gui_state.label_confirmation_mode and not ('confidence' not in inst or inst.get('_confirmed', False)):
             continue
 
         try:
             b_idx = behaviors.index(inst['label'])
-            color_hex = gui_state.label_behavior_colors[b_idx].lstrip("#")
+            color_hex = colors[b_idx].lstrip("#")
             bgr_color = tuple(int(color_hex[i:i+2], 16) for i in (4, 2, 0))
             
-            # Calculate pixel positions relative to the current view (full or zoom)
             start_px = int(timeline_w * (inst.get("start", 0) - view_start_frame) / view_duration)
             end_px = int(timeline_w * (inst.get("end", 0) + 1 - view_start_frame) / view_duration)
 
             if start_px < end_px:
-                # --- SIMPLIFIED DRAWING LOGIC ---
-                # Always draw the solid color. No more addWeighted.
-                cv2.rectangle(canvas_img, (start_px, 0), (end_px, 49), bgr_color, -1)
-                
-                # If the instance is confirmed, draw a white border on top.
-                if is_confirmed:
-                   cv2.rectangle(canvas_img, (start_px, 0), (end_px, 49), (255, 255, 255), 1)
+                is_active_behavior = not is_review_mode or inst['label'] == gui_state.label_filter_for_behavior
+                is_model_prediction = 'confidence' in inst
+                is_confirmed = inst.get('_confirmed', False)
+
+                if is_active_behavior:
+                    if is_model_prediction and not is_confirmed:
+                        # State 1: Unconfirmed Model Prediction (draw semi-transparent)
+                        overlay = canvas_img.copy()
+                        cv2.rectangle(overlay, (start_px, 0), (end_px, 49), bgr_color, -1)
+                        alpha = 0.4  # More transparent
+                        cv2.addWeighted(overlay, alpha, canvas_img, 1 - alpha, 0, canvas_img)
+                    else:
+                        # State 2: Human Label or Confirmed Prediction (draw solid)
+                        cv2.rectangle(canvas_img, (start_px, 0), (end_px, 49), bgr_color, -1)
+                        if is_confirmed:
+                           cv2.rectangle(canvas_img, (start_px, 0), (end_px, 49), (255, 255, 255), 1)
+                else:
+                    # State 3: Inactive/Ghosted Behavior in Review Mode (draw very transparent)
+                    overlay = canvas_img.copy()
+                    cv2.rectangle(overlay, (start_px, 0), (end_px, 49), bgr_color, -1)
+                    alpha = 0.2 # <-- Even more transparent
+                    cv2.addWeighted(overlay, alpha, canvas_img, 1 - alpha, 0, canvas_img)
+                    cv2.rectangle(canvas_img, (start_px, 0), (end_px, 49), tuple(c*0.7 for c in bgr_color), 1)
 
         except (ValueError, IndexError):
+            # If the behavior label is not found, draw it in a bright, obvious "error" color.
+            print(f"Warning: Could not find a valid color for behavior '{inst.get('label', 'N/A')}'. Drawing in magenta.")
+            bgr_color = (255, 0, 255) # Bright Magenta (BGR)
+            start_px = int(timeline_w * (inst.get("start", 0) - view_start_frame) / view_duration)
+            end_px = int(timeline_w * (inst.get("end", 0) + 1 - view_start_frame) / view_duration)
+            if start_px < end_px:
+                cv2.rectangle(canvas_img, (start_px, 0), (end_px, 49), bgr_color, -1)
+                cv2.rectangle(canvas_img, (start_px, 0), (end_px, 49), (255, 255, 255), 2)
             continue
 
     # Logic for drawing a new, in-progress label remains the same.
     if gui_state.label_type != -1 and gui_state.label_start != -1:
-        color_hex = gui_state.label_behavior_colors[gui_state.label_type].lstrip("#")
+        color_hex = gui_state.label_session_colors[gui_state.label_type].lstrip("#")
         bgr_color = tuple(int(color_hex[i:i+2], 16) for i in (4, 2, 0))
         start_f, end_f = min(gui_state.label_start, gui_state.label_index), max(gui_state.label_start, gui_state.label_index)
         

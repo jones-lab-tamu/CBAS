@@ -46,6 +46,8 @@ label_index: int = -1
 label_start: int = -1
 label_type: int = -1
 label_session_buffer: List[Dict[str, Any]] = []
+label_session_behaviors: List[str] = []
+label_session_colors: List[str] = []
 label_probability_df: Union[pd.DataFrame, None] = None
 label_history: List[Dict[str, Any]] = []
 label_dirty_instances: set = set()
@@ -54,6 +56,7 @@ label_behavior_colors: List[str] = []
 label_confirmation_mode: bool = False
 label_confidence_threshold: int = 100
 label_unfiltered_instances: List[Dict[str, Any]] = []
+label_filter_for_behavior: Union[str, None] = None
 label_col_map: Union['Colormap', None] = None
 
 

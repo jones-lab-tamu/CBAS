@@ -197,6 +197,13 @@ kbd {
    LABELING TIMELINE STYLES
    ================================================================= */
 
+ /* Style for behavior rows that are not being actively reviewed */
+ #controls .list-group-item.label-row-inactive {
+     opacity: 0.6;
+     pointer-events: none; /* Disables clicks */
+     border-color: #495057; /* Muted border */
+ }
+
 .timeline-image-wrapper {
   max-width: 504px; /* Matches the border + image width */
   flex-grow: 1; /* Allows the image to take up available space */
