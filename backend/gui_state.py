@@ -39,7 +39,7 @@ proj: Union['cbas.Project', None] = None
 # =================================================================
 
 label_capture: Union[cv2.VideoCapture, None] = None
-label_dataset: Union['cbas.Dataset', None] = None # <-- Fix: Add quotes
+label_dataset: Union['cbas.Dataset', None] = None
 label_videos: List[str] = []
 label_vid_index: int = -1
 label_index: int = -1
@@ -48,12 +48,13 @@ label_type: int = -1
 label_session_buffer: List[Dict[str, Any]] = []
 label_probability_df: Union[pd.DataFrame, None] = None
 label_history: List[Dict[str, Any]] = []
+label_dirty_instances: set = set()
 selected_instance_index: int = -1
 label_behavior_colors: List[str] = []
 label_confirmation_mode: bool = False
 label_confidence_threshold: int = 100
 label_unfiltered_instances: List[Dict[str, Any]] = []
-label_col_map: Union['Colormap', None] = None # <-- Fix: Add quotes
+label_col_map: Union['Colormap', None] = None
 
 
 # =================================================================

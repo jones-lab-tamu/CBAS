@@ -188,6 +188,10 @@ def save_session_labels():
     return label_train_page.save_session_labels()
 
 @eel.expose
+def save_with_resolutions(resolutions):
+    return label_train_page.save_with_resolutions(resolutions)
+
+@eel.expose
 def refilter_instances(threshold, mode):
     return label_train_page.refilter_instances(threshold, mode)
 

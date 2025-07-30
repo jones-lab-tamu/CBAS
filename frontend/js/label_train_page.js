@@ -6,6 +6,8 @@
 
 let cardRefreshTimeoutId = null;
 let editWhitelistBsModal = document.getElementById('editWhitelistModal') ? new bootstrap.Modal(document.getElementById('editWhitelistModal')) : null;
+let conflictResolutionBsModal = null; 
+let isReviewByBehaviorMode = false;
 
 // =================================================================
 // EEL-EXPOSED & LOG PANEL FUNCTIONS
@@ -1070,47 +1072,69 @@ function jumpToFrame() {
     }
 }
 
-async function handleCommitClick() { 
+async function handleCommitClick() {
     const commitBtn = document.getElementById('save-labels-btn');
-    const isConfirming = commitBtn.innerText.includes("Confirm & Save");
+    if (!commitBtn) return;
 
-    const confirmationMessage = currentLabelingMode === 'review' 
-        ? "Are you sure you want to commit these verified labels? This will overwrite previous labels for this video file."
-        : "Are you sure you want to save these new labels? This will overwrite any previous labels for this video file.";
+    const isConfirming = commitBtn.innerText.includes("Confirm");
 
     if (isConfirming) {
-        if (confirm(confirmationMessage)) {
-            
-            // Use await to get the return value from the backend
-            const reviewedVideoPath = await eel.save_session_labels()();
+        document.getElementById('cover-spin').style.visibility = 'visible';
+        try {
+            // Call the main save function in the backend
+            const result = await eel.save_session_labels()();
 
-
-            // =========================================================
-            if (reviewedVideoPath) {
-                let reviewedVideos = JSON.parse(sessionStorage.getItem('categoryReviewedVideos') || '[]');
-                if (!reviewedVideos.includes(reviewedVideoPath)) {
-                    reviewedVideos.push(reviewedVideoPath);
+            // Handle the detailed response from the backend
+            if (result.status === 'success') {
+                // On a successful save, update the sessionStorage for the category review workflow
+                if (result.video_path) {
+                    let reviewedVideos = JSON.parse(sessionStorage.getItem('categoryReviewedVideos') || '[]');
+                    if (!reviewedVideos.includes(result.video_path)) {
+                        reviewedVideos.push(result.video_path);
+                    }
+                    sessionStorage.setItem('categoryReviewedVideos', JSON.stringify(reviewedVideos));
                 }
-                sessionStorage.setItem('categoryReviewedVideos', JSON.stringify(reviewedVideos));
-            }
-            // =========================================================
 
-            commitBtn.innerHTML = '<i class="bi bi-check-lg"></i> Saved!';
-            commitBtn.classList.add('btn-info');
-            commitBtn.classList.remove('btn-primary');
-            setTimeout(() => {
+                // Provide visual feedback and close the labeling UI
+                commitBtn.innerHTML = '<i class="bi bi-check-lg"></i> Saved!';
+                commitBtn.classList.add('btn-info');
+                commitBtn.classList.remove('btn-primary');
+                setTimeout(() => {
+                    document.getElementById('label').style.display = 'none';
+                    document.getElementById('labeling-cheat-sheet').style.display = 'none';
+                    document.getElementById('datasets').style.display = 'block';
+                    labelingInterfaceActive = false;
+                    loadInitialDatasetCards();
+                }, 1500);
+
+            } else if (result.status === 'no_changes') {
+                // If no changes were made, just close the UI without saving
+                alert("No changes were made to the labels in this session.");
                 document.getElementById('label').style.display = 'none';
                 document.getElementById('labeling-cheat-sheet').style.display = 'none';
                 document.getElementById('datasets').style.display = 'block';
                 labelingInterfaceActive = false;
-                loadInitialDatasetCards(); 
-            }, 1500);
+
+            } else if (result.status === 'conflict') {
+                // If a conflict is found, show the resolution modal
+                showConflictResolutionModal(result.conflicts);
+
+            } else {
+                // Handle any other generic error from the backend
+                showErrorOnLabelTrainPage(result.message || "An unknown error occurred during the save operation.");
+            }
+        } catch (e) {
+            // Handle critical errors where the Eel call itself fails
+            showErrorOnLabelTrainPage(`Save failed: ${e.message}`);
+        } finally {
+            // Always hide the spinner
+            document.getElementById('cover-spin').style.visibility = 'hidden';
         }
     } else {
+        // This is the first click, which just stages the commit in the UI
         eel.stage_for_commit()();
     }
 }
-
 
 function jumpToInstance(direction) {
     eel.jump_to_instance(direction)();
@@ -1300,6 +1324,7 @@ async function startPreLabeling() {
 }
 
 async function prepareAndShowLabelModal(datasetName, videoToOpen, filterForBehavior = null) {
+    isReviewByBehaviorMode = !!filterForBehavior; // This will be true only if a filter is passed
     try {
         const markReviewedBtn = document.getElementById('mark-reviewed-btn'); // Get the new button
         
@@ -1533,6 +1558,132 @@ async function submitStartClassification() {
     updateTrainingStatusOnUI(datasetNameForModel, "Inference tasks queued...");
     await eel.start_classification(datasetNameForModel, selectedRecs)();
     inferenceBsModal?.hide();
+}
+
+/**
+ * Creates and displays the conflict resolution modal based on conflicts
+ * reported by the backend.
+ * @param {Array} conflicts - An array of conflict objects from the backend.
+ */
+function showConflictResolutionModal(conflicts) {
+    if (!conflictResolutionBsModal) {
+        conflictResolutionBsModal = new bootstrap.Modal(document.getElementById('conflictResolutionModal'));
+    }
+    const container = document.getElementById('conflict-list-container');
+    container.innerHTML = ''; // Clear old conflicts
+
+    conflicts.forEach((conflict, index) => {
+        const userInst = conflict.user_instance;
+        const existInst = conflict.existing_instance;
+        const conflictId = `conflict-${index}`;
+
+        // Store the full instance data in the DOM for later retrieval
+        const conflictHTML = `
+            <div class="card bg-dark text-light mb-3">
+                <div class="card-header small">
+                    Conflict: Your modified <strong>${userInst.label}</strong> instance [${userInst.start}-${userInst.end}]
+                    overlaps with an existing <strong>${existInst.label}</strong> instance [${existInst.start}-${existInst.end}].
+                </div>
+                <div class="card-body" id="${conflictId}"
+                     data-user-instance='${JSON.stringify(userInst)}'
+                     data-existing-instance='${JSON.stringify(existInst)}'>
+                    <div class="form-check">
+                        <input class="form-check-input" type="radio" name="${conflictId}-res" id="${conflictId}-truncate" value="truncate" checked>
+                        <label class="form-check-label" for="${conflictId}-truncate">
+                            <strong>Truncate Existing:</strong> Shorten the '${existInst.label}' instance to remove the overlap.
+                        </label>
+                    </div>
+                    <div class="form-check mt-2">
+                        <input class="form-check-input" type="radio" name="${conflictId}-res" id="${conflictId}-delete" value="delete">
+                        <label class="form-check-label" for="${conflictId}-delete">
+                            <strong>Delete Existing:</strong> Permanently remove the entire conflicting '${existInst.label}' instance.
+                        </label>
+                    </div>
+                </div>
+            </div>`;
+        container.innerHTML += conflictHTML;
+    });
+
+    document.getElementById('apply-resolutions-btn').onclick = resolveAndResave;
+    conflictResolutionBsModal.show();
+}
+
+/**
+ * Gathers the user's choices from the conflict modal, sends them to the backend
+ * for resolution, and handles the final save operation.
+ */
+async function resolveAndResave() {
+    const resolutions = [];
+    const conflictContainers = document.querySelectorAll('#conflict-list-container .card-body');
+
+    conflictContainers.forEach(container => {
+        const choice = container.querySelector(`input[name="${container.id}-res"]:checked`).value;
+        const userInst = JSON.parse(container.dataset.userInstance);
+        const existInst = JSON.parse(container.dataset.existingInstance);
+
+        const res = {
+            behavior: existInst.label,
+            start: existInst.start,
+            video: existInst.video,
+        };
+
+        if (choice === 'delete') {
+            res.action = 'delete';
+        } else { // truncate
+            // Determine which side of the existing instance to truncate
+            if (userInst.start > existInst.start) { // User's edit overlaps the END of the existing instance
+                res.action = 'truncate_end';
+                res.new_end = userInst.start - 1;
+            } else { // User's edit overlaps the START of the existing instance
+                res.action = 'truncate_start';
+                res.new_start = userInst.end + 1;
+            }
+        }
+        resolutions.push(res);
+    });
+
+    conflictResolutionBsModal.hide();
+    document.getElementById('cover-spin').style.visibility = 'visible';
+
+    try {
+        const result = await eel.save_with_resolutions(resolutions)();
+        
+        if (result.status === 'success') {
+            // This is the full success-handling logic.
+            const commitBtn = document.getElementById('save-labels-btn');
+
+            // Update sessionStorage for the category review workflow
+            if (result.video_path) {
+                let reviewedVideos = JSON.parse(sessionStorage.getItem('categoryReviewedVideos') || '[]');
+                if (!reviewedVideos.includes(result.video_path)) {
+                    reviewedVideos.push(result.video_path);
+                }
+                sessionStorage.setItem('categoryReviewedVideos', JSON.stringify(reviewedVideos));
+            }
+
+            // Provide visual feedback and close the labeling UI
+            if(commitBtn) {
+                commitBtn.innerHTML = '<i class="bi bi-check-lg"></i> Saved!';
+                commitBtn.classList.add('btn-info');
+                commitBtn.classList.remove('btn-primary');
+            }
+            
+            setTimeout(() => {
+                document.getElementById('label').style.display = 'none';
+                document.getElementById('labeling-cheat-sheet').style.display = 'none';
+                document.getElementById('datasets').style.display = 'block';
+                labelingInterfaceActive = false;
+                loadInitialDatasetCards();
+            }, 1500);
+
+        } else {
+            showErrorOnLabelTrainPage(result.message || "Failed to save with the provided resolutions.");
+        }
+    } catch (e) {
+        showErrorOnLabelTrainPage(`Save failed: ${e.message}`);
+    } finally {
+        document.getElementById('cover-spin').style.visibility = 'hidden';
+    }
 }
 
 /**
@@ -2055,11 +2206,16 @@ window.addEventListener("keydown", (event) => {
                 bIdx = event.key.toLowerCase().charCodeAt(0) - 'a'.charCodeAt(0) + 9;
             }
             
-            if (bIdx !== -1) {
-                eel.label_frame(bIdx)();
-            } else {
-                handled = false;
+			if (bIdx !== -1) {
+				if (isReviewByBehaviorMode && document.querySelector('#controls .list-group-item.highlight-selected')) {
+					console.log("Label changing is disabled in Review by Behavior mode.");
+					return; // Do nothing
+				}
+				eel.label_frame(bIdx)();
+			} else {
+				handled = false;
             }
+			
             break;
     }
     if (handled) event.preventDefault();

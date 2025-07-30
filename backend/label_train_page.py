@@ -444,6 +444,7 @@ def _start_labeling_worker(name: str, video_to_open: str = None, preloaded_insta
         gui_state.label_videos, gui_state.label_vid_index = [], -1
         gui_state.label_type, gui_state.label_start = -1, -1
         gui_state.label_history, gui_state.label_behavior_colors = [], []
+        gui_state.label_dirty_instances.clear()
         gui_state.label_session_buffer, gui_state.selected_instance_index = [], -1
         gui_state.label_probability_df = probability_df
         gui_state.label_confirmation_mode = False
@@ -660,65 +661,139 @@ def start_labeling_with_preload(dataset_name: str, model_name: str, video_path_t
         eel.showErrorOnLabelTrainPage(f"Failed to start pre-labeling: {e}")()
         return False
 
-
-
-def save_session_labels():
+def save_session_labels(resolutions=None):
     """
-    Filters for only human-verified/confirmed instances and saves them, correctly
-    overwriting previous labels for the specific video file.
-    """
-    if not gui_state.label_dataset or not gui_state.label_videos: return
+    Saves labels from the session buffer. This function is now robust and handles
+    all labeling modes (Manual, Guided, Review by Behavior) safely.
 
-    # Get the absolute and relative paths for the video being edited
+    It performs a pre-save conflict check. If conflicts are found during a
+    'Review by Behavior' session, it halts and returns a conflict object to the UI.
+    If resolutions are provided, it applies them before saving.
+    """
+    if not gui_state.label_dataset or not gui_state.label_videos:
+        return {'status': 'error', 'message': 'Labeling session not active.'}
+
     current_video_path_abs = gui_state.label_videos[0]
     current_video_path_rel = os.path.relpath(current_video_path_abs, start=gui_state.proj.path).replace('\\', '/')
 
-    # --- Step 1: Prepare the new, corrected labels for this video ---
-    final_labels_for_this_video = []
-    for inst in gui_state.label_session_buffer:
-        # We only care about instances that were "touched" (confirmed or created from scratch)
-        if 'confidence' not in inst or inst.get('_confirmed', False):
-            final_inst = inst.copy()
-            # Clean up all internal-use keys before saving
-            for key in ['confidence', 'confidences', '_original_start', '_original_end', '_confirmed']:
-                final_inst.pop(key, None)
+    # --- 1. Identify what was changed during this session ---
+    # This is an initial check to see if ANY changes were made.
+    dirty_instances_in_buffer = [
+        inst for inst in gui_state.label_session_buffer if id(inst) in gui_state.label_dirty_instances
+    ]
+    initial_dirty_behaviors = {inst['label'] for inst in dirty_instances_in_buffer}
+    for item in gui_state.label_dirty_instances:
+        if isinstance(item, str) and item.startswith('deleted_'):
+            initial_dirty_behaviors.add(item.replace('deleted_', ''))
+
+    if not initial_dirty_behaviors:
+        workthreads.log_message("No changes detected in labeling session. Nothing to save.", "INFO")
+        return {'status': 'no_changes'}
+    
+    # --- 2. Filter buffer for final ground truth ---
+    # An instance is considered ground truth if it's a human label (no confidence score)
+    # or if it's a model prediction that the user has explicitly confirmed.
+    final_commit_list = [
+        inst for inst in gui_state.label_session_buffer
+        if 'confidence' not in inst or inst.get('_confirmed', False)
+    ]
+    # Re-calculate dirty behaviors based on this FINAL list.
+    # This prevents unconfirmed predictions from making a category "dirty".
+    dirty_behaviors_from_commit = {inst['label'] for inst in final_commit_list if id(inst) in gui_state.label_dirty_instances}
+    for item in gui_state.label_dirty_instances:
+        if isinstance(item, str) and item.startswith('deleted_'):
+            dirty_behaviors_from_commit.add(item.replace('deleted_', ''))
+    
+    if not dirty_behaviors_from_commit:
+        workthreads.log_message("No confirmed changes detected in labeling session. Nothing to save.", "INFO")
+        return {'status': 'no_changes'}
+
+    # --- 3. Pre-Save Conflict Check (for Review by Behavior mode) ---
+    behaviors_in_buffer = {inst.get('label') for inst in gui_state.label_session_buffer}
+    is_review_session = len(behaviors_in_buffer) == 1
+
+    if is_review_session and not resolutions:
+        with open(gui_state.label_dataset.labels_path, "r") as f:
+            master_labels_data = yaml.safe_load(f).get("labels", {})
+        
+        conflicts = []
+        # First, get a list of only the instances that were actually modified by the user
+        modified_instances = [inst for inst in final_commit_list if id(inst) in gui_state.label_dirty_instances]
+
+        # Now, check each modified instance against all OTHER behaviors in the master file
+        for dirty_inst in modified_instances:
+            for behavior, instances in master_labels_data.items():
+                if behavior in behaviors_in_buffer: continue # Don't check against its own category
+                for master_inst in instances:
+                    if master_inst.get("video") == current_video_path_rel:
+                        if max(dirty_inst['start'], master_inst['start']) <= min(dirty_inst['end'], master_inst['end']):
+                            conflicts.append({'user_instance': dirty_inst, 'existing_instance': master_inst})
+        
+        if conflicts:
+            workthreads.log_message(f"Save halted. Found {len(conflicts)} conflicts.", "WARN")
+            return {'status': 'conflict', 'conflicts': conflicts}
+
+    # --- 4. If checks pass or resolutions are provided, proceed with save ---
+    workthreads.log_message(f"Saving labels for {current_video_path_rel}. Dirty behaviors: {dirty_behaviors_from_commit}", "INFO")
+    
+    with open(gui_state.label_dataset.labels_path, "r") as f:
+        master_labels = yaml.safe_load(f)
+
+    # Apply resolutions if any were provided by the user
+    if resolutions:
+        for res in resolutions:
+            b = res['behavior']
+            start = res['start']
+            video = res['video']
             
-            # CRITICAL: Ensure the video path is the correct relative path
-            final_inst['video'] = current_video_path_rel
-            final_labels_for_this_video.append(final_inst)
+            target_list = master_labels["labels"].get(b, [])
+            instance_found = False
+            for i, inst in enumerate(target_list):
+                if inst.get("video") == video and inst.get("start") == start:
+                    if res['action'] == 'delete':
+                        target_list.pop(i)
+                    elif res['action'] == 'truncate_start':
+                        target_list[i]['start'] = res['new_start']
+                    elif res['action'] == 'truncate_end':
+                        target_list[i]['end'] = res['new_end']
+                    instance_found = True
+                    break
+            if not instance_found:
+                 workthreads.log_message(f"Could not find instance to apply resolution: {res}", "WARN")
 
-    # --- Step 2: Load the master label data ---
-    all_labels_data = gui_state.label_dataset.labels["labels"]
-
-    # --- Step 3: Remove ALL old labels for this specific video ---
-    for behavior_name in all_labels_data:
-        # This creates a new list, filtering out the old entries
-        all_labels_data[behavior_name] = [
-            inst for inst in all_labels_data[behavior_name] if inst.get("video") != current_video_path_rel
+    # --- 5. Surgical Overwrite of Dirty Categories ---
+    for behavior in dirty_behaviors_from_commit:
+        # Remove all old instances for this video from the dirty behavior category
+        master_labels["labels"][behavior] = [
+            inst for inst in master_labels["labels"].get(behavior, [])
+            if inst.get("video") != current_video_path_rel
         ]
-    
-    # --- Step 4: Add the new, corrected labels back in ---
-    for corrected_inst in final_labels_for_this_video:
-        all_labels_data.setdefault(corrected_inst['label'], []).append(corrected_inst)
-    
-    # --- Step 5: Save the updated master label file ---
+        # Add back all instances of this dirty behavior from the FINAL COMMIT LIST
+        for inst_in_commit_list in final_commit_list:
+            if inst_in_commit_list.get('label') == behavior:
+                # Clean the instance before saving
+                final_inst = inst_in_commit_list.copy()
+                for key in ['confidence', 'confidences', '_original_start', '_original_end', '_confirmed']:
+                    final_inst.pop(key, None)
+                master_labels["labels"][behavior].append(final_inst)
+
+    # --- 6. Write the fully merged data back to the file ---
     with open(gui_state.label_dataset.labels_path, "w") as file:
-        yaml.dump(gui_state.label_dataset.labels, file, allow_unicode=True)
-    
-    # --- Step 6: Recalculate stats and update UI ---
+        yaml.dump(master_labels, file, allow_unicode=True)
+
+    # --- 7. Finalize and Update UI ---
     try:
-        workthreads.log_message(f"Recalculating instance counts for '{gui_state.label_dataset.name}'...", "INFO")
         gui_state.label_dataset.update_instance_counts_in_config(gui_state.proj)
-        workthreads.log_message(f"Instance counts updated.", "INFO")
     except Exception as e:
         workthreads.log_message(f"Could not update instance counts after saving: {e}", "ERROR")
 
-    print(f"Saved {len(final_labels_for_this_video)} human-verified/corrected labels for video {os.path.basename(current_video_path_abs)}.")
+    workthreads.log_message(f"Successfully saved labels for {os.path.basename(current_video_path_abs)}.", "INFO")
     
     gui_state.label_confirmation_mode = False
     eel.setConfirmationModeUI(False)()
     render_image()
-    return current_video_path_rel
+    
+    return {'status': 'success', 'video_path': current_video_path_rel}
 
 def refilter_instances(new_threshold: int, mode: str = 'below'):
     """
@@ -753,6 +828,15 @@ def refilter_instances(new_threshold: int, mode: str = 'below'):
 # =================================================================
 # EEL-EXPOSED FUNCTIONS: IN-SESSION LABELING ACTIONS
 # =================================================================
+
+def save_with_resolutions(resolutions):
+    """
+    A separate entry point to re-try saving after the user has provided
+    explicit resolutions for any boundary conflicts.
+    """
+    workthreads.log_message(f"Re-attempting save with {len(resolutions)} resolutions.", "INFO")
+    # We simply call the main save function, passing the resolutions along.
+    return save_session_labels(resolutions=resolutions)
 
 def get_current_labeling_video_path() -> str | None:
     """
@@ -944,6 +1028,7 @@ def update_instance_boundary(boundary_type: str):
         return
 
     active_instance = gui_state.label_session_buffer[gui_state.selected_instance_index]
+    gui_state.label_dirty_instances.add(id(active_instance))
     new_boundary_frame = gui_state.label_index
 
     if 'confidence' in active_instance and '_original_start' not in active_instance:
@@ -1029,6 +1114,7 @@ def add_instance_to_buffer():
     }
 
     gui_state.label_session_buffer.append(new_instance)
+    gui_state.label_dirty_instances.add(id(new_instance))
     gui_state.label_history.append(new_instance)
     update_counts()
 
@@ -1048,7 +1134,10 @@ def label_frame(value: int):
             
     if clicked_instance_index != -1 and gui_state.label_type == -1:
         new_behavior_name = behaviors[value]
-        gui_state.label_session_buffer[clicked_instance_index]['label'] = new_behavior_name
+        # Mark the instance as dirty BEFORE changing it
+        instance_to_change = gui_state.label_session_buffer[clicked_instance_index]
+        gui_state.label_dirty_instances.add(id(instance_to_change))
+        instance_to_change['label'] = new_behavior_name
         print(f"Changed instance {clicked_instance_index} to '{new_behavior_name}'.")
     else:
         if value == gui_state.label_type:
@@ -1077,6 +1166,7 @@ def delete_instance_from_buffer():
             break
     if idx_to_remove != -1:
         removed_inst = gui_state.label_session_buffer.pop(idx_to_remove)
+        gui_state.label_dirty_instances.add(f"deleted_{removed_inst['label']}")
         if removed_inst in gui_state.label_history:
             gui_state.label_history.remove(removed_inst)
         gui_state.selected_instance_index = -1
