@@ -122,6 +122,18 @@ The documentation is organized to follow the logical workflow of a typical proje
     *   [**Recording Video:** For a guide on adding cameras and managing recording sessions in CBAS.](Recording.md)
     *   [**Training a Custom Model:** For a detailed guide on creating a new dataset and training a model.](Training.md)
     *   [**Classifying & Visualizing Data:** For a guide on using your trained model to analyze videos and interpret the results.](Analysis.md)
+	
+### Optional: Using the Default `JonesLabModel`
+
+CBAS includes a pre-trained model, the `JonesLabModel`, which can serve as a demonstration or as a starting point for the "Guided Labeling" workflow. Please be aware that this model was trained on a specific hardware and environmental setup, and its performance will vary on your own data.
+
+This model is not loaded by default. To use it in your project:
+
+1.  **Locate the Model:** Find the `JonesLabModel` folder inside the application's source code directory (it is located at `CBAS/models/JonesLabModel`).
+2.  **Copy to Your Project:** Copy this entire `JonesLabModel` folder.
+3.  **Paste into Your Project:** Paste the folder into your own project's `models/` directory.
+
+The next time you open the "Label/Train" page or click the "Refresh Datasets" button, the `JonesLabModel` card will appear, and it will be available for inference.
 
 --------------
 ## Hardware Requirements

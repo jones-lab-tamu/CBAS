@@ -461,37 +461,6 @@
   </div>
 </div>
 
-<!-- Modal for Managing the Default Model -->
-<div class="modal" tabindex="-1" id="manageDefaultModelModal">
-  <div class="modal-dialog modal-dialog-centered">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h5 class="modal-title">Manage Default Model</h5>
-        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-      </div>
-      <div class="modal-body">
-        <p>This will delete the <strong>JonesLabModel</strong> from your current project view.</p>
-        <div class="alert alert-info small">
-          <i class="bi bi-info-circle-fill me-2"></i>
-          This action is not permanent. The model will be restored from the application's source files the next time you restart CBAS.
-        </div>
-        <hr>
-        <h6 class="text-danger">Danger Zone</h6>
-        <p class="small text-muted">This will remove the model folder from your project's `models` directory. This action cannot be undone within the current session.</p>
-        <div class="d-grid gap-2">
-            <!-- This button calls the new JS function -->
-            <button class="btn btn-outline-danger" onclick="deleteJonesLabModel()">
-                <i class="bi bi-trash-fill me-2"></i>Delete JonesLabModel
-            </button>
-        </div>
-      </div>
-      <div class="modal-footer">
-        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-      </div>
-    </div>
-  </div>
-</div>
-
   <!-- Modal for Model Training Parameters -->
   <div class="modal" tabindex="-1" id="trainModal">
     <div class="modal-dialog modal-dialog-centered">
@@ -609,12 +578,13 @@
 		<i class="bi bi-box-arrow-in-down" style="font-size: 40px;"></i>
 	  </div>
 	</div>
-    <div class="fab-container-left">
-      <div class="fab" onclick="refreshAllDatasets()" data-bs-toggle="tooltip" data-bs-placement="right" title="Refresh Datasets from Disk">
-        <i class="bi bi-arrow-clockwise" style="font-size: 40px;"></i>
-      </div>
+	<div class="fab-container-left">
+	  <!-- This is the existing refresh button -->
+	  <div class="fab" onclick="refreshAllDatasets()" data-bs-toggle="tooltip" data-bs-placement="right" title="Refresh Datasets from Disk">
+		<i class="bi bi-arrow-clockwise" style="font-size: 40px;"></i>
+	  </div>
+	</div>
     </div>
-  </div>
 
   <!-- View for Labeling Interface -->
   <div class="d-flex col align-items-center justify-content-center" style="height: max-content; width: 100vw;">

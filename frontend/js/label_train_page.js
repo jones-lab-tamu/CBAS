@@ -1220,9 +1220,6 @@ eel.expose(refreshAllDatasets);
 function refreshAllDatasets() {
     console.log("Refreshing datasets from disk...");
     
-    // This is the simplest, most intuitive way for a user to "unhide" the card.
-    localStorage.removeItem('isJonesLabModelHidden');
-
     document.getElementById('cover-spin').style.visibility = 'visible';
     
     eel.reload_project_data()().then(() => {
@@ -1562,37 +1559,9 @@ async function loadInitialDatasetCards(datasets = null) {
         container.className = 'row g-3';
         let htmlContent = '';
 
-        // Check both if the model exists AND if the user has chosen to hide it.
-        const isHidden = localStorage.getItem('isJonesLabModelHidden') === 'true';
-
-        if (!isHidden && await eel.model_exists("JonesLabModel")()) {
-            htmlContent += `
-                <div class="col-md-6 col-lg-4 d-flex">
-                    <div class="card shadow h-100 flex-fill">
-                        <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
-                            <h5 class="card-title mb-0">JonesLabModel <span class="badge bg-info">Default</span></h5>
-                            
-                            <!-- NEW: Hide Button -->
-                            <button type="button" class="btn-close btn-close-white" aria-label="Hide" 
-                                    onclick="hideJonesLabModel(this)" 
-                                    data-bs-toggle="tooltip" data-bs-placement="top" title="Hide this card"></button>
-                        </div>
-                        <div class="card-body d-flex flex-column">
-                            <p class="card-text small text-muted mt-auto">Pre-trained model for general inference.</p>
-                        </div>
-                        <div class="card-footer d-flex justify-content-end align-items-center">
-                            <!-- NEW: Manage Button -->
-                            <button class="btn btn-sm btn-outline-secondary me-auto" onclick="showManageDefaultModelModal()">Manage</button>
-                            <button class="btn btn-sm btn-warning" type="button" onclick="showInferenceModal('JonesLabModel')" data-bs-toggle="tooltip" data-bs-placement="top" title="Use this model to classify unlabeled videos">Infer</button>
-                        </div>
-                    </div>
-                </div>`;
-        }
-
         // --- Loop through user-created datasets ---
         if (datasets) {
             for (const datasetName in datasets) {
-                if (datasetName === "JonesLabModel") continue;
                 
                 const config = datasets[datasetName];
                 const state = config.state || 'new';
@@ -1714,7 +1683,6 @@ async function loadInitialDatasetCards(datasets = null) {
     }
 }
 
-
 /**
  * Checks if all necessary H5 files for a dataset exist on the backend
  * before showing the training modal. This acts as a pre-flight check
@@ -1784,55 +1752,6 @@ function waitForEelConnection() {
             }
         }, 100);
     });
-}
-
-// To be called by the "Hide" button on the JonesLabModel card.
-function hideJonesLabModel(buttonElement) {
-    // Get the Bootstrap Tooltip instance associated with the button that was clicked.
-    const tooltipInstance = bootstrap.Tooltip.getInstance(buttonElement);
-    
-    // If the tooltip instance exists, hide it immediately.
-    if (tooltipInstance) {
-        tooltipInstance.hide();
-    }
-
-    if (confirm("Are you sure you want to hide the JonesLabModel card?\n\nYou can restore it by clicking the main 'Refresh Datasets' button in the bottom-left corner.")) {
-        // Use localStorage to remember the hidden state. This is simple and non-disruptive.
-        localStorage.setItem('isJonesLabModelHidden', 'true');
-        // Re-render the cards to apply the change immediately.
-        loadInitialDatasetCards();
-    }
-}
-
-// To be called by the "Manage" button on the JonesLabModel card.
-function showManageDefaultModelModal() {
-    // We will create this modal in the HTML file.
-    const modal = new bootstrap.Modal(document.getElementById('manageDefaultModelModal'));
-    modal.show();
-}
-
-// To be called by the "Delete" button inside the new modal.
-async function deleteJonesLabModel() {
-    if (confirm("This will delete the JonesLabModel from your project. It will be restored on the next application restart.\n\nAre you sure you want to continue?")) {
-        document.getElementById('cover-spin').style.visibility = 'visible';
-        try {
-            // REUSE the existing delete_dataset logic. It's robust enough to handle this.
-            // The backend checks if the corresponding dataset folder exists before deleting, so it won't fail.
-            const success = await eel.delete_dataset('JonesLabModel')();
-            if (success) {
-                const modal = bootstrap.Modal.getInstance(document.getElementById('manageDefaultModelModal'));
-                modal.hide();
-                // Refresh the UI to show the card is gone.
-                await loadInitialDatasetCards();
-            } else {
-                showErrorOnLabelTrainPage("Failed to delete the JonesLabModel. It might be in use or protected.");
-            }
-        } catch (e) {
-            showErrorOnLabelTrainPage(`An error occurred: ${e.message}`);
-        } finally {
-            document.getElementById('cover-spin').style.visibility = 'hidden';
-        }
-    }
 }
 
 // --- Global Event Listeners ---

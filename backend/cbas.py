@@ -634,14 +634,6 @@ class Project:
         for model_dir in [d for d in os.scandir(self.models_dir) if d.is_dir()]:
             try: self.models[model_dir.name] = Model(model_dir.path)
             except Exception as e: print(f"Error loading project model {model_dir.path}: {e}")
-        try:
-            if "JonesLabModel" not in self.models:
-                app_root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                bundled_model_path = os.path.join(app_root_dir, "models", "JonesLabModel")
-                if os.path.isdir(bundled_model_path):
-                    print(f"Found bundled JonesLabModel at: {bundled_model_path}")
-                    self.models["JonesLabModel"] = Model(bundled_model_path)
-        except Exception as e: print(f"Warning: Could not load the bundled JonesLabModel: {e}")
         
     def _load_datasets(self):
         self.datasets = {}
