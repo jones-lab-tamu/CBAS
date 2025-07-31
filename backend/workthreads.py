@@ -538,7 +538,7 @@ class TrainingThread(threading.Thread):
         overall_best_f1 = -1.0
         all_run_reports = []
         overall_best_reports_history = None
-        overall_best_cm = None  
+        overall_best_cm = None
         NUM_INNER_TRIALS = task.num_trials
 
         try:
@@ -670,11 +670,20 @@ class TrainingThread(threading.Thread):
             task.dataset.update_metric(b, "F1 Score", round(b_metrics.get('f1-score', 0), 2))
             task.dataset.update_metric(b, "Recall", round(b_metrics.get('recall', 0), 2))
             task.dataset.update_metric(b, "Precision", round(b_metrics.get('precision', 0), 2))
-            
-        # Generate and save plots from the single best run's history
+           
+        # Generate and save plots and the confusion matrix from the AVERAGED run data.
+        plot_dir = task.dataset.path
+
+        # --- Plot 1: Averaged Metrics Across All Runs (Bar Charts) ---
+        plot_averaged_run_metrics(
+            reports=all_reports,
+            behaviors=task.behaviors,
+            out_dir=plot_dir
+        )
+        log_message(f"Averaged performance plots saved to '{plot_dir}'.", "INFO")
+
+        # --- Plot 2: Epoch-by-Epoch Performance of the Single Best Run (Line Graphs) ---
         if best_run_history:
-            # The plots are saved in the dataset directory, not the model directory.
-            plot_dir = task.dataset.path
             for metric in ['f1-score', 'precision', 'recall']:
                 plot_report_list_metric(
                     reports=best_run_history,
@@ -682,10 +691,11 @@ class TrainingThread(threading.Thread):
                     behaviors=task.behaviors,
                     out_dir=plot_dir
                 )
-            log_message(f"Performance plots for the best run saved to '{plot_dir}'.", "INFO")
+            log_message(f"Epoch plots for the best run saved to '{plot_dir}'.", "INFO")
 
+        # --- Plot 3: Confusion Matrix of the Single Best Run ---
         if best_run_cm is not None:
-            cm_path = os.path.join(task.dataset.path, "confusion_matrix_BEST.png")
+            cm_path = os.path.join(plot_dir, "confusion_matrix_BEST.png")
             save_confusion_matrix_plot(best_run_cm, cm_path)
             log_message(f"Best confusion matrix saved to '{cm_path}'.", "INFO")
 
@@ -702,6 +712,7 @@ class TrainingThread(threading.Thread):
         if thread_id:
             res = ctypes.pythonapi.PyThreadState_SetAsyncExc(thread_id, ctypes.py_object(SystemExit))
             if res > 1: ctypes.pythonapi.PyThreadState_SetAsyncExc(thread_id, 0)
+
 
 
 # =================================================================
@@ -743,17 +754,14 @@ def save_confusion_matrix_plot(cm_data: np.ndarray, path: str):
     ax.set_title("Confusion Matrix")
     plt.tight_layout(); plt.savefig(path); plt.close(fig)
 
-
 def plot_report_list_metric(reports: list, metric: str, behaviors: list, out_dir: str):
     """Plots a given metric over epochs for all behaviors, for both training and validation sets."""
     if not reports: return
     plt.figure(figsize=(10, 7))
     epochs = range(1, len(reports) + 1)
     
-    # Use seaborn's color palette for distinct colors
     colors = plt.cm.get_cmap('tab10', len(behaviors))
 
-    # Plot Train and Validation metrics for each behavior
     for i, b_name in enumerate(behaviors):
         train_values = [r.train_report.get(b_name, {}).get(metric, np.nan) for r in reports]
         val_values = [r.val_report.get(b_name, {}).get(metric, np.nan) for r in reports]
@@ -763,7 +771,6 @@ def plot_report_list_metric(reports: list, metric: str, behaviors: list, out_dir
         if not all(np.isnan(v) for v in val_values):
             plt.plot(epochs, val_values, marker='x', linestyle='--', label=f'{b_name} (Val)', color=colors(i))
 
-    # Plot Weighted Averages
     w_avg_train = [r.train_report.get('weighted avg', {}).get(metric, np.nan) for r in reports]
     w_avg_val = [r.val_report.get('weighted avg', {}).get(metric, np.nan) for r in reports]
     
@@ -777,10 +784,44 @@ def plot_report_list_metric(reports: list, metric: str, behaviors: list, out_dir
     plt.title(f"{metric.replace('-', ' ').title()} Over Epochs")
     plt.legend(title="Behaviors", bbox_to_anchor=(1.04, 1), loc='upper left')
     plt.grid(True, linestyle='--', alpha=0.6)
-    plt.tight_layout(rect=[0, 0, 0.8, 1]) # Adjust rect to make space for the legend
+    plt.tight_layout(rect=[0, 0, 0.8, 1])
     plt.savefig(os.path.join(out_dir, f"{metric.replace(' ', '_')}_epochs_plot.png"))
     plt.close()
 
+def plot_averaged_run_metrics(reports: list, behaviors: list, out_dir: str):
+    """
+    Creates bar charts for precision, recall, and f1-score, showing the mean
+    and standard deviation across all training runs.
+    """
+    if not reports: return
+
+    metrics = ['precision', 'recall', 'f1-score']
+    for metric in metrics:
+        plt.figure(figsize=(max(8, len(behaviors) * 0.6), 6))
+        
+        means = []
+        stds = []
+        
+        for b_name in behaviors:
+            # Collect the metric for this behavior from each run's report
+            run_values = [r.get(b_name, {}).get(metric, 0) for r in reports]
+            means.append(np.mean(run_values))
+            stds.append(np.std(run_values))
+
+        x_pos = np.arange(len(behaviors))
+        
+        # Create the bar plot with error bars
+        plt.bar(x_pos, means, yerr=stds, align='center', alpha=0.7, ecolor='black', capsize=10)
+        
+        plt.ylabel(metric.replace('-', ' ').title())
+        plt.xticks(x_pos, behaviors, rotation='vertical')
+        plt.title(f"Average {metric.replace('-', ' ').title()} Across {len(reports)} Runs")
+        plt.grid(axis='y', linestyle='--', alpha=0.7)
+        plt.tight_layout()
+        
+        # Save the figure
+        plt.savefig(os.path.join(out_dir, f"{metric.replace(' ', '_')}_runs_plot.png"))
+        plt.close()
 
 # =================================================================
 # FILE SYSTEM WATCHER
