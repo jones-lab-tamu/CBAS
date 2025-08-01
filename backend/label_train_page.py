@@ -762,28 +762,75 @@ def save_session_labels():
 
 def refilter_instances(new_threshold: int, mode: str = 'below'):
     """
-    Re-filters the session buffer based on a confidence threshold and mode ('above' or 'below').
+    Re-filters the session buffer based on a confidence threshold and mode ('above' or 'below'),
+    ensuring no overlaps with existing human labels.
     """
     print(f"Refiltering instances with mode '{mode}' and threshold {new_threshold}%")
     gui_state.label_confidence_threshold = new_threshold
     
-    unfiltered = gui_state.label_unfiltered_instances
-    human_labels = [inst for inst in gui_state.label_session_buffer if 'confidence' not in inst]
-    
-    threshold_float = new_threshold / 100.0
-    newly_filtered = []
+    # =========================================================================
+    # ROBUST RE-FILTERING LOGIC
+    # =========================================================================
 
+    # Step 1: Get the two master lists: all raw predictions and all human labels.
+    unfiltered_predictions = gui_state.label_unfiltered_instances
+    
+    # It's crucial to get the human labels from the original dataset object,
+    # not the potentially modified session buffer, to ensure a clean slate.
+    human_labels = []
+    if gui_state.label_dataset and gui_state.label_videos:
+        relative_video_path = os.path.relpath(gui_state.label_videos[0], start=gui_state.proj.path).replace('\\', '/')
+        for b_name, b_insts in gui_state.label_dataset.labels["labels"].items():
+            for inst in b_insts:
+                if inst.get("video") == relative_video_path:
+                    human_labels.append(inst)
+
+    # Step 2: Apply the new confidence filter to the raw predictions.
+    threshold_float = new_threshold / 100.0
+    newly_filtered_candidates = []
     if mode == 'above':
-        newly_filtered = [
-            p for p in unfiltered if p.get('confidence', 0.0) >= threshold_float
+        newly_filtered_candidates = [
+            p for p in unfiltered_predictions if p.get('confidence', 0.0) >= threshold_float
         ]
     else: # Default to 'below'
-        newly_filtered = [
-            p for p in unfiltered if p.get('confidence', 1.0) < threshold_float
+        newly_filtered_candidates = [
+            p for p in unfiltered_predictions if p.get('confidence', 1.0) < threshold_float
         ]
     
-    gui_state.label_session_buffer = human_labels + newly_filtered
+    # Step 3: Run these new candidates through the same robust "Time Map" logic.
     
+    # Step 3a: Build the "Time Map" of occupied zones from human labels.
+    human_intervals = sorted([(h['start'], h['end']) for h in human_labels])
+    
+    final_guided_labels = []
+    # Step 3b: Process each candidate prediction against the time map.
+    for pred_inst in newly_filtered_candidates:
+        pred_intervals_to_add = [(pred_inst['start'], pred_inst['end'])]
+        for h_start, h_end in human_intervals:
+            surviving_pieces = []
+            while pred_intervals_to_add:
+                p_start, p_end = pred_intervals_to_add.pop(0)
+                is_safe = p_end < h_start or p_start > h_end
+                if is_safe:
+                    surviving_pieces.append((p_start, p_end))
+                    continue
+                if p_start < h_start:
+                    surviving_pieces.append((p_start, h_start - 1))
+                if p_end > h_end:
+                    surviving_pieces.append((h_end + 1, p_end))
+            pred_intervals_to_add = surviving_pieces
+        
+        for start, end in pred_intervals_to_add:
+            if start <= end:
+                new_inst = pred_inst.copy()
+                new_inst['start'] = start
+                new_inst['end'] = end
+                final_guided_labels.append(new_inst)
+
+    # Step 4: Rebuild the session buffer from the clean lists.
+    gui_state.label_session_buffer = human_labels + final_guided_labels
+    
+    # Reset selection and re-render the UI with the new, clean data.
     gui_state.selected_instance_index = -1
     eel.highlightBehaviorRow(None)()
     eel.updateConfidenceBadge(None, None)()
