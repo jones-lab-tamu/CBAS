@@ -607,13 +607,14 @@ class TrainingThread(threading.Thread):
                 if self.cancel_event.is_set(): break
 
                 if run_best_model:
-                    all_run_reports.append(run_best_reports[run_best_epoch].val_report)
+                    all_run_reports.append(run_best_reports[run_best_epoch])
                     if run_best_f1 > overall_best_f1:
                         log_message(f"New overall best model found in Run {run_num + 1} with F1: {run_best_f1:.4f}", "INFO")
                         overall_best_f1 = run_best_f1
                         overall_best_model = run_best_model
                         overall_best_reports_history = run_best_reports
                         overall_best_cm = run_best_reports[run_best_epoch].val_cm
+                        print(f"DEBUG: Captured new best CM from Run {run_num + 1}. Shape: {overall_best_cm.shape}, Sum: {np.sum(overall_best_cm)}")
 
             if self.cancel_event.is_set():
                 log_message(f"Training for '{task.name}' was cancelled by user.", "WARN")
@@ -638,15 +639,16 @@ class TrainingThread(threading.Thread):
         """Averages reports from multiple runs and saves the single best model."""
         log_message(f"Averaging results from {len(all_reports)} runs...", "INFO")
 
+        # Access the .val_report attribute from each PerformanceReport object.
         avg_report = {}
         for b in task.behaviors:
             avg_report[b] = {
-                'precision': float(np.mean([r.get(b, {}).get('precision', 0) for r in all_reports])),
-                'recall': float(np.mean([r.get(b, {}).get('recall', 0) for r in all_reports])),
-                'f1-score': float(np.mean([r.get(b, {}).get('f1-score', 0) for r in all_reports])),
+                'precision': float(np.mean([r.val_report.get(b, {}).get('precision', 0) for r in all_reports])),
+                'recall': float(np.mean([r.val_report.get(b, {}).get('recall', 0) for r in all_reports])),
+                'f1-score': float(np.mean([r.val_report.get(b, {}).get('f1-score', 0) for r in all_reports])),
             }
         
-        avg_f1 = np.mean([r.get('weighted avg', {}).get('f1-score', 0) for r in all_reports])
+        avg_f1 = np.mean([r.val_report.get('weighted avg', {}).get('f1-score', 0) for r in all_reports])
         log_message(f"Final Averaged F1 Score: {avg_f1:.4f}", "INFO")
         eel.updateTrainingStatusOnUI(task.name, f"Training complete. Averaged F1: {avg_f1:.4f}")()
 
@@ -664,19 +666,20 @@ class TrainingThread(threading.Thread):
         with open(task.dataset.config_path, 'w') as f:
             yaml.dump(task.dataset.config, f, allow_unicode=True)       
         
-        task.dataset.update_instance_counts_in_config(gui_state.proj)
+        # Update the metrics on the card with new, correct, averaged data.
         for b in task.behaviors:
             b_metrics = avg_report.get(b, {})
             task.dataset.update_metric(b, "F1 Score", round(b_metrics.get('f1-score', 0), 2))
             task.dataset.update_metric(b, "Recall", round(b_metrics.get('recall', 0), 2))
             task.dataset.update_metric(b, "Precision", round(b_metrics.get('precision', 0), 2))
-           
-        # Generate and save plots and the confusion matrix from the AVERAGED run data.
+            
         plot_dir = task.dataset.path
 
         # --- Plot 1: Averaged Metrics Across All Runs (Bar Charts) ---
+        # We now pass the .val_report dictionaries to the plotting function.
+        val_reports_list = [r.val_report for r in all_reports]
         plot_averaged_run_metrics(
-            reports=all_reports,
+            reports=val_reports_list,
             behaviors=task.behaviors,
             out_dir=plot_dir
         )
@@ -694,8 +697,10 @@ class TrainingThread(threading.Thread):
             log_message(f"Epoch plots for the best run saved to '{plot_dir}'.", "INFO")
 
         # --- Plot 3: Confusion Matrix of the Single Best Run ---
+        # This remains the same, as it correctly uses the CM from the best run.
         if best_run_cm is not None:
-            cm_path = os.path.join(plot_dir, "confusion_matrix_BEST.png")
+            print(f"DEBUG: Final CM being sent to plot function. Shape: {best_run_cm.shape}, Sum: {np.sum(best_run_cm)}")
+            cm_path = os.path.join(task.dataset.path, "confusion_matrix_BEST.png")
             save_confusion_matrix_plot(best_run_cm, cm_path)
             log_message(f"Best confusion matrix saved to '{cm_path}'.", "INFO")
 

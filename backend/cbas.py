@@ -758,19 +758,32 @@ class Project:
                 start = int(inst.get("start", -1))
                 end = int(inst.get("end", -1))
                 if start == -1 or end == -1: continue
-                valid_start = max(half_seqlen, start)
-                valid_end = int(min(cls_centered.shape[0] - half_seqlen, end))
-                for frame_idx in range(valid_start, valid_end):
+                
+                # Iterates over every single labeled frame, from the
+                # true start to the true end of the instance.
+                valid_start = start
+                valid_end = end
+
+                # The loop includes the final frame by using "+ 1".
+                for frame_idx in range(valid_start, valid_end + 1):
                     window_start = frame_idx - half_seqlen
                     window_end = frame_idx + half_seqlen + 1
+                    
+                    # Elegant safety checks prevent out-of-bounds errors at the absolute
+                    # beginning or end of a video file, discarding the minimum data.
+                    if window_start < 0: continue
                     if window_end > cls_centered.shape[0]: continue
+                                        
                     window = cls_centered[window_start:window_end]
                     if window.shape[0] != seq_len: continue
+                    
                     try:
+                        label_index = behaviors.index(inst["label"].strip())
                         seqs.append(torch.from_numpy(window).float())
-                        labels.append(torch.tensor(behaviors.index(inst["label"])).long())
+                        labels.append(torch.tensor(label_index).long())
                     except ValueError:
-                        if seqs: seqs.pop()
+                        print(f"WARNING: The label '{inst['label']}' in video '{inst['video']}' is not in the master behavior list. This instance will be SKIPPED. Please check for typos in your labels.yaml file.")
+
         if not seqs: return [], []
         shuffled_pairs = list(zip(seqs, labels))
         random.shuffle(shuffled_pairs)
@@ -1013,6 +1026,10 @@ def train_lstm_model(train_set, test_set, seq_len: int, behaviors: list, cancel_
                     val_actuals.extend(l.cpu().numpy())
                     val_predictions.extend(logits.argmax(1).cpu().numpy())
             if val_actuals:
+                from collections import Counter
+                print(f"DEBUG: Counts of each label in val_actuals: {Counter(val_actuals)}")
+                print(f"DEBUG: Length of val_actuals for report: {len(val_actuals)}")
+                print(f"DEBUG: Total frames in test_set object: {len(test_set)}")
                 val_report = classification_report(val_actuals, val_predictions, target_names=behaviors, output_dict=True, zero_division=0, labels=range(len(behaviors)))
                 val_cm = confusion_matrix(val_actuals, val_predictions, labels=range(len(behaviors)))
         epoch_reports.append(PerformanceReport(train_report, train_cm, val_report, val_cm))
