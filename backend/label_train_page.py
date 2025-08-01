@@ -1250,32 +1250,32 @@ def reload_project_data():
             return False
     return False
 
-def recalculate_dataset_stats(dataset_name: str) -> dict | None: # Add a return type hint
+def recalculate_dataset_stats(dataset_name: str) -> bool:
     """
-    Recalculates a dataset's stats and returns the complete, updated dataset configs.
+    Recalculates a dataset's stats and returns a simple success flag.
     """
     if not gui_state.proj or dataset_name not in gui_state.proj.datasets:
-        # ... (error handling remains the same) ...
-        return None
+        return False
 
     try:
         workthreads.log_message(f"Recalculating instance counts for '{dataset_name}'...", "INFO")
         dataset_obj = gui_state.proj.datasets[dataset_name]
         
+        # This function updates the config.yaml on disk.
         dataset_obj.update_instance_counts_in_config(gui_state.proj)
         
         workthreads.log_message(f"Stats recalculated successfully for '{dataset_name}'.", "INFO")
         
-        # Instead of calling a refresh function, we now reload the project data
-        # here in the backend and return the fresh data directly.
-        gui_state.proj.reload()
-        return {name: ds.config for name, ds in gui_state.proj.datasets.items()}
+        # The project state is reloaded from disk in the refreshAllDatasets JS function.
+        # We just need to signal that this step was successful.
+        return True
 
     except Exception as e:
         msg = f"Failed to recalculate stats for '{dataset_name}': {e}"
         workthreads.log_message(msg, "ERROR")
         traceback.print_exc()
         eel.showErrorOnLabelTrainPage(msg)()
+        return False
 
 def reveal_dataset_files(dataset_name: str):
     """

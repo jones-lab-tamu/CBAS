@@ -674,9 +674,42 @@ class TrainingThread(threading.Thread):
             task.dataset.update_metric(b, "Precision", round(b_metrics.get('precision', 0), 2))
             
         plot_dir = task.dataset.path
+        
+        # --- 1. Create a sub-directory for detailed run reports ---
+        run_reports_dir = os.path.join(plot_dir, "run_reports")
+        os.makedirs(run_reports_dir, exist_ok=True)
+        log_message(f"Saving detailed run reports to '{run_reports_dir}'.", "INFO")
+
+        # --- 2. Save the individual confusion matrix for each run ---
+        all_cms = []
+        for i, report in enumerate(all_reports):
+            run_cm = report.val_cm
+            if run_cm is not None and run_cm.size > 0:
+                all_cms.append(run_cm)
+                run_cm_path = os.path.join(run_reports_dir, f"confusion_matrix_run_{i+1}.png")
+                # We need to pass the behavior names to the plotting function
+                save_confusion_matrix_plot(run_cm, run_cm_path, labels=task.behaviors)
+
+        # --- 3. Calculate and save the AVERAGED confusion matrix ---
+        if all_cms:
+            # Stack matrices and compute the mean along the new axis
+            avg_cm = np.mean(np.stack(all_cms), axis=0)
+            avg_cm_path = os.path.join(plot_dir, "confusion_matrix_AVERAGE.png")
+            
+            avg_title = f"Average Confusion Matrix Across {len(all_cms)} Runs"
+            save_confusion_matrix_plot(avg_cm, avg_cm_path, labels=task.behaviors, title=avg_title, values_format='.1f')
+            log_message(f"Averaged confusion matrix saved to '{avg_cm_path}'.", "INFO")
+
+        # --- 4. Delete the old "_BEST" confusion matrix to avoid confusion ---
+        old_best_cm_path = os.path.join(plot_dir, "confusion_matrix_BEST.png")
+        if os.path.exists(old_best_cm_path):
+            try:
+                os.remove(old_best_cm_path)
+            except OSError as e:
+                log_message(f"Could not remove old confusion matrix file: {e}", "WARN")
+
 
         # --- Plot 1: Averaged Metrics Across All Runs (Bar Charts) ---
-        # We now pass the .val_report dictionaries to the plotting function.
         val_reports_list = [r.val_report for r in all_reports]
         plot_averaged_run_metrics(
             reports=val_reports_list,
@@ -695,14 +728,6 @@ class TrainingThread(threading.Thread):
                     out_dir=plot_dir
                 )
             log_message(f"Epoch plots for the best run saved to '{plot_dir}'.", "INFO")
-
-        # --- Plot 3: Confusion Matrix of the Single Best Run ---
-        # This remains the same, as it correctly uses the CM from the best run.
-        if best_run_cm is not None:
-            print(f"DEBUG: Final CM being sent to plot function. Shape: {best_run_cm.shape}, Sum: {np.sum(best_run_cm)}")
-            cm_path = os.path.join(task.dataset.path, "confusion_matrix_BEST.png")
-            save_confusion_matrix_plot(best_run_cm, cm_path)
-            log_message(f"Best confusion matrix saved to '{cm_path}'.", "INFO")
 
         log_message(f"Training for '{task.name}' complete. Model and averaged reports saved.", "INFO")
         eel.refreshAllDatasets()()
@@ -750,13 +775,13 @@ def cancel_training_task(dataset_name: str):
 
     eel.updateTrainingStatusOnUI(dataset_name, f"Training cancelled by user.")()
 
-def save_confusion_matrix_plot(cm_data: np.ndarray, path: str):
+def save_confusion_matrix_plot(cm_data: np.ndarray, path: str, labels: list = None, title: str = "Confusion Matrix", values_format: str = 'd'):
     """Saves a confusion matrix plot to a file."""
     if cm_data.size == 0: return
-    disp = ConfusionMatrixDisplay(confusion_matrix=cm_data)
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm_data, display_labels=labels)
     fig, ax = plt.subplots(figsize=(8, 7))
-    disp.plot(ax=ax, cmap="Blues", colorbar=False, xticks_rotation='vertical')
-    ax.set_title("Confusion Matrix")
+    disp.plot(ax=ax, cmap="Blues", colorbar=False, xticks_rotation='vertical', values_format=values_format)
+    ax.set_title(title)
     plt.tight_layout(); plt.savefig(path); plt.close(fig)
 
 def plot_report_list_metric(reports: list, metric: str, behaviors: list, out_dir: str):

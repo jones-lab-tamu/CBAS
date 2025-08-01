@@ -205,19 +205,24 @@ async function showManageDatasetModal(datasetName) {
     if (recalcBtn) {
         recalcBtn.onclick = async () => {
             if (confirm(`Are you sure you want to recalculate stats for '${datasetName}'? This will reset your performance metrics to 'N/A'.`)) {
+                manageDatasetBsModal.hide();
                 document.getElementById('cover-spin').style.visibility = 'visible';
                 try {
-                    const updatedDatasets = await eel.recalculate_dataset_stats(datasetName)();
-                    if (updatedDatasets) {
-                        loadInitialDatasetCards(updatedDatasets);
+                    // The backend function now just needs to return a simple success flag.
+                    const success = await eel.recalculate_dataset_stats(datasetName)();
+                    if (success) {
+                        // Instead of trying to render a returned value, we now call
+                        // the main, trusted refresh function.
+                        refreshAllDatasets();
                     } else {
-                        showErrorOnLabelTrainPage("Failed to get updated stats from the backend.");
+                        showErrorOnLabelTrainPage("Failed to recalculate stats on the backend.");
                     }
                 } catch (e) {
                     showErrorOnLabelTrainPage(`An error occurred: ${e.message}`);
                 } finally {
+                    // The refreshAllDatasets function will handle hiding the spinner,
+                    // but we add it here as a fallback.
                     document.getElementById('cover-spin').style.visibility = 'hidden';
-                    manageDatasetBsModal.hide();
                 }
             }
         };
