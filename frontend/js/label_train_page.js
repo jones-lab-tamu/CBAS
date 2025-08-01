@@ -1287,8 +1287,13 @@ async function startPreLabeling() {
     const hasLabels = await eel.video_has_labels(datasetName, videoPath)();
 
     if (hasLabels) {
-        const confirmationMessage = "This video already contains human-verified labels.\n\nStarting a 'Review & Correct' session will load these labels alongside the model's predictions. When you 'Commit Corrections', only the instances you explicitly confirm or modify in THIS session will be saved, overwriting the previous labels for this video.\n\nAre you sure you want to proceed?";
         
+		const confirmationMessage = "This video already contains human-verified labels.\n\n" +
+		"Starting a 'Review & Correct' session will load your existing labels alongside the model's new predictions.\n\n" +
+		"Your original human-verified labels will be kept automatically. Any model predictions you confirm or modify will be added.\n\n" +
+		"When you 'Commit Corrections', this new, combined set of labels will overwrite the previous labels for this video.\n\n" +
+            "Are you sure you want to proceed?";
+		
         if (!confirm(confirmationMessage)) {
             return; // User clicked cancel, so we stop here.
         }
