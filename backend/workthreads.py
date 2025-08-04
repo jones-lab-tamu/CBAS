@@ -29,6 +29,7 @@ from sklearn.metrics import ConfusionMatrixDisplay
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 import numpy as np
+import pandas as pd
 
 # Local application imports
 import eel
@@ -540,6 +541,9 @@ class TrainingThread(threading.Thread):
         overall_best_reports_history = None
         overall_best_cm = None
         NUM_INNER_TRIALS = task.num_trials
+        
+        # This will store the training instances from the run that produced the best model
+        best_run_train_insts = None
 
         try:
             for run_num in range(task.num_runs):
@@ -553,14 +557,14 @@ class TrainingThread(threading.Thread):
                 def update_progress(p): eel.spawn(eel.updateDatasetLoadProgress(task.name, p))
                 
                 if task.training_method == "weighted_loss":
-                    train_ds, test_ds, weights, _, _ = gui_state.proj.load_dataset_for_weighted_loss(
+                    train_ds, test_ds, weights, train_insts, _ = gui_state.proj.load_dataset_for_weighted_loss(
                         task.name, 
                         seq_len=task.sequence_length, 
                         progress_callback=update_progress, 
                         seed=run_num
                     )
                 else:
-                    train_ds, test_ds, _, _ = gui_state.proj.load_dataset(
+                    train_ds, test_ds, train_insts, _ = gui_state.proj.load_dataset(
                         task.name, 
                         seq_len=task.sequence_length, 
                         progress_callback=update_progress, 
@@ -614,7 +618,8 @@ class TrainingThread(threading.Thread):
                         overall_best_model = run_best_model
                         overall_best_reports_history = run_best_reports
                         overall_best_cm = run_best_reports[run_best_epoch].val_cm
-                        print(f"DEBUG: Captured new best CM from Run {run_num + 1}. Shape: {overall_best_cm.shape}, Sum: {np.sum(overall_best_cm)}")
+                        # Capture the training instances from this best run
+                        best_run_train_insts = train_insts
 
             if self.cancel_event.is_set():
                 log_message(f"Training for '{task.name}' was cancelled by user.", "WARN")
@@ -622,6 +627,11 @@ class TrainingThread(threading.Thread):
                 return
 
             if overall_best_model and all_run_reports:
+                # First, generate the disagreement report using the best model and its training data
+                if best_run_train_insts:
+                    self._generate_disagreement_report(task, overall_best_model, best_run_train_insts)
+
+                # Then, save all the other standard results
                 self._save_averaged_training_results(
                     task, overall_best_model, all_run_reports, 
                     overall_best_reports_history, overall_best_cm
@@ -634,6 +644,91 @@ class TrainingThread(threading.Thread):
             log_message(f"Critical error during training task for {task.name}: {e}", "ERROR")
             traceback.print_exc()
             eel.spawn(eel.updateTrainingStatusOnUI(task.name, f"Training Error: {e}"))
+            
+    def _generate_disagreement_report(self, task, model, train_insts):
+        """
+        Runs inference on the training set to find where the model disagrees
+        with the human labels. Saves a report for user review.
+        """
+        log_message(f"Generating disagreement report for '{task.name}'...", "INFO")
+        eel.spawn(eel.updateTrainingStatusOnUI(task.name, "Analyzing model errors..."))
+
+        disagreements = []
+        
+        instances_by_video = {}
+        for inst in train_insts:
+            video_path = inst.get("video")
+            if video_path:
+                instances_by_video.setdefault(video_path, []).append(inst)
+
+        for rel_video_path, instances in instances_by_video.items():
+            abs_video_path = os.path.join(gui_state.proj.path, rel_video_path)
+            h5_path = os.path.splitext(abs_video_path)[0] + "_cls.h5"
+            
+            if not os.path.exists(h5_path):
+                continue
+
+            csv_path = h5_path.replace("_cls.h5", f"_{task.name}_outputs.csv")
+            if not os.path.exists(csv_path):
+                csv_path = cbas.infer_file(
+                    file_path=h5_path, model=model, dataset_name=task.name,
+                    behaviors=task.behaviors, seq_len=task.sequence_length, device=self.device
+                )
+            if not csv_path:
+                continue
+            
+            try:
+                pred_df = pd.read_csv(csv_path)
+                pred_df['model_label'] = pred_df[task.behaviors].idxmax(axis=1)
+                pred_df['model_confidence'] = pred_df[task.behaviors].max(axis=1)
+            except Exception as e:
+                log_message(f"Could not read or process CSV {csv_path}: {e}", "WARN")
+                continue
+
+            for inst in instances:
+                try:
+                    start = int(inst['start'])
+                    end = int(inst['end'])
+                    true_label = inst['label']
+                except (ValueError, KeyError) as e:
+                    log_message(f"Skipping malformed instance in disagreement report: {inst}. Error: {e}", "WARN")
+                    continue
+                
+                instance_preds = pred_df.iloc[start:end+1].copy()
+                if instance_preds.empty:
+                    continue
+                
+                error_frames = instance_preds[instance_preds['model_label'] != true_label].copy()
+                
+                if not error_frames.empty:
+                    error_frames['block'] = (error_frames.index.to_series().diff() != 1).cumsum()
+                    
+                    for block_num, block_df in error_frames.groupby('block'):
+                        if block_df.empty:
+                            continue
+                        
+                        block_start = block_df.index.min()
+                        block_end = block_df.index.max()
+                        
+                        avg_confidence_in_error = block_df['model_confidence'].mean()
+                        most_common_error_prediction = block_df['model_label'].mode()[0]
+
+                        disagreements.append({
+                            'video_path': rel_video_path,
+                            'start_frame': int(block_start),
+                            'end_frame': int(block_end),
+                            'human_label': true_label,
+                            'model_prediction': most_common_error_prediction,
+                            'model_confidence': float(avg_confidence_in_error)
+                        })
+        
+        disagreements.sort(key=lambda x: x['model_confidence'], reverse=True)
+        
+        report_path = os.path.join(task.dataset.path, "disagreement_report.yaml")
+        with open(report_path, 'w') as f:
+            yaml.dump(disagreements, f, allow_unicode=True)
+            
+        log_message(f"Disagreement report with {len(disagreements)} items saved.", "INFO")             
 
     def _save_averaged_training_results(self, task, best_model, all_reports, best_run_history, best_run_cm):
         """Averages reports from multiple runs and saves the single best model."""

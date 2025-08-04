@@ -250,6 +250,10 @@ def load_dataset_configs() -> dict:
                 # State 3: If not trained and no labels, it's new.
                 config['state'] = 'new'
 
+        # Check if a disagreement report exists for this dataset
+        disagreement_report_path = os.path.join(dataset.path, "disagreement_report.yaml")
+        config['has_disagreements'] = os.path.exists(disagreement_report_path)
+
         dataset_configs[name] = config
         
     return dataset_configs
@@ -708,9 +712,11 @@ def save_session_labels():
 
     current_video_path_abs = gui_state.label_videos[0]
     current_video_path_rel = os.path.relpath(current_video_path_abs, start=gui_state.proj.path).replace('\\', '/')
+    
+    # Capture the dataset name before doing anything else.
+    saved_dataset_name = gui_state.label_dataset.name
 
     # --- 1. Filter the buffer for the final ground truth to be committed ---
-    # An instance is ground truth if it's human-made (no confidence) or user-confirmed.
     final_commit_list = [
         inst for inst in gui_state.label_session_buffer
         if 'confidence' not in inst or inst.get('_confirmed', False)
@@ -727,7 +733,6 @@ def save_session_labels():
         master_labels = yaml.safe_load(f)
 
     # --- 3. "Scorched Earth" removal for the specific video ---
-    # Go through every behavior and remove all old instances for this video.
     for behavior in master_labels["labels"]:
         master_labels["labels"][behavior] = [
             inst for inst in master_labels["labels"].get(behavior, [])
@@ -736,7 +741,6 @@ def save_session_labels():
 
     # --- 4. Add back the new, complete set of labels from the commit list ---
     for final_inst in final_commit_list:
-        # Clean the instance before saving
         inst_to_save = final_inst.copy()
         for key in ['confidence', 'confidences', '_original_start', '_original_end', '_confirmed']:
             inst_to_save.pop(key, None)
@@ -758,8 +762,9 @@ def save_session_labels():
     eel.setConfirmationModeUI(False)()
     render_image()
 
-    return {'status': 'success', 'video_path': current_video_path_rel}
-
+    # Return the status, video path, AND the name of the dataset that was saved.
+    return {'status': 'success', 'video_path': current_video_path_rel, 'dataset_name': saved_dataset_name}
+    
 def refilter_instances(new_threshold: int, mode: str = 'below'):
     """
     Re-filters the session buffer based on a confidence threshold and mode ('above' or 'below'),
@@ -1207,6 +1212,49 @@ def cancel_commit_stage():
 # EEL-EXPOSED FUNCTIONS: DATASET & MODEL MANAGEMENT
 # =================================================================
 
+def get_disagreement_playlist(dataset_name: str) -> list:
+    """
+    Reads the disagreement report for a given dataset and returns it as a list.
+    If the dataset is augmented, it intelligently points to the original source videos.
+    """
+    if not gui_state.proj or dataset_name not in gui_state.proj.datasets:
+        return []
+    
+    dataset = gui_state.proj.datasets[dataset_name]
+    report_path = os.path.join(dataset.path, "disagreement_report.yaml")
+    
+    if not os.path.exists(report_path):
+        return []
+        
+    try:
+        with open(report_path, 'r') as f:
+            disagreements = yaml.safe_load(f)
+        
+        if not disagreements:
+            return []
+
+        # WORKFLOW-AWARE LOGIC: Check if we need to point to source videos
+        is_augmented = dataset_name.endswith('_aug')
+        source_dataset_name = dataset_name.replace('_aug', '')
+        
+        for item in disagreements:
+            original_video_path = item['video_path']
+            # Default to the source dataset for corrections
+            item['correction_dataset'] = source_dataset_name if is_augmented else dataset_name
+            
+            if is_augmented and original_video_path.endswith('_aug.mp4'):
+                # Point to the original, non-augmented video for labeling
+                source_video_path = original_video_path.replace('_aug.mp4', '.mp4')
+                item['video_to_open'] = source_video_path
+            else:
+                # If it's not an augmented video or not an augmented dataset, open the path directly
+                item['video_to_open'] = original_video_path
+        
+        # Return only the top 50 worst disagreements to keep the playlist manageable
+        return disagreements[:50]
+    except Exception as e:
+        log_message(f"Error reading disagreement report for {dataset_name}: {e}", "ERROR")
+        return []
 
 def create_augmented_dataset(source_dataset_name: str, new_dataset_name: str):
     """

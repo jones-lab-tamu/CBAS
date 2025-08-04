@@ -100,6 +100,30 @@
   </div>
 </div>
 
+<!-- Modal for Disagreement Review Playlist -->
+<div class="modal" tabindex="-1" id="disagreementReviewModal">
+  <div class="modal-dialog modal-dialog-centered modal-lg modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Review Model Disagreements: <span id="dr-dataset-name" class="fw-bold text-primary"></span></h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div id="dr-info-message" class="alert alert-info" role="alert">
+            <!-- Info message will be populated by JS -->
+        </div>
+        <p class="small text-muted">The following are the instances from your training set where the model's prediction disagreed most strongly with your label. Reviewing these "hard" examples is the fastest way to improve the model.</p>
+        <ul class="list-group" id="dr-playlist">
+          <!-- Playlist will be dynamically generated here by JavaScript -->
+        </ul>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
   <!-- Modal for Cropping Videos on Import -->
   <div class="modal" tabindex="-1" id="cropOnImportModal">
     <div class="modal-dialog modal-dialog-centered modal-lg"> <!-- Use modal-lg for more space -->
@@ -598,7 +622,7 @@
           </div>
 	  
 		  <div class="col-md-3 text-end">
-		  <!-- NEW BUTTON: Hidden by default -->
+		  <!-- Hidden by default -->
 		  <button id="mark-reviewed-btn" class="btn btn-info me-2" style="display: none;">
 			<i class="bi bi-check-square-fill me-2"></i>Mark as Reviewed
 		  </button>
@@ -611,6 +635,18 @@
 		  </button>
 		</div>
         </div>
+		
+		<!-- Container for the contextual disagreement banner -->
+        <div id="disagreement-banner-container" class="row mb-2" style="display: none;">
+            <div class="col">
+                <div class="alert alert-warning alert-dismissible fade show" role="alert">
+                    <div id="disagreement-banner-content">
+                        <!-- Content will be injected by JavaScript -->
+                    </div>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                </div>
+            </div>
+        </div>		
 		
         <!-- Main Content: Video and Controls Panel -->
         <div class="row flex-grow-1">

@@ -115,6 +115,7 @@ const syncDatasetModalElement = document.getElementById('syncDatasetModal');
 const cropOnImportModalElement = document.getElementById('cropOnImportModal');
 const categoryReviewModalElement = document.getElementById('categoryReviewModal');
 const behaviorSelectModalElement = document.getElementById('behaviorSelectModal');
+const disagreementReviewModalElement = document.getElementById('disagreementReviewModal');
 
 let addDatasetBsModal = addDatasetModalElement ? new bootstrap.Modal(addDatasetModalElement) : null;
 let trainBsModal = trainModalElement ? new bootstrap.Modal(trainModalElement) : null;
@@ -128,6 +129,7 @@ let syncDatasetBsModal = syncDatasetModalElement ? new bootstrap.Modal(syncDatas
 let cropOnImportBsModal = cropOnImportModalElement ? new bootstrap.Modal(cropOnImportModalElement) : null;
 let categoryReviewBsModal = categoryReviewModalElement ? new bootstrap.Modal(categoryReviewModalElement) : null;
 let behaviorSelectBsModal = behaviorSelectModalElement ? new bootstrap.Modal(behaviorSelectModalElement) : null;
+let disagreementReviewBsModal = disagreementReviewModalElement ? new bootstrap.Modal(disagreementReviewModalElement) : null;
 
 
 // --- Import Cropping State ---
@@ -159,6 +161,69 @@ function getTextColorForBg(hexColor) {
     const b = parseInt(cleanHex.substring(4, 6), 16);
     const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
     return luminance > 0.5 ? '#000000' : '#FFFFFF';
+}
+
+async function showDisagreementModal(datasetName) {
+    if (!disagreementReviewBsModal) return;
+
+    document.getElementById('dr-dataset-name').textContent = datasetName;
+    const playlistContainer = document.getElementById('dr-playlist');
+    const infoMessageContainer = document.getElementById('dr-info-message');
+    playlistContainer.innerHTML = '<li class="list-group-item text-center">Searching for disagreements...</li>';
+    
+    if (datasetName.endsWith('_aug')) {
+        const sourceName = datasetName.replace('_aug', '');
+        infoMessageContainer.innerHTML = `<i class="bi bi-info-circle-fill me-2"></i>You are reviewing errors from the <strong>${datasetName}</strong> model. All corrections will be saved to the original <strong>${sourceName}</strong> dataset. Remember to 'Sync from Source' after curating.`;
+        infoMessageContainer.style.display = 'block';
+    } else {
+        infoMessageContainer.style.display = 'none';
+    }
+
+    disagreementReviewBsModal.show();
+
+    const disagreements = await eel.get_disagreement_playlist(datasetName)();
+    playlistContainer.innerHTML = ''; 
+
+    if (disagreements && disagreements.length > 0) {
+        const projectRoot = await eel.get_project_root()();
+        for (const item of disagreements) {
+            const listItem = document.createElement('li');
+            listItem.className = 'list-group-item list-group-item-action';
+            listItem.style.cursor = 'pointer';
+
+            const videoToOpen = item.video_to_open;
+            const correctionDataset = item.correction_dataset;
+            const videoAbsPath = `${projectRoot}/${videoToOpen}`.replace(/\\/g, '/');
+            const displayPath = item.video_path.split('/').pop();
+
+            listItem.innerHTML = `
+                <div class="d-flex w-100 justify-content-between">
+                    <h6 class="mb-1">File: ${displayPath}</h6>
+                    <small>Confidence in wrong label: <strong>${(item.model_confidence * 100).toFixed(0)}%</strong></small>
+                </div>
+                <p class="mb-1">
+                    Human Label: <span class="badge bg-success">${item.human_label}</span>
+                    <i class="bi bi-arrow-right-short"></i>
+                    Model Predicted: <span class="badge bg-danger">${item.model_prediction}</span>
+                </p>
+                <small class="text-muted">Location: Frames ${item.start_frame} - ${item.end_frame}</small>
+            `;
+
+            listItem.onclick = () => {
+                disagreementReviewBsModal.hide();
+                // Create an object with the disagreement context to pass to the next function.
+                const disagreementInfo = {
+                    human: item.human_label,
+                    model: item.model_prediction
+                };
+                // Pass this new object as the final argument.
+                prepareAndShowLabelModal(correctionDataset, videoAbsPath, null, item.start_frame, disagreementInfo);
+            };
+            playlistContainer.appendChild(listItem);
+        }
+    } else {
+        playlistContainer.innerHTML = '<li class="list-group-item text-center text-muted">No disagreements found. Your model agrees with all your labels in the training set!</li>';
+    }
 }
 
 async function showManageDatasetModal(datasetName) {
@@ -1093,6 +1158,7 @@ async function handleCommitClick() {
             const result = await eel.save_session_labels()();
 
             if (result.status === 'success') {
+                // Mark the video as reviewed in category mode if applicable
                 if (result.video_path) {
                     let reviewedVideos = JSON.parse(sessionStorage.getItem('categoryReviewedVideos') || '[]');
                     if (!reviewedVideos.includes(result.video_path)) {
@@ -1100,16 +1166,39 @@ async function handleCommitClick() {
                     }
                     sessionStorage.setItem('categoryReviewedVideos', JSON.stringify(reviewedVideos));
                 }
+                
+                // Animate the save button
                 commitBtn.innerHTML = '<i class="bi bi-check-lg"></i> Saved!';
                 commitBtn.classList.add('btn-info');
                 commitBtn.classList.remove('btn-primary');
+                
+                // Check if the saved dataset was a base dataset that has an augmented version.
+                const savedDataset = result.dataset_name;
+                if (savedDataset && !savedDataset.endsWith('_aug')) {
+                    const augmentedDatasetCard = document.getElementById(`state-view-new-${savedDataset}_aug`) || 
+                                                 document.getElementById(`state-view-labeled-${savedDataset}_aug`) || 
+                                                 document.getElementById(`state-view-trained-${savedDataset}_aug`);
+                    
+                    if (augmentedDatasetCard) {
+                        // If an augmented card exists, show the helpful prompt.
+                        const alertMessage = `Corrections Saved to '${savedDataset}'\n\n` +
+                            `Next Step: To apply these improvements to your '${savedDataset}_aug' dataset, ` +
+                            `please click the 'Sync from Source' button before you re-train the model.`;
+                        
+                        // We show this alert *before* closing the UI so the user sees it.
+                        alert(alertMessage);
+                    }
+                }
+
+                // Close the labeling UI and refresh the main dashboard
                 setTimeout(() => {
                     document.getElementById('label').style.display = 'none';
                     document.getElementById('labeling-cheat-sheet').style.display = 'none';
                     document.getElementById('datasets').style.display = 'block';
                     labelingInterfaceActive = false;
-                    loadInitialDatasetCards();
+                    loadInitialDatasetCards(); // Use the main refresh to get latest stats
                 }, 1500);
+
             } else if (result.status === 'no_changes') {
                 alert("No changes were made to the labels in this session.");
                 document.getElementById('label').style.display = 'none';
@@ -1318,26 +1407,51 @@ async function startPreLabeling() {
     }
 }
 
-async function prepareAndShowLabelModal(datasetName, videoToOpen, filterForBehavior = null) {
-    isReviewByBehaviorMode = !!filterForBehavior; // This will be true only if a filter is passed
+async function prepareAndShowLabelModal(datasetName, videoToOpen, filterForBehavior = null, startFrame = 0, disagreementInfo = null) {
+    isReviewByBehaviorMode = !!filterForBehavior;
     try {
-        const markReviewedBtn = document.getElementById('mark-reviewed-btn'); // Get the new button
+        const markReviewedBtn = document.getElementById('mark-reviewed-btn');
+        const bannerContainer = document.getElementById('disagreement-banner-container');
+        const bannerContent = document.getElementById('disagreement-banner-content');
         
+        // Logic to control the new contextual banner.
+        if (disagreementInfo && bannerContainer && bannerContent) {
+            // If disagreement info is provided, construct and show the banner.
+            bannerContent.innerHTML = `
+                <strong>Reviewing Model Error:</strong> You labeled this segment as 
+                <span class="badge bg-success">${disagreementInfo.human}</span>, but the model 
+                predicted it was <span class="badge bg-danger">${disagreementInfo.model}</span>. 
+                Please review and correct the label if necessary.
+            `;
+            bannerContainer.style.display = 'block';
+        } else if (bannerContainer) {
+            // Otherwise, ensure the banner is hidden.
+            bannerContainer.style.display = 'none';
+        }
+
         setLabelingModeUI('scratch'); 
         if (filterForBehavior) {
             const controlsHeader = document.querySelector('#controls .card-header h5');
             if (controlsHeader) {
                 controlsHeader.innerHTML = `Reviewing: <span class="badge bg-primary">${filterForBehavior}</span>`;
             }
-            // SHOW the button only in category review mode
             if (markReviewedBtn) markReviewedBtn.style.display = 'inline-block';
         } else {
-            // HIDE the button in all other modes
             if (markReviewedBtn) markReviewedBtn.style.display = 'none';
         }
         
         const success = await eel.start_labeling(datasetName, videoToOpen, null, filterForBehavior)();
-        if (!success) showErrorOnLabelTrainPage('Backend failed to start the labeling task.');
+        if (!success) {
+            showErrorOnLabelTrainPage('Backend failed to start the labeling task.');
+            return;
+        }
+
+        if (startFrame > 0) {
+            setTimeout(() => {
+                eel.jump_to_frame(startFrame)();
+            }, 500); 
+        }
+
     } catch (error) {
         showErrorOnLabelTrainPage(`Error initializing labeling interface: ${error.message || 'Unknown error'}`);
     }
@@ -1569,7 +1683,6 @@ async function loadInitialDatasetCards(datasets = null) {
         container.className = 'row g-3';
         let htmlContent = '';
 
-        // --- Loop through user-created datasets ---
         if (datasets) {
             for (const datasetName in datasets) {
                 
@@ -1578,7 +1691,6 @@ async function loadInitialDatasetCards(datasets = null) {
                 const behaviors = config.behaviors || [];
                 const metrics = config.metrics || {};
 
-                // --- Card Shell ---
                 htmlContent += `
                     <div class="col-md-6 col-lg-4 d-flex">
                         <div class="card shadow h-100 flex-fill">
@@ -1590,87 +1702,45 @@ async function loadInitialDatasetCards(datasets = null) {
                             </div>
                             <div class="card-body d-flex flex-column">`;
 
-                // --- STATE: NEW (Dataset is empty) ---
+                // --- STATE VIEWS (NEW, LABELED, TRAINED) ---
                 htmlContent += `
-                    <div class="card-state-view" id="state-view-new-${datasetName}" style="display: ${state === 'new' ? 'flex' : 'none'};">
-                        <div class="text-center my-auto">
-                            <p class="text-muted">Your dataset is empty.</p>
-                            <button class="btn btn-primary" onclick="showPreLabelOptions('${datasetName}')">
-                                <i class="bi bi-pen-fill me-2"></i>Label First Video
-                            </button>
-                        </div>
-                    </div>`;
+                    <div class="card-state-view" id="state-view-new-${datasetName}" style="display: ${state === 'new' ? 'flex' : 'none'};"><div class="text-center my-auto"><p class="text-muted">Your dataset is empty.</p><button class="btn btn-primary" onclick="showPreLabelOptions('${datasetName}')"><i class="bi bi-pen-fill me-2"></i>Label First Video</button></div></div>
+                    <div class="card-state-view" id="state-view-labeled-${datasetName}" style="display: ${state === 'labeled' ? 'flex' : 'none'}; flex-direction: column;"><div><p class="small text-muted mb-2">You have labeled examples. You can add more, or train your first model.</p><div class="table-responsive" style="max-height: 150px;"><table class="table table-sm table-hover small"><tbody>${behaviors.map(b => `<tr><td>${b}</td><td class="text-end">${(metrics[b] || {})['Train #'] || '0 (0)'}</td><td class="text-end">${(metrics[b] || {})['Test #'] || '0 (0)'}</td></tr>`).join('')}</tbody></table></div></div></div>
+                    <div class="card-state-view" id="state-view-trained-${datasetName}" style="display: ${state === 'trained' ? 'flex' : 'none'}; flex-direction: column; font-size: 0.85rem;"><p class="small text-muted mb-2">Your model is trained. Use it to infer on new videos, or improve it by adding more labels.</p><div class="table-responsive"><table class="table table-sm table-hover small"><thead><tr><th>Behavior</th>${['Train Inst<br><small>(Frames)</small>', 'Test Inst<br><small>(Frames)</small>', 'Precision', 'Recall', 'F1 Score'].map(h => `<th class="text-center">${h}</th>`).join('')}</tr></thead><tbody>${behaviors.map(b => { const bMetrics = metrics[b] || {}; return `<tr><td>${b}</td><td class="text-center">${bMetrics['Train #'] || 'N/A'}</td><td class="text-center">${bMetrics['Test #'] || 'N/A'}</td><td class="text-center">${bMetrics['Precision'] || 'N/A'}</td><td class="text-center">${bMetrics['Recall'] || 'N/A'}</td><td class="text-center">${bMetrics['F1 Score'] || 'N/A'}</td></tr>`; }).join('')}</tbody></table></div></div>`;
 
-                // --- STATE: LABELED (Has labels, not yet trained) ---
-                htmlContent += `
-                    <div class="card-state-view" id="state-view-labeled-${datasetName}" style="display: ${state === 'labeled' ? 'flex' : 'none'}; flex-direction: column;">
-                        <div>
-                            <p class="small text-muted mb-2">You have labeled examples. You can add more, or train your first model.</p>
-                            <div class="table-responsive" style="max-height: 150px;">
-                                <table class="table table-sm table-hover small">
-                                    <tbody>
-                                        ${behaviors.map(b => `<tr><td>${b}</td><td class="text-end">${(metrics[b] || {})['Train #'] || '0 (0)'}</td><td class="text-end">${(metrics[b] || {})['Test #'] || '0 (0)'}</td></tr>`).join('')}
-                                    </tbody>
-                                </table>
-                            </div>
-                        </div>
-                    </div>`;
-                
-                // --- STATE: TRAINED (Has labels and a model) ---
-                const metricHeaders = ['Train Inst<br><small>(Frames)</small>', 'Test Inst<br><small>(Frames)</small>', 'Precision', 'Recall', 'F1 Score'];
-                htmlContent += `
-                    <div class="card-state-view" id="state-view-trained-${datasetName}" style="display: ${state === 'trained' ? 'flex' : 'none'}; flex-direction: column; font-size: 0.85rem;">
-                        <p class="small text-muted mb-2">Your model is trained. Use it to infer on new videos, or improve it by adding more labels.</p>
-                        <div class="table-responsive">
-                            <table class="table table-sm table-hover small">
-                                <thead><tr><th>Behavior</th>${metricHeaders.map(h => `<th class="text-center">${h}</th>`).join('')}</tr></thead>
-                                <tbody>
-                                    ${behaviors.map(b => {
-                                        const bMetrics = metrics[b] || {};
-                                        return `<tr>
-                                            <td>${b}</td>
-                                            <td class="text-center">${bMetrics['Train #'] || 'N/A'}</td>
-                                            <td class="text-center">${bMetrics['Test #'] || 'N/A'}</td>
-                                            <td class="text-center">${bMetrics['Precision'] || 'N/A'}</td>
-                                            <td class="text-center">${bMetrics['Recall'] || 'N/A'}</td>
-                                            <td class="text-center">${bMetrics['F1 Score'] || 'N/A'}</td>
-                                        </tr>`;
-                                    }).join('')}
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>`;
-
-                // --- Common Elements for all states ---
                 htmlContent += `
                     <div class="mt-auto">
-                        <div class="progress mt-2" id="progress-container-${datasetName}" style="height: 20px; display: none;">
-                            <div class="progress-bar progress-bar-striped progress-bar-animated" id="progress-bar-${datasetName}" role="progressbar" style="width: 0%;"></div>
-                        </div>
+                        <div class="progress mt-2" id="progress-container-${datasetName}" style="height: 20px; display: none;"><div class="progress-bar progress-bar-striped progress-bar-animated" id="progress-bar-${datasetName}" role="progressbar" style="width: 0%;"></div></div>
                         <div id="dataset-status-${datasetName}" class="mt-2 small text-info"></div>
                     </div>`;
 
-                // --- Footer with State-Dependent Buttons ---
                 htmlContent += `
-                            </div> <!-- End card-body -->
-                            <div class="card-footer d-flex justify-content-end align-items-center">
-                                <button class="btn btn-sm btn-outline-secondary me-auto" type="button" onclick="showManageDatasetModal('${datasetName}')" data-bs-toggle="tooltip" title="View dataset files"><i class="bi bi-folder2-open"></i> Manage</button>`;
+                            </div>
+                            <div class="card-footer d-flex justify-content-end align-items-center flex-wrap gap-1">
+                                <button class="btn btn-sm btn-outline-secondary me-auto" type="button" onclick="showManageDatasetModal('${datasetName}')" data-bs-toggle="tooltip" title="Manage dataset files and settings"><i class="bi bi-folder2-open"></i> Manage</button>`;
                 
+                if (config.has_disagreements) {
+                    const tooltipText = datasetName.endsWith('_aug') 
+                        ? "Review the instances your model was most confused about. Corrections will be made to the original source dataset."
+                        : "Review the instances your model was most confused about to improve your labels.";
+                    htmlContent += `<button class="btn btn-sm btn-outline-warning" type="button" onclick="showDisagreementModal('${datasetName}')" data-bs-toggle="tooltip" title="${tooltipText}"><i class="bi bi-lightbulb-fill"></i> Review Errors</button>`;
+                }
+
                 if (datasetName.endsWith('_aug')) {
                     const sourceName = datasetName.replace('_aug', '');
-                    htmlContent += `<button class="btn btn-sm btn-info me-1" type="button" onclick="showSyncModal('${sourceName}', '${datasetName}')" data-bs-toggle="tooltip" title="Re-sync labels from the original '${sourceName}' dataset."><i class="bi bi-arrow-repeat"></i> Sync from Source</button>`;
+                    htmlContent += `<button class="btn btn-sm btn-info" type="button" onclick="showSyncModal('${sourceName}', '${datasetName}')" data-bs-toggle="tooltip" title="Re-sync labels from the original '${sourceName}' dataset."><i class="bi bi-arrow-repeat"></i> Sync</button>`;
                 } else if (state !== 'new') {
-                    htmlContent += `<button class="btn btn-sm btn-outline-info me-1" type="button" onclick="showAugmentModal('${datasetName}')" data-bs-toggle="tooltip" title="Create an augmented version of this dataset."><i class="bi bi-images"></i> Augment</button>`;
+                    htmlContent += `<button class="btn btn-sm btn-outline-info" type="button" onclick="showAugmentModal('${datasetName}')" data-bs-toggle="tooltip" title="Create an augmented version of this dataset."><i class="bi bi-images"></i> Augment</button>`;
                 }
                 
                 if (!datasetName.endsWith('_aug') && state !== 'new') {
-                     htmlContent += `<button class="btn btn-sm btn-primary me-1" type="button" onclick="showPreLabelOptions('${datasetName}')" data-bs-toggle="tooltip" title="Add or correct labels for this dataset.">Label More</button>`;
+                     htmlContent += `<button class="btn btn-sm btn-primary" type="button" onclick="showPreLabelOptions('${datasetName}')" data-bs-toggle="tooltip" title="Add or correct labels for this dataset.">Label More</button>`;
                 }
                 
                 if (state === 'labeled' || state === 'trained') {
                     const trainText = state === 'trained' ? 'Re-Train' : 'Train';
                     const trainTooltip = state === 'trained' ? 'Re-train the model, potentially with new labels or different settings.' : 'Train a new model using the labels in this dataset.';
-                    htmlContent += `<button class="btn btn-sm btn-success me-1" type="button" onclick="checkAndShowTrainModal('${datasetName}')" data-bs-toggle="tooltip" title="${trainTooltip}">${trainText}</button>`;
+                    htmlContent += `<button class="btn btn-sm btn-success" type="button" onclick="checkAndShowTrainModal('${datasetName}')" data-bs-toggle="tooltip" title="${trainTooltip}">${trainText}</button>`;
                 }
                 
                 if (state === 'trained') {

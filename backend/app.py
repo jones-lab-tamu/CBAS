@@ -116,6 +116,10 @@ def stop_live_preview():
 # --- Label/Train Page Functions ---
 
 @eel.expose
+def get_disagreement_playlist(name):
+    return label_train_page.get_disagreement_playlist(name)
+
+@eel.expose
 def get_instances_for_behavior(dataset_name, behavior_name):
     return label_train_page.get_instances_for_behavior(dataset_name, behavior_name)
 
