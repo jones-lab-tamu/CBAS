@@ -1215,7 +1215,8 @@ def cancel_commit_stage():
 def get_disagreement_playlist(dataset_name: str) -> list:
     """
     Reads the disagreement report for a given dataset, de-duplicates entries that
-    point to the same source video, and returns a clean, prioritized list.
+    point to the same source video, normalizes filenames for display, and returns
+    a clean, prioritized list.
     """
     if not gui_state.proj or dataset_name not in gui_state.proj.datasets:
         return []
@@ -1233,53 +1234,44 @@ def get_disagreement_playlist(dataset_name: str) -> list:
         if not disagreements:
             return []
 
-        # =========================================================================
-        # DE-DUPLICATION LOGIC
-        # =========================================================================
-        
         is_augmented = dataset_name.endswith('_aug')
         source_dataset_name = dataset_name.replace('_aug', '')
         
-        # This dictionary will hold the single "worst" disagreement for each canonical source video.
-        # Key: canonical_video_path, Value: disagreement_item
         worst_disagreements = {}
 
         for item in disagreements:
-            # 1. Determine the canonical source video for this item.
             canonical_video_path = item['video_path']
             if is_augmented and canonical_video_path.endswith('_aug.mp4'):
                 canonical_video_path = canonical_video_path.replace('_aug.mp4', '.mp4')
             
-            # 2. Check if we've already seen a disagreement for this source video.
             if canonical_video_path not in worst_disagreements:
-                # If this is the first time we've seen this video, it's the worst one so far.
                 worst_disagreements[canonical_video_path] = item
             else:
-                # 3. If we have seen it, compare confidences to keep only the "worst" error.
                 existing_confidence = worst_disagreements[canonical_video_path]['model_confidence']
                 current_confidence = item['model_confidence']
                 
                 if current_confidence > existing_confidence:
-                    # The current item is a more confidently wrong prediction, so it replaces the old one.
                     worst_disagreements[canonical_video_path] = item
         
-        # 4. The final list is the values from our de-duplicated dictionary.
         final_playlist = list(worst_disagreements.values())
-        
-        # 5. Sort the final list by confidence one last time.
         final_playlist.sort(key=lambda x: x['model_confidence'], reverse=True)
 
-        # Now, add the final 'video_to_open' and 'correction_dataset' keys to the clean list.
+        # After de-duplicating, loop through the final list one more time to
+        # ensure the user only ever sees the canonical source filename.
         for item in final_playlist:
             item['correction_dataset'] = source_dataset_name if is_augmented else dataset_name
             
             original_video_path = item['video_path']
+            
+            # This is the video that will be opened for editing
+            video_to_open = original_video_path
             if is_augmented and original_video_path.endswith('_aug.mp4'):
-                item['video_to_open'] = original_video_path.replace('_aug.mp4', '.mp4')
-            else:
-                item['video_to_open'] = original_video_path
+                video_to_open = original_video_path.replace('_aug.mp4', '.mp4')
+            item['video_to_open'] = video_to_open
+            
+            # This is the video path that will be DISPLAYED in the UI
+            item['video_path'] = video_to_open
         
-        # Return only the top 50 worst disagreements to keep the playlist manageable.
         return final_playlist[:50]
         
     except Exception as e:
