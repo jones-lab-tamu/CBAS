@@ -1214,8 +1214,8 @@ def cancel_commit_stage():
 
 def get_disagreement_playlist(dataset_name: str) -> list:
     """
-    Reads the disagreement report for a given dataset and returns it as a list.
-    If the dataset is augmented, it intelligently points to the original source videos.
+    Reads the disagreement report for a given dataset, de-duplicates entries that
+    point to the same source video, and returns a clean, prioritized list.
     """
     if not gui_state.proj or dataset_name not in gui_state.proj.datasets:
         return []
@@ -1233,25 +1233,55 @@ def get_disagreement_playlist(dataset_name: str) -> list:
         if not disagreements:
             return []
 
-        # WORKFLOW-AWARE LOGIC: Check if we need to point to source videos
+        # =========================================================================
+        # DE-DUPLICATION LOGIC
+        # =========================================================================
+        
         is_augmented = dataset_name.endswith('_aug')
         source_dataset_name = dataset_name.replace('_aug', '')
         
+        # This dictionary will hold the single "worst" disagreement for each canonical source video.
+        # Key: canonical_video_path, Value: disagreement_item
+        worst_disagreements = {}
+
         for item in disagreements:
-            original_video_path = item['video_path']
-            # Default to the source dataset for corrections
+            # 1. Determine the canonical source video for this item.
+            canonical_video_path = item['video_path']
+            if is_augmented and canonical_video_path.endswith('_aug.mp4'):
+                canonical_video_path = canonical_video_path.replace('_aug.mp4', '.mp4')
+            
+            # 2. Check if we've already seen a disagreement for this source video.
+            if canonical_video_path not in worst_disagreements:
+                # If this is the first time we've seen this video, it's the worst one so far.
+                worst_disagreements[canonical_video_path] = item
+            else:
+                # 3. If we have seen it, compare confidences to keep only the "worst" error.
+                existing_confidence = worst_disagreements[canonical_video_path]['model_confidence']
+                current_confidence = item['model_confidence']
+                
+                if current_confidence > existing_confidence:
+                    # The current item is a more confidently wrong prediction, so it replaces the old one.
+                    worst_disagreements[canonical_video_path] = item
+        
+        # 4. The final list is the values from our de-duplicated dictionary.
+        final_playlist = list(worst_disagreements.values())
+        
+        # 5. Sort the final list by confidence one last time.
+        final_playlist.sort(key=lambda x: x['model_confidence'], reverse=True)
+
+        # Now, add the final 'video_to_open' and 'correction_dataset' keys to the clean list.
+        for item in final_playlist:
             item['correction_dataset'] = source_dataset_name if is_augmented else dataset_name
             
+            original_video_path = item['video_path']
             if is_augmented and original_video_path.endswith('_aug.mp4'):
-                # Point to the original, non-augmented video for labeling
-                source_video_path = original_video_path.replace('_aug.mp4', '.mp4')
-                item['video_to_open'] = source_video_path
+                item['video_to_open'] = original_video_path.replace('_aug.mp4', '.mp4')
             else:
-                # If it's not an augmented video or not an augmented dataset, open the path directly
                 item['video_to_open'] = original_video_path
         
-        # Return only the top 50 worst disagreements to keep the playlist manageable
-        return disagreements[:50]
+        # Return only the top 50 worst disagreements to keep the playlist manageable.
+        return final_playlist[:50]
+        
     except Exception as e:
         log_message(f"Error reading disagreement report for {dataset_name}: {e}", "ERROR")
         return []
