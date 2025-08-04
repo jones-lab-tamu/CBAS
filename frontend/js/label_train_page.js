@@ -186,6 +186,12 @@ async function showDisagreementModal(datasetName) {
 
     if (disagreements && disagreements.length > 0) {
         const projectRoot = await eel.get_project_root()();
+        
+        // 1. Get the list of already-reviewed items from sessionStorage.
+        const reviewedItemsKey = `reviewedDisagreements_${datasetName}`;
+        const reviewedItems = JSON.parse(sessionStorage.getItem(reviewedItemsKey) || '[]');
+        // =========================================================================
+
         for (const item of disagreements) {
             const listItem = document.createElement('li');
             listItem.className = 'list-group-item list-group-item-action';
@@ -196,27 +202,58 @@ async function showDisagreementModal(datasetName) {
             const videoAbsPath = `${projectRoot}/${videoToOpen}`.replace(/\\/g, '/');
             const displayPath = item.video_path.split('/').pop();
 
+            // 2. Create a unique ID for this specific disagreement instance.
+            const uniqueId = `${item.video_path}_${item.start_frame}`;
+            const isReviewed = reviewedItems.includes(uniqueId);
+
+            // 3. Add a visual indicator if the item has been reviewed.
+            const reviewedBadge = isReviewed 
+                ? '<span class="badge bg-success float-end"><i class="bi bi-check-lg"></i> Reviewed</span>' 
+                : '';
+            if (isReviewed) {
+                listItem.classList.add('text-muted'); // Fade out the text for reviewed items
+            }
+            // =========================================================================
+
             listItem.innerHTML = `
                 <div class="d-flex w-100 justify-content-between">
                     <h6 class="mb-1">File: ${displayPath}</h6>
-                    <small>Confidence in wrong label: <strong>${(item.model_confidence * 100).toFixed(0)}%</strong></small>
+                    <div>
+                        <small class="me-3">Confidence in wrong label: <strong>${(item.model_confidence * 100).toFixed(0)}%</strong></small>
+                        ${reviewedBadge}
+                    </div>
                 </div>
                 <p class="mb-1">
                     Human Label: <span class="badge bg-success">${item.human_label}</span>
                     <i class="bi bi-arrow-right-short"></i>
                     Model Predicted: <span class="badge bg-danger">${item.model_prediction}</span>
                 </p>
-                <small class="text-muted">Location: Frames ${item.start_frame} - ${item.end_frame}</small>
+                <small>Location: Frames ${item.start_frame} - ${item.end_frame}</small>
             `;
 
             listItem.onclick = () => {
+                // =========================================================================
+                // 4. When an item is clicked, add its ID to the reviewed list in sessionStorage.
+                if (!reviewedItems.includes(uniqueId)) {
+                    reviewedItems.push(uniqueId);
+                    sessionStorage.setItem(reviewedItemsKey, JSON.stringify(reviewedItems));
+                }
+                // Mark the item as reviewed in the current view without a full reload.
+                listItem.classList.add('text-muted');
+                const existingBadge = listItem.querySelector('.float-end');
+                if (!existingBadge) {
+                     const newBadge = document.createElement('span');
+                     newBadge.className = 'badge bg-success float-end';
+                     newBadge.innerHTML = '<i class="bi bi-check-lg"></i> Reviewed';
+                     listItem.querySelector('.d-flex > div').appendChild(newBadge);
+                }
+                // =========================================================================
+
                 disagreementReviewBsModal.hide();
-                // Create an object with the disagreement context to pass to the next function.
                 const disagreementInfo = {
                     human: item.human_label,
                     model: item.model_prediction
                 };
-                // Pass this new object as the final argument.
                 prepareAndShowLabelModal(correctionDataset, videoAbsPath, null, item.start_frame, disagreementInfo);
             };
             playlistContainer.appendChild(listItem);
