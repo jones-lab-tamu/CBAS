@@ -630,14 +630,21 @@ def update_dataset_whitelist(dataset_name: str, new_whitelist: list[str]) -> boo
 
 def start_labeling(name: str, video_to_open: str = None, preloaded_instances: list = None, filter_for_behavior: str = None) -> bool:
     """
-    (LAUNCHER) Lightweight function to spawn the labeling worker in the background.
+    Directly prepares the labeling session and returns a success flag.
+    This is now a synchronous function from the frontend's perspective.
     """
     try:
-        eel.spawn(_start_labeling_worker, name, video_to_open, preloaded_instances, None, filter_for_behavior)
-        print(f"Spawned labeling worker for dataset '{name}'.")
+        # We now call the worker's logic directly instead of spawning it.
+        # The eel.sleep(0) calls allow the UI to remain responsive during setup.
+        eel.sleep(0.01)
+        _start_labeling_worker(name, video_to_open, preloaded_instances, None, filter_for_behavior)
+        eel.sleep(0.01)
         return True
     except Exception as e:
-        print(f"Failed to spawn labeling worker: {e}")
+        print(f"Failed to start labeling session: {e}")
+        traceback.print_exc()
+        # Ensure an error is reported back to the user if setup fails.
+        eel.showErrorOnLabelTrainPage(f"Failed to start labeling session: {e}")()
         return False
 
 

@@ -1451,9 +1451,7 @@ async function prepareAndShowLabelModal(datasetName, videoToOpen, filterForBehav
         const bannerContainer = document.getElementById('disagreement-banner-container');
         const bannerContent = document.getElementById('disagreement-banner-content');
         
-        // Logic to control the new contextual banner.
         if (disagreementInfo && bannerContainer && bannerContent) {
-            // If disagreement info is provided, construct and show the banner.
             bannerContent.innerHTML = `
                 <strong>Reviewing Model Error:</strong> You labeled this segment as 
                 <span class="badge bg-success">${disagreementInfo.human}</span>, but the model 
@@ -1462,7 +1460,6 @@ async function prepareAndShowLabelModal(datasetName, videoToOpen, filterForBehav
             `;
             bannerContainer.style.display = 'block';
         } else if (bannerContainer) {
-            // Otherwise, ensure the banner is hidden.
             bannerContainer.style.display = 'none';
         }
 
@@ -1476,20 +1473,32 @@ async function prepareAndShowLabelModal(datasetName, videoToOpen, filterForBehav
         } else {
             if (markReviewedBtn) markReviewedBtn.style.display = 'none';
         }
-        
+                
+        // Show a spinner while the backend prepares the session.
+        document.getElementById('cover-spin').style.visibility = 'visible';
+
+        // 1. Await the completion of the backend setup. This function now
+        //    blocks until the video is loaded and the initial frame is rendered.
         const success = await eel.start_labeling(datasetName, videoToOpen, null, filterForBehavior)();
+        
+        // Hide the spinner once setup is complete.
+        document.getElementById('cover-spin').style.visibility = 'hidden';
+
         if (!success) {
-            showErrorOnLabelTrainPage('Backend failed to start the labeling task.');
+            // If the backend reported an error, do not proceed.
+            // The error message will have already been shown by the backend.
             return;
         }
 
+        // 2. Only after the setup is confirmed to be successful,
+        //    send the command to jump to the specific frame.
         if (startFrame > 0) {
-            setTimeout(() => {
-                eel.jump_to_frame(startFrame)();
-            }, 500); 
+            await eel.jump_to_frame(startFrame)();
         }
-
+        
     } catch (error) {
+        // Hide spinner on error as a fallback
+        document.getElementById('cover-spin').style.visibility = 'hidden';
         showErrorOnLabelTrainPage(`Error initializing labeling interface: ${error.message || 'Unknown error'}`);
     }
 }
