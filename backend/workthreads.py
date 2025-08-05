@@ -541,8 +541,6 @@ class TrainingThread(threading.Thread):
         overall_best_reports_history = None
         overall_best_cm = None
         NUM_INNER_TRIALS = task.num_trials
-        
-        # This will store the training instances from the run that produced the best model
         best_run_train_insts = None
 
         try:
@@ -556,21 +554,24 @@ class TrainingThread(threading.Thread):
                 
                 def update_progress(p): eel.spawn(eel.updateDatasetLoadProgress(task.name, p))
                 
+                weights = None
                 if task.training_method == "weighted_loss":
                     train_ds, test_ds, weights, train_insts, _ = gui_state.proj.load_dataset_for_weighted_loss(
-                        task.name, 
-                        seq_len=task.sequence_length, 
-                        progress_callback=update_progress, 
-                        seed=run_num
+                        task.name, seq_len=task.sequence_length, progress_callback=update_progress, seed=run_num
                     )
-                else:
+                elif task.training_method == 'custom_weights' and task.custom_weights:
+                    log_message(f"Using custom performance-based class weights: {task.custom_weights}", "INFO")
+                    # Convert the dictionary of weights into an ordered list based on the dataset's behaviors
+                    weights = [task.custom_weights.get(b, 1.0) for b in task.behaviors]
+                    # Use the standard balanced loader, but we'll pass the weights to the loss function
                     train_ds, test_ds, train_insts, _ = gui_state.proj.load_dataset(
-                        task.name, 
-                        seq_len=task.sequence_length, 
-                        progress_callback=update_progress, 
-                        seed=run_num
+                        task.name, seq_len=task.sequence_length, progress_callback=update_progress, seed=run_num
                     )
-                    weights = None
+                else: # Default to Balanced Sampling (oversampling)
+                    train_ds, test_ds, train_insts, _ = gui_state.proj.load_dataset(
+                        task.name, seq_len=task.sequence_length, progress_callback=update_progress, seed=run_num
+                    )
+                    weights = None # Ensure weights is None for balanced sampling
                 
                 if train_ds is None or len(train_ds) == 0:
                     log_message(f"Dataset loading for run {run_num + 1} failed or produced an empty training set. Aborting task.", "ERROR")
@@ -600,11 +601,13 @@ class TrainingThread(threading.Thread):
                         train_ds, test_ds, task.sequence_length, task.behaviors, self.cancel_event,
                         lr=task.learning_rate, batch_size=task.batch_size,
                         epochs=task.epochs, device=self.device, class_weights=weights,
-                        patience=task.patience, progress_callback=training_progress_updater
+                        patience=task.patience, progress_callback=training_progress_updater,
+                        optimization_target=task.optimization_target
                     )
 
                     if trial_model and trial_reports and trial_best_epoch != -1:
-                        f1 = trial_reports[trial_best_epoch].val_report.get("weighted avg", {}).get("f1-score", -1.0)
+                        optimization_key = task.optimization_target
+                        f1 = trial_reports[trial_best_epoch].val_report.get(optimization_key, {}).get("f1-score", -1.0)
                         if f1 > run_best_f1:
                             run_best_f1, run_best_model, run_best_reports, run_best_epoch = f1, trial_model, trial_reports, trial_best_epoch
                 
@@ -618,7 +621,6 @@ class TrainingThread(threading.Thread):
                         overall_best_model = run_best_model
                         overall_best_reports_history = run_best_reports
                         overall_best_cm = run_best_reports[run_best_epoch].val_cm
-                        # Capture the training instances from this best run
                         best_run_train_insts = train_insts
 
             if self.cancel_event.is_set():
@@ -627,11 +629,9 @@ class TrainingThread(threading.Thread):
                 return
 
             if overall_best_model and all_run_reports:
-                # First, generate the disagreement report using the best model and its training data
                 if best_run_train_insts:
                     self._generate_disagreement_report(task, overall_best_model, best_run_train_insts)
 
-                # Then, save all the other standard results
                 self._save_averaged_training_results(
                     task, overall_best_model, all_run_reports, 
                     overall_best_reports_history, overall_best_cm
@@ -846,14 +846,16 @@ class TrainingThread(threading.Thread):
 
 class TrainingTask():
     """A simple data class to hold all parameters for a single training job."""
-    def __init__(self, name, dataset, behaviors, batch_size, learning_rate, epochs, sequence_length, training_method, patience, num_runs, num_trials):
+    def __init__(self, name, dataset, behaviors, batch_size, learning_rate, epochs, sequence_length, training_method, patience, num_runs, num_trials, optimization_target, custom_weights=None):
         self.name, self.dataset, self.behaviors = name, dataset, behaviors
         self.batch_size, self.learning_rate = batch_size, learning_rate
         self.epochs, self.sequence_length = epochs, sequence_length
         self.training_method = training_method
         self.patience = patience
         self.num_runs = num_runs
-        self.num_trials = num_trials        
+        self.num_trials = num_trials
+        self.optimization_target = optimization_target
+        self.custom_weights = custom_weights
 
 def cancel_training_task(dataset_name: str):
     """Finds the running training task and signals it to cancel."""

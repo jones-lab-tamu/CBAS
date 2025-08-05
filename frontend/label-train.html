@@ -485,7 +485,7 @@
   </div>
 </div>
 
-  <!-- Modal for Model Training Parameters -->
+<!-- Modal for Model Training Parameters -->
   <div class="modal" tabindex="-1" id="trainModal">
     <div class="modal-dialog modal-dialog-centered">
       <div class="modal-content">
@@ -497,33 +497,51 @@
 		<div class="container">
 			<div class="row mb-3">
 			  <div class="col">
-				<label for="tm-method" class="form-label" data-bs-toggle="tooltip" data-bs-placement="top" title="Recommended: 'Balanced Sampling' helps the model learn rare behaviors by showing them more often. 'Weighted Loss' is an alternative that penalizes mistakes on rare behaviors more heavily. Try it if the default method gives poor results for a specific behavior.">Training Method:</label>
+				<label for="tm-method" class="form-label" data-bs-toggle="tooltip" data-bs-placement="top" title="Determines how the model handles imbalanced data during training.">Training Method:</label>
 				<select class="form-select" id="tm-method">
-				  <option value="oversampling" selected>Balanced Sampling (Oversampling)</option>
-				  <option value="weighted_loss">Weighted Loss</option>
+				  <option value="oversampling" selected>Balanced Sampling (Default)</option>
+				  <option value="weighted_loss">Weighted Loss (Frequency-based)</option>
+
+				  <option value="custom_weights">Custom Class Weights (Expert)</option>
 				</select>
 			  </div>
 			</div>
 
-			<!-- ========================================================= -->
-			<!-- Number of Data Splits for Averaging -->
-			<!-- ========================================================= -->		
+            <!-- HIDDEN PANEL FOR CUSTOM WEIGHTS -->
+            <div id="custom-weights-panel" class="mb-3 p-3 border rounded" style="display: none;">
+                <p class="small text-muted">Manually adjust the weight for each behavior. Higher weights tell the model to penalize mistakes on that behavior more heavily. Weights are auto-calculated based on the previous run's F1 scores.</p>
+                <div id="custom-weights-container">
+                    <!-- Behavior weight inputs will be dynamically generated here by JS -->
+                </div>
+            </div>
+
+            <div class="row mb-3">
+                <div class="col">
+                  <label for="tm-optimization-target" class="form-label">Optimization Target:
+                    <i class="bi bi-info-circle-fill ms-1" data-bs-toggle="tooltip" data-bs-placement="top" 
+                       title="Determines which F1 score is used to select the best model. 'Weighted' is better for overall real-world accuracy. 'Macro' is better for improving performance on rare behaviors."></i>
+                  </label>
+                  <select class="form-select" id="tm-optimization-target">
+                    <option value="weighted avg" selected>Weighted Average F1 (Default)</option>
+                    <option value="macro avg">Macro Average F1</option>
+                  </select>
+                </div>
+            </div>
+
 			<div class="row g-3 mb-3">
 			  <div class="col">
-				<label for="tm-runs" class="form-label" data-bs-toggle="tooltip" data-bs-placement="top" title="Number of different random train/validation splits to run. Averaging across runs provides a more stable performance estimate.">Number of Runs (Splits):</label>
+				<label for="tm-runs" class="form-label" data-bs-toggle="tooltip" data-bs-placement="top" title="Number of different random train/validation splits to run.">Number of Runs (Splits):</label>
 				<input type="number" class="form-control" id="tm-runs" value="3" step="1" min="1" max="10">
 			  </div>
 			  <div class="col">
-				<label for="tm-trials" class="form-label" data-bs-toggle="tooltip" data-bs-placement="top" title="For each run, the number of times to train a model from scratch. Helps overcome randomness from model weight initialization.">Trials per Run:</label>
+				<label for="tm-trials" class="form-label" data-bs-toggle="tooltip" data-bs-placement="top" title="For each run, the number of times to train a model from scratch.">Trials per Run:</label>
 				<input type="number" class="form-control" id="tm-trials" value="5" step="1" min="1" max="20">
 			  </div>
 			</div>
-			<!-- ========================================================= -->
 
-			<!-- Group label and input together inside each column -->
 			<div class="row g-3">
 			  <div class="col">
-				<label for="tm-seqlen" class="form-label" data-bs-toggle="tooltip" data-bs-placement="top" title="The number of frames the model sees at once to make a prediction. Longer sequences can capture longer behaviors.">Sequence Length:</label>
+				<label for="tm-seqlen" class="form-label" data-bs-toggle="tooltip" data-bs-placement="top" title="The number of frames the model sees at once to make a prediction.">Sequence Length:</label>
 				<input type="number" class="form-control" id="tm-seqlen" value="31" step="2" min="5" max="127">
 			  </div>
 			  <div class="col">
@@ -534,11 +552,11 @@
 
 			<div class="row g-3 mt-2">
 			  <div class="col">
-				<label for="tm-lrate" class="form-label" data-bs-toggle="tooltip" data-bs-placement="top" title="Advanced: Controls how much the model learns from its mistakes. The default value is small and stable. It is not recommended to change this.">Learning Rate:</label>
+				<label for="tm-lrate" class="form-label" data-bs-toggle="tooltip" data-bs-placement="top" title="Advanced: Controls how much the model learns.">Learning Rate:</label>
 				<input type="number" class="form-control" id="tm-lrate" value="0.0001" step=".0001" min="0" max="1">
 			  </div>
 			  <div class="col">
-				<label for="tm-epochs" class="form-label" data-bs-toggle="tooltip" data-bs-placement="top" title="How many times the model sees the entire dataset. If the performance plots show the model is still improving at the end of training, you can increase this value to train for longer.">Epochs:</label>
+				<label for="tm-epochs" class="form-label" data-bs-toggle="tooltip" data-bs-placement="top" title="How many times the model sees the entire dataset.">Epochs:</label>
 				<input type="number" class="form-control" id="tm-epochs" value="10" step="1" min="1" max="100">
 			  </div>
 			</div>
@@ -549,7 +567,6 @@
 					<input type="number" class="form-control" id="tm-patience" value="3" step="1" min="1" max="20">
 				</div>
 				<div class="col">
-					<!-- This column is empty to balance the layout -->
 				</div>
 			</div>	
 		</div>

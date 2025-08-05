@@ -272,8 +272,8 @@ def create_dataset(name, behaviors, whitelist):
     return label_train_page.create_dataset(name, behaviors, whitelist)
 
 @eel.expose
-def train_model(name, b_size, lr, epochs, seq_len, method, patience, num_runs, num_trials):
-    return label_train_page.train_model(name, b_size, lr, epochs, seq_len, method, patience, num_runs, num_trials)
+def train_model(name, b_size, lr, epochs, seq_len, method, patience, num_runs, num_trials, optimization_target, custom_weights):
+    return label_train_page.train_model(name, b_size, lr, epochs, seq_len, method, patience, num_runs, num_trials, optimization_target, custom_weights)
     
 @eel.expose
 def start_classification(name, whitelist):

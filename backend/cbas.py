@@ -961,20 +961,29 @@ class PerformanceReport:
         self.val_report = val_report
         self.val_cm = val_cm
         
-def train_lstm_model(train_set, test_set, seq_len: int, behaviors: list, cancel_event: threading.Event, batch_size=512, lr=1e-4, epochs=10, device=None, class_weights=None, patience=3, progress_callback=None) -> tuple:
+def train_lstm_model(train_set, test_set, seq_len: int, behaviors: list, cancel_event: threading.Event, batch_size=512, lr=1e-4, epochs=10, device=None, class_weights=None, patience=3, progress_callback=None, optimization_target="weighted avg") -> tuple:
+    """
+    Trains the LSTM-based classifier head.
+    Accepts an optimization_target to determine which F1 score to use for model selection.
+    """
+
+    # Import the log_message function locally to avoid circular import errors.
+    from workthreads import log_message
+
     if len(train_set) == 0: return None, None, -1
     if device is None: device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Set drop_last=False to ensure at least one batch is processed for small datasets
     train_loader = torch.utils.data.DataLoader(train_set, batch_size, shuffle=True, collate_fn=collate_fn, num_workers=0, pin_memory=(device.type == 'cuda'), drop_last=False)
-    
     test_loader = torch.utils.data.DataLoader(test_set, batch_size, shuffle=False, collate_fn=collate_fn, num_workers=0) if len(test_set) > 0 else None
+    
     model = classifier_head.classifier(in_features=768, out_features=len(behaviors), seq_len=seq_len).to(device)
     optimizer = optim.Adam(model.parameters(), lr=lr)
     loss_weights = torch.tensor(class_weights, dtype=torch.float).to(device) if class_weights else None
     criterion = nn.CrossEntropyLoss(weight=loss_weights)
+    
     best_f1, best_model_state, best_epoch = -1.0, None, -1
     epoch_reports, epochs_no_improve = [], 0
+    
     for e in range(epochs):
         if cancel_event.is_set():
             print(f"Cancellation detected within training loop at epoch {e+1}.")
@@ -998,6 +1007,7 @@ def train_lstm_model(train_set, test_set, seq_len: int, behaviors: list, cancel_
             loss.backward()
             optimizer.step()
             if i % 50 == 0: print(f"[Epoch {e+1}/{epochs} Batch {i}/{len(train_loader)}] Loss: {loss.item():.4f}")
+            
         model.eval()
         train_actuals, train_predictions = [], []
         with torch.no_grad():
@@ -1007,17 +1017,15 @@ def train_lstm_model(train_set, test_set, seq_len: int, behaviors: list, cancel_
                 train_predictions.extend(logits.argmax(1).cpu().numpy())
         
         if not train_actuals:
-            print(f"--- Epoch {e+1} | No training data processed in this epoch. Skipping report. ---")
-            # If there's no data, we can't determine if the model improved, so continue
             epochs_no_improve += 1 
             if epochs_no_improve >= patience:
-                print(f"Early stopping triggered due to lack of processed data.")
                 break
-            continue # Skip to the next epoch
+            continue
 
         train_report = classification_report(train_actuals, train_predictions, target_names=behaviors, output_dict=True, zero_division=0, labels=range(len(behaviors)))
         train_cm = confusion_matrix(train_actuals, train_predictions, labels=range(len(behaviors)))
         val_report, val_cm = {}, np.array([])
+        
         if test_loader:
             val_actuals, val_predictions = [], []
             with torch.no_grad():
@@ -1026,44 +1034,39 @@ def train_lstm_model(train_set, test_set, seq_len: int, behaviors: list, cancel_
                     val_actuals.extend(l.cpu().numpy())
                     val_predictions.extend(logits.argmax(1).cpu().numpy())
             if val_actuals:
-                from collections import Counter
-                print(f"DEBUG: Counts of each label in val_actuals: {Counter(val_actuals)}")
-                print(f"DEBUG: Length of val_actuals for report: {len(val_actuals)}")
-                print(f"DEBUG: Total frames in test_set object: {len(test_set)}")
                 val_report = classification_report(val_actuals, val_predictions, target_names=behaviors, output_dict=True, zero_division=0, labels=range(len(behaviors)))
                 val_cm = confusion_matrix(val_actuals, val_predictions, labels=range(len(behaviors)))
+                
         epoch_reports.append(PerformanceReport(train_report, train_cm, val_report, val_cm))
-        current_val_f1 = val_report.get("weighted avg", {}).get("f1-score", -1.0)
+        
+        optimization_key = optimization_target
+        
+        current_val_f1 = val_report.get(optimization_key, {}).get("f1-score", -1.0)
+        current_train_f1 = train_report.get(optimization_key, {}).get("f1-score", -1.0)
 
-        # We now send a more detailed message AFTER evaluating the epoch.
         if progress_callback:
             progress_callback(f"Epoch {e + 1} Val F1: {current_val_f1:.4f}")
 
-        print(f"--- Epoch {e+1} | Train F1: {train_report.get('weighted avg', {}).get('f1-score', -1.0):.4f} | Val F1: {current_val_f1:.4f} ---")
+        print(f"--- Epoch {e+1} | Train F1: {current_train_f1:.4f} | Val F1: {current_val_f1:.4f} ({optimization_key}) ---")
         
         if current_val_f1 > best_f1:
             best_f1, best_epoch, best_model_state = current_val_f1, e, model.state_dict().copy()
             epochs_no_improve = 0
-            
         else:
             epochs_no_improve += 1
             
         if test_loader and epochs_no_improve >= patience:
-            print(f"Early stopping triggered after {patience} epochs with no improvement.")
-            from workthreads import log_message
             log_message(f"Early stopping triggered at epoch {e + 1}.", "INFO")
             break                      
             
-    # If no best model was ever selected (e.g., no validation set) but the
-    # training ran, save the state from the very last epoch as a fallback.
     if best_model_state is None and epochs > 0:
         if not test_loader:
              best_model_state = model.state_dict().copy()
              best_epoch = epochs - 1
              
-             
     if best_model_state:
         final_model = classifier_head.classifier(in_features=768, out_features=len(behaviors), seq_len=seq_len)
         final_model.load_state_dict(best_model_state)
         return final_model.eval(), epoch_reports, best_epoch
+        
     return None, None, -1

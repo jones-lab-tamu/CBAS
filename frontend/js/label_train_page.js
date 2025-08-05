@@ -1617,6 +1617,67 @@ async function submitCreateDataset() {
 function showTrainModal(datasetName) {
     const tmDatasetElement = document.getElementById('tm-dataset');
     if (tmDatasetElement) tmDatasetElement.innerText = datasetName;
+
+    const methodSelect = document.getElementById('tm-method');
+    const weightsPanel = document.getElementById('custom-weights-panel');
+    const weightsContainer = document.getElementById('custom-weights-container');
+
+    // Function to toggle the visibility of the custom weights panel
+    const toggleWeightsPanel = () => {
+        if (methodSelect.value === 'custom_weights') {
+            populateCustomWeights(datasetName);
+            weightsPanel.style.display = 'block';
+        } else {
+            weightsPanel.style.display = 'none';
+        }
+    };
+
+    // Function to calculate and display the smart default weights
+    const populateCustomWeights = async (dsName) => {
+        weightsContainer.innerHTML = '<em>Loading suggested weights...</em>';
+        const datasets = await eel.load_dataset_configs()();
+        const dataset = datasets[dsName];
+        if (!dataset || !dataset.behaviors) {
+            weightsContainer.innerHTML = '<em class="text-danger">Could not load behaviors.</em>';
+            return;
+        }
+
+        let html = '<div class="row g-2">';
+        const scalingFactor = 4.0; // This can be tuned
+
+        dataset.behaviors.forEach(behavior => {
+            const metrics = dataset.metrics ? dataset.metrics[behavior] : null;
+            let f1Score = 0.5; // Default F1 if none is available
+            if (metrics && metrics['F1 Score'] && !isNaN(parseFloat(metrics['F1 Score']))) {
+                f1Score = parseFloat(metrics['F1 Score']);
+            }
+
+            // Calculate the suggested weight
+            const difficulty = 1.0 - f1Score;
+            let suggestedWeight = 1.0 + (difficulty * scalingFactor);
+            // Clamp the values to a reasonable range, e.g., [0.5, 5.0]
+            suggestedWeight = Math.max(0.5, Math.min(5.0, suggestedWeight));
+
+            html += `
+                <div class="col-6 d-flex align-items-center">
+                    <label for="cw-${behavior}" class="form-label me-2 mb-0 text-nowrap">${behavior}:</label>
+                    <input type="number" class="form-control form-control-sm custom-weight-input" id="cw-${behavior}" 
+                           data-behavior="${behavior}" value="${suggestedWeight.toFixed(2)}" step="0.1" min="0.1">
+                </div>
+            `;
+        });
+        html += '</div>';
+        weightsContainer.innerHTML = html;
+    };
+
+    // Add event listener to the dropdown
+    if (methodSelect) {
+        methodSelect.addEventListener('change', toggleWeightsPanel);
+    }
+
+    // Initial check when the modal is opened
+    toggleWeightsPanel();
+
     trainBsModal?.show();
 }
 
@@ -1628,9 +1689,27 @@ async function submitTrainModel() {
     const epochsCount = document.getElementById('tm-epochs').value;
     const trainMethod = document.getElementById('tm-method').value;
     const patience = document.getElementById('tm-patience').value;
-
     const numRuns = document.getElementById('tm-runs').value;
 	const numTrials = document.getElementById('tm-trials').value;
+    const optimizationTarget = document.getElementById('tm-optimization-target').value;
+
+
+    let customWeights = null;
+    if (trainMethod === 'custom_weights') {
+        customWeights = {};
+        const weightInputs = document.querySelectorAll('.custom-weight-input');
+        if (weightInputs.length === 0) {
+            showErrorOnLabelTrainPage("Custom weights selected, but no behaviors found to assign weights.");
+            return;
+        }
+        weightInputs.forEach(input => {
+            const behavior = input.dataset.behavior;
+            const weight = parseFloat(input.value);
+            if (behavior && !isNaN(weight)) {
+                customWeights[behavior] = weight;
+            }
+        });
+    }
 
 
     if (!batchSize || !seqLen || !learningRate || !epochsCount || !patience || !numRuns || !numTrials) {
@@ -1638,23 +1717,16 @@ async function submitTrainModel() {
         return;
     }
     
-    // Immediately hide the modal so the user knows their action was accepted.
     trainBsModal?.hide();
 
-    // If there is a pending card refresh from a previous run, cancel it.
-    // This prevents the old run's refresh from wiping out the UI state of this new run.
     if (cardRefreshTimeoutId) {
         clearTimeout(cardRefreshTimeoutId);
         cardRefreshTimeoutId = null;
-        console.log("Cancelled a pending UI refresh to start a new training task.");
     }
 
-    // Immediately update the UI to show the new task has been queued.
     updateTrainingStatusOnUI(datasetName, "Training task queued...");
     
-    // Call the backend to start the training process. This is a non-blocking,
-    // "fire-and-forget" call. The UI thread is now free.
-    eel.train_model(datasetName, batchSize, learningRate, epochsCount, seqLen, trainMethod, patience, numRuns, numTrials)();
+    eel.train_model(datasetName, batchSize, learningRate, epochsCount, seqLen, trainMethod, patience, numRuns, numTrials, optimizationTarget, customWeights)();
 }
 
 async function showInferenceModal(datasetName) {

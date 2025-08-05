@@ -1379,9 +1379,7 @@ def create_dataset(name: str, behaviors: list[str], recordings_whitelist: list[s
         return True
     return False
 
-
-
-def train_model(name: str, batch_size: str, learning_rate: str, epochs: str, sequence_length: str, training_method: str, patience: str, num_runs: str, num_trials: str):
+def train_model(name: str, batch_size: str, learning_rate: str, epochs: str, sequence_length: str, training_method: str, patience: str, num_runs: str, num_trials: str, optimization_target: str, custom_weights: dict = None):
     """Queues a training task for the specified dataset."""
     if not gui_state.proj or name not in gui_state.proj.datasets: return
     if not gui_state.training_thread: return
@@ -1395,14 +1393,15 @@ def train_model(name: str, batch_size: str, learning_rate: str, epochs: str, seq
             training_method=training_method,
             patience=int(patience),
             num_runs=int(num_runs),
-            num_trials=int(num_trials)        
+            num_trials=int(num_trials),
+            optimization_target=optimization_target,
+            custom_weights=custom_weights
         )
         gui_state.training_thread.queue_task(task)
         eel.updateTrainingStatusOnUI(name, "Training task queued...")()
     except ValueError:
         eel.showErrorOnLabelTrainPage("Invalid training parameters provided.")
 
-# This function is NOT exposed here. It's a helper called by the exposed function in app.py.
 def update_classification_progress(dataset_name, percent):
     """A helper function to call the JavaScript progress bar update function."""
     eel.updateDatasetLoadProgress(dataset_name, percent)()
