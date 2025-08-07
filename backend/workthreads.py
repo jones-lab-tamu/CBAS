@@ -917,8 +917,8 @@ def plot_report_list_metric(reports: list, metric: str, behaviors: list, out_dir
 
 def plot_averaged_run_metrics(reports: list, behaviors: list, out_dir: str):
     """
-    Creates bar charts for precision, recall, and f1-score, showing the mean
-    and standard deviation across all training runs.
+    Creates bar charts for precision, recall, and f1-score, showing the mean,
+    standard deviation, and all individual data points across all training runs.
     """
     if not reports: return
 
@@ -928,22 +928,47 @@ def plot_averaged_run_metrics(reports: list, behaviors: list, out_dir: str):
         
         means = []
         stds = []
+
+        # =========================================================================
+        # This list will hold the individual data points for each behavior
+        all_run_values = []
+        # =========================================================================
         
         for b_name in behaviors:
             # Collect the metric for this behavior from each run's report
             run_values = [r.get(b_name, {}).get(metric, 0) for r in reports]
             means.append(np.mean(run_values))
             stds.append(np.std(run_values))
+            # =========================================================================
+            # Store the individual points for later plotting
+            all_run_values.append(run_values)
+            # =========================================================================
 
         x_pos = np.arange(len(behaviors))
         
-        # Create the bar plot with error bars
-        plt.bar(x_pos, means, yerr=stds, align='center', alpha=0.7, ecolor='black', capsize=10)
+        # Create the main bar plot with error bars
+        plt.bar(x_pos, means, yerr=stds, align='center', alpha=0.7, ecolor='black', capsize=10, label=f'Mean (n={len(reports)})')
+        
+        # =========================================================================
+        # Add the scatter plot of individual data points
+        # =========================================================================
+        for i, run_vals in enumerate(all_run_values):
+            # Add a small amount of horizontal "jitter" to prevent points from overlapping
+            # The amount of jitter is scaled by the number of runs to look good
+            jitter = np.random.normal(0, 0.04, size=len(run_vals))
+            plt.scatter([i + j for j in jitter], run_vals, color='black', alpha=0.6, zorder=3, label='Individual Run' if i == 0 else "")
+        # =========================================================================
         
         plt.ylabel(metric.replace('-', ' ').title())
         plt.xticks(x_pos, behaviors, rotation='vertical')
         plt.title(f"Average {metric.replace('-', ' ').title()} Across {len(reports)} Runs")
         plt.grid(axis='y', linestyle='--', alpha=0.7)
+        
+        # Create a single, clean legend
+        handles, labels = plt.gca().get_legend_handles_labels()
+        by_label = dict(zip(labels, handles))
+        plt.legend(by_label.values(), by_label.keys())
+        
         plt.tight_layout()
         
         # Save the figure
