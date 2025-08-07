@@ -460,12 +460,29 @@
       <div class="modal-body">
         
         <p>Choose a video to work on for dataset: <strong id="pl-dataset-name"></strong></p>
+        
+        <!-- ========================================================================= -->
+        <!-- HIERARCHICAL DROPDOWNS -->
+        <!-- ========================================================================= -->
         <div class="mb-3">
-            <label for="pl-video-select" class="form-label small">Video File:</label>
-            <select class="form-select" id="pl-video-select">
+            <label for="pl-session-select" class="form-label small">Session:</label>
+            <select class="form-select" id="pl-session-select">
               <!-- Populated by JS -->
             </select>
         </div>
+        <div class="mb-3">
+            <label for="pl-subject-select" class="form-label small">Subject:</label>
+            <select class="form-select" id="pl-subject-select" disabled>
+              <!-- Populated by JS -->
+            </select>
+        </div>
+        <div class="mb-3">
+            <label for="pl-video-select" class="form-label small">Video File:</label>
+            <select class="form-select" id="pl-video-select" disabled>
+              <!-- Populated by JS -->
+            </select>
+        </div>
+
         <hr>
         
         <p class="text-center">How would you like to label this video?</p>
@@ -488,7 +505,6 @@
           </div>
 		  <div class="mb-3">
 		    <label for="pl-smoothing-window" class="form-label">Smoothing Window (frames):
-			  <!-- NEW: Info icon with a helpful tooltip -->
 			  <i class="bi bi-info-circle-fill ms-1" data-bs-toggle="tooltip" data-bs-placement="top" 
 			     title="Removes noisy, single-frame predictions. Higher values create longer, smoother behavior blocks."></i>
 		    </label>

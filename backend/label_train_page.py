@@ -284,51 +284,71 @@ def get_record_tree() -> dict:
         print(f"Error building record tree: {e}")
     return tree
 
-
-
-def get_videos_for_dataset(dataset_name: str) -> list[tuple[str, str]]:
-    """Finds all .mp4 files within a dataset's whitelist for 'Label from Scratch' mode."""
-    if not gui_state.proj: return []
+def get_hierarchical_video_list(dataset_name: str) -> dict:
+    """
+    Scans the filesystem based on a dataset's whitelist and returns a nested
+    dictionary representing the Session -> Subject -> [Videos] hierarchy.
+    """
+    if not gui_state.proj: return {}
     dataset = gui_state.proj.datasets.get(dataset_name)
-    if not dataset: return []
+    if not dataset: return {}
     
     whitelist = dataset.config.get("whitelist", [])
-    if not whitelist:
-        # If the whitelist is empty, we should return an empty list, not all videos.
-        return []
+    if not whitelist: return {}
 
-    # Normalize the whitelisted paths to be absolute paths for robust comparison
     recordings_root = gui_state.proj.recordings_dir
     absolute_whitelist_paths = [os.path.normpath(os.path.join(recordings_root, p)) for p in whitelist]
-
-
-    video_list = []
-    if recordings_root and os.path.exists(recordings_root):
-        for root, _, files in os.walk(recordings_root):
-            file_set = set(files)
-            
-            for file in files:
-                if not file.endswith(".mp4"):
-                    continue
-
-                is_genuinely_augmented = False
-                if file.endswith("_aug.mp4"):
-                    source_filename = file[:-8] + ".mp4"
-                    if source_filename in file_set:
-                        is_genuinely_augmented = True
-
-                if not is_genuinely_augmented:
-                    video_path = os.path.join(root, file)
-                    normalized_video_dir = os.path.normpath(os.path.dirname(video_path))
-
-                    # The new check: does the video's directory path start with any of
-                    # the approved absolute whitelist paths?
-                    if any(normalized_video_dir.startswith(wl_path) for wl_path in absolute_whitelist_paths):
-                        display_name = os.path.relpath(video_path, recordings_root)
-                        video_list.append((video_path, display_name))
     
-    return sorted(video_list, key=lambda x: x[1])
+    video_hierarchy = defaultdict(lambda: defaultdict(list))
 
+    if recordings_root and os.path.exists(recordings_root):
+        # Use a dictionary to group videos by their directory to avoid re-walking
+        videos_by_dir = defaultdict(list)
+        for root, _, files in os.walk(recordings_root):
+            for file in files:
+                if file.endswith('.mp4'):
+                    videos_by_dir[root].append(file)
+        
+        for root, files in videos_by_dir.items():
+            norm_root = os.path.normpath(root)
+            
+            # Check if this directory is within a whitelisted path
+            if not any(norm_root.startswith(wl_path) for wl_path in absolute_whitelist_paths):
+                continue
+
+            # Identify session and subject based on directory structure
+            try:
+                # Assumes structure is .../recordings_root/session/subject
+                rel_path = os.path.relpath(norm_root, recordings_root)
+                parts = rel_path.split(os.sep)
+                if len(parts) >= 2:
+                    session_name, subject_name = parts[0], parts[1]
+                else:
+                    continue # Skip directories that don't match the expected structure
+            except ValueError:
+                continue
+
+            video_files_in_dir = []
+            file_set = set(files)
+            for file in sorted(files):
+                if file.endswith(".mp4"):
+                    is_genuinely_augmented = False
+                    if file.endswith("_aug.mp4"):
+                        source_filename = file[:-8] + ".mp4"
+                        if source_filename in file_set:
+                            is_genuinely_augmented = True
+                    
+                    if not is_genuinely_augmented:
+                        video_path = os.path.join(root, file)
+
+                        video_files_in_dir.append((video_path, file))
+            
+            if video_files_in_dir:
+                video_hierarchy[session_name][subject_name].extend(video_files_in_dir)
+
+    # Convert defaultdicts to regular dicts for clean JSON transfer
+    final_structure = {sess: {subj: vids for subj, vids in subjects.items()} for sess, subjects in video_hierarchy.items()}
+    return final_structure
 
 def get_inferred_session_dirs(dataset_name: str, model_name: str) -> list[str]:
     """Finds unique sub-directories that contain videos inferred by a specific model."""

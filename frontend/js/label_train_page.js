@@ -1390,19 +1390,68 @@ async function startAugmentation(sourceDatasetName, newDatasetName) {
 
 async function showPreLabelOptions(datasetName) {
     document.getElementById('pl-dataset-name').innerText = datasetName;
-    const videoSelect = document.getElementById('pl-video-select');
-    videoSelect.innerHTML = '<option selected disabled>Loading videos...</option>';
     
-    const videos = await eel.get_videos_for_dataset(datasetName)();
-    let videoOptions = '<option selected disabled>Choose a video...</option>';
-    if (videos?.length) {
-        videos.forEach(v => videoOptions += `<option value="${v[0]}">${v[1]}</option>`);
-    } else {
-        videoOptions = '<option>No videos found in dataset</option>';
-    }
-    videoSelect.innerHTML = videoOptions;
+    const sessionSelect = document.getElementById('pl-session-select');
+    const subjectSelect = document.getElementById('pl-subject-select');
+    const videoSelect = document.getElementById('pl-video-select');
+
+    // Reset and disable dropdowns
+    sessionSelect.innerHTML = '<option selected disabled>Loading sessions...</option>';
+    subjectSelect.innerHTML = '<option selected disabled>Select a session first...</option>';
+    videoSelect.innerHTML = '<option selected disabled>Select a subject first...</option>';
+    subjectSelect.disabled = true;
+    videoSelect.disabled = true;
 
     preLabelBsModal?.show();
+
+    // Fetch the entire hierarchical structure from the backend
+    const videoHierarchy = await eel.get_hierarchical_video_list(datasetName)();
+
+    if (Object.keys(videoHierarchy).length === 0) {
+        sessionSelect.innerHTML = '<option selected disabled>No whitelisted videos found.</option>';
+        return;
+    }
+
+    // --- Populate Session Dropdown ---
+    sessionSelect.innerHTML = '<option selected disabled>Choose a session...</option>';
+    for (const sessionName in videoHierarchy) {
+        sessionSelect.innerHTML += `<option value="${sessionName}">${sessionName}</option>`;
+    }
+
+    // --- Event Listener for Session Selection ---
+    sessionSelect.onchange = () => {
+        const selectedSession = sessionSelect.value;
+        subjectSelect.innerHTML = '<option selected disabled>Choose a subject...</option>';
+        videoSelect.innerHTML = '<option selected disabled>Select a subject first...</option>';
+        videoSelect.disabled = true;
+        
+        if (selectedSession && videoHierarchy[selectedSession]) {
+            for (const subjectName in videoHierarchy[selectedSession]) {
+                subjectSelect.innerHTML += `<option value="${subjectName}">${subjectName}</option>`;
+            }
+            subjectSelect.disabled = false;
+        } else {
+            subjectSelect.disabled = true;
+        }
+    };
+
+    // --- Event Listener for Subject Selection ---
+    subjectSelect.onchange = () => {
+        const selectedSession = sessionSelect.value;
+        const selectedSubject = subjectSelect.value;
+        videoSelect.innerHTML = '<option selected disabled>Choose a video...</option>';
+
+        if (selectedSession && selectedSubject && videoHierarchy[selectedSession][selectedSubject]) {
+            const videos = videoHierarchy[selectedSession][selectedSubject];
+            videos.forEach(video => {
+                // The value will be the full path, the text will be the filename
+                videoSelect.innerHTML += `<option value="${video[0]}">${video[1]}</option>`;
+            });
+            videoSelect.disabled = false;
+        } else {
+            videoSelect.disabled = true;
+        }
+    };
 }
 
 async function onModelSelectChange(event) {

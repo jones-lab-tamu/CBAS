@@ -168,8 +168,8 @@ def get_record_tree():
     return label_train_page.get_record_tree()
 
 @eel.expose
-def get_videos_for_dataset(name):
-    return label_train_page.get_videos_for_dataset(name)
+def get_hierarchical_video_list(name):
+    return label_train_page.get_hierarchical_video_list(name)
 
 @eel.expose
 def get_inferred_session_dirs(d_name, m_name):
