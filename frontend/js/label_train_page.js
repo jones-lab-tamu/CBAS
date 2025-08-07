@@ -6,7 +6,7 @@
 
 let cardRefreshTimeoutId = null;
 let editWhitelistBsModal = document.getElementById('editWhitelistModal') ? new bootstrap.Modal(document.getElementById('editWhitelistModal')) : null;
-let conflictResolutionBsModal = null; 
+let conflictResolutionBsModal = document.getElementById('conflictResolutionModal') ? new bootstrap.Modal(document.getElementById('conflictResolutionModal')) : null;
 let isReviewByBehaviorMode = false;
 
 // =================================================================
@@ -302,7 +302,64 @@ async function showManageDatasetModal(datasetName) {
         };
     }
 
-    // Attach event for the "Recalculate Stats" button
+    // Attach event for the "Find & Fix Label Conflicts" button
+    const cleanAndSortBtn = document.getElementById('cleanAndSortButton');
+    if (cleanAndSortBtn) {
+        cleanAndSortBtn.onclick = async () => {
+            manageDatasetBsModal.hide();
+            document.getElementById('cover-spin').style.visibility = 'visible';
+            
+            const report = await eel.analyze_label_conflicts(datasetName)();
+            
+            document.getElementById('cover-spin').style.visibility = 'hidden';
+
+            if (report.error) {
+                showErrorOnLabelTrainPage(report.error);
+                return;
+            }
+
+            const modalBody = document.getElementById('cr-modal-body');
+            const confirmBtn = document.getElementById('cr-confirm-button');
+            
+            if (report.total_duplicates === 0 && report.total_overlaps === 0) {
+                modalBody.innerHTML = '<p>No conflicts found in your `labels.yaml` file. Your labels are clean!</p>';
+                confirmBtn.style.display = 'none';
+            } else {
+                modalBody.innerHTML = `
+                    <div class="alert alert-warning" role="alert">
+                        <strong>Warning:</strong> This is a destructive action that will permanently modify your <code>labels.yaml</code> file and cannot be undone.
+                    </div>
+                    <p>Our analysis found the following issues:</p>
+                    <ul>
+                        <li><strong>${report.total_duplicates}</strong> exact duplicate label(s). These will be removed.</li>
+                        <li><strong>${report.total_overlaps}</strong> overlapping label(s). These will be resolved by merging same-behavior labels and keeping the longer of any different-behavior labels.</li>
+                    </ul>
+                    <p>After cleanup, the entire file will be sorted for clarity.</p>
+                    <p>Are you sure you want to proceed?</p>
+                `;
+                confirmBtn.style.display = 'block';
+                
+                // Attach a one-time click handler for the final confirmation
+                confirmBtn.onclick = async () => {
+                    conflictResolutionBsModal.hide();
+                    document.getElementById('cover-spin').style.visibility = 'visible';
+                    const success = await eel.clean_and_sort_labels(datasetName)();
+                    if (success) {
+                        alert('Your labels.yaml file has been successfully cleaned and sorted.');
+                        refreshAllDatasets(); // Refresh the UI to reflect any potential changes in counts
+                    } else {
+                        showErrorOnLabelTrainPage('An error occurred during the cleanup process. Your file has not been modified.');
+                    }
+                    document.getElementById('cover-spin').style.visibility = 'hidden';
+                };
+            }
+            
+            if (conflictResolutionBsModal) {
+                conflictResolutionBsModal.show();
+            }
+        };
+    }
+
     const recalcBtn = document.getElementById('recalculateStatsButton');
     if (recalcBtn) {
         recalcBtn.onclick = async () => {
@@ -310,11 +367,8 @@ async function showManageDatasetModal(datasetName) {
                 manageDatasetBsModal.hide();
                 document.getElementById('cover-spin').style.visibility = 'visible';
                 try {
-                    // The backend function now just needs to return a simple success flag.
                     const success = await eel.recalculate_dataset_stats(datasetName)();
                     if (success) {
-                        // Instead of trying to render a returned value, we now call
-                        // the main, trusted refresh function.
                         refreshAllDatasets();
                     } else {
                         showErrorOnLabelTrainPage("Failed to recalculate stats on the backend.");
@@ -322,15 +376,12 @@ async function showManageDatasetModal(datasetName) {
                 } catch (e) {
                     showErrorOnLabelTrainPage(`An error occurred: ${e.message}`);
                 } finally {
-                    // The refreshAllDatasets function will handle hiding the spinner,
-                    // but we add it here as a fallback.
                     document.getElementById('cover-spin').style.visibility = 'hidden';
                 }
             }
         };
     }
     
-    // Event listener for the delete button
     const deleteBtn = document.getElementById('deleteDatasetButton');
     if (deleteBtn) {
         deleteBtn.onclick = async () => {
@@ -354,7 +405,6 @@ async function showManageDatasetModal(datasetName) {
         };
     }
 
-    // Attach event for the "Review by Category" button
     const reviewBtn = document.getElementById('reviewByCategoryButton');
     if (reviewBtn) {
         reviewBtn.onclick = () => showReviewByCategoryModal(datasetName);

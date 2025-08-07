@@ -19,12 +19,14 @@ import torch
 import pandas as pd
 import shutil
 from datetime import datetime
+from collections import defaultdict
 
 # Project-specific imports
 import cbas
 import classifier_head
 import gui_state
 import workthreads
+from workthreads import log_message
 from cmap import Colormap
 
 import eel
@@ -647,7 +649,203 @@ def start_labeling(name: str, video_to_open: str = None, preloaded_instances: li
         eel.showErrorOnLabelTrainPage(f"Failed to start labeling session: {e}")()
         return False
 
+def analyze_label_conflicts(dataset_name: str) -> dict:
+    """
+    Performs a 'dry run' analysis of a labels.yaml file to find duplicates
+    and overlaps without modifying the file.
+    """
+    if not gui_state.proj or dataset_name not in gui_state.proj.datasets:
+        return {"error": "Dataset not found."}
 
+    dataset = gui_state.proj.datasets[dataset_name]
+    labels_file_path = dataset.labels_path
+
+    if not os.path.exists(labels_file_path):
+        return {"error": "Labels file not found."}
+
+    try:
+        with open(labels_file_path, 'r') as f:
+            data = yaml.safe_load(f)
+    except Exception as e:
+        return {"error": f"Could not parse YAML file: {e}"}
+
+    # --- 1. Find Exact Duplicates ---
+    total_duplicates = 0
+    seen_instances = set()
+    all_instances = []
+    for behavior, instances in data.get("labels", {}).items():
+        if not isinstance(instances, list): continue
+        for instance in instances:
+            instance_tuple = (
+                instance.get("start"), instance.get("end"),
+                instance.get("label"), instance.get("video")
+            )
+            if instance_tuple in seen_instances:
+                total_duplicates += 1
+            else:
+                seen_instances.add(instance_tuple)
+                # Ensure start/end are floats for consistency in the next step
+                instance['start'] = float(instance['start'])
+                instance['end'] = float(instance['end'])
+                all_instances.append(instance)
+
+    # --- 2. Find Overlaps ---
+    total_overlaps = 0
+    instances_by_video = defaultdict(list)
+    for inst in all_instances:
+        instances_by_video[inst.get('video')].append(inst)
+
+    for video_path, instances in instances_by_video.items():
+        if len(instances) < 2: continue
+        instances.sort(key=lambda x: x['start'])
+        
+        for i in range(len(instances) - 1):
+            # An overlap occurs if the start of the next instance is before the end of the current one
+            if instances[i+1]['start'] <= instances[i]['end']:
+                total_overlaps += 1
+    
+    return {
+        "total_duplicates": total_duplicates,
+        "total_overlaps": total_overlaps
+    }
+
+
+def clean_and_sort_labels(dataset_name: str) -> bool:
+    """
+    Performs a full cleanup and sort of a labels.yaml file.
+    This is a non-destructive operation that resolves conflicts by trimming.
+    """
+    if not gui_state.proj or dataset_name not in gui_state.proj.datasets:
+        return False
+
+    dataset = gui_state.proj.datasets[dataset_name]
+    labels_file_path = dataset.labels_path
+
+    try:
+        with open(labels_file_path, 'r') as f:
+            data = yaml.safe_load(f)
+    except Exception:
+        return False
+    
+    # --- 1. De-duplication ---
+    seen_instances = set()
+    all_instances = []
+    for behavior, instances in data.get("labels", {}).items():
+        if not isinstance(instances, list): continue
+        for instance in instances:
+            instance_tuple = (
+                instance.get("start"), instance.get("end"),
+                instance.get("label"), instance.get("video")
+            )
+            if instance_tuple not in seen_instances:
+                seen_instances.add(instance_tuple)
+                instance['start'] = float(instance['start'])
+                instance['end'] = float(instance['end'])
+                all_instances.append(instance)
+    
+    # --- 2. De-confliction (Merge/Trim) ---
+    instances_by_video = defaultdict(list)
+    for inst in all_instances:
+        instances_by_video[inst.get('video')].append(inst)
+
+    final_clean_instances = []
+    for video_path, instances in instances_by_video.items():
+        if len(instances) < 2:
+            final_clean_instances.extend(instances)
+            continue
+
+        # Sort instances by start time, then by duration (descending) as a tie-breaker
+        # This ensures longer instances are processed first.
+        instances.sort(key=lambda x: (x['start'], -(x['end'] - x['start'])))
+        
+        deconflicted = []
+        for new_inst in instances:
+            # This list will hold the pieces of the new instance that don't overlap with anything
+            # that has already been approved and placed in the 'deconflicted' list.
+            pieces_to_add = [new_inst]
+            
+            # Compare the new instance against all previously approved instances
+            for existing_inst in deconflicted:
+                next_pieces = []
+                while pieces_to_add:
+                    piece = pieces_to_add.pop(0)
+                    p_start, p_end = piece['start'], piece['end']
+                    e_start, e_end = existing_inst['start'], existing_inst['end']
+
+                    # Check for overlap
+                    if max(p_start, e_start) <= min(p_end, e_end):
+                        # --- Conflict Found ---
+                        # If same label, we can absorb it later, so we discard the new piece.
+                        if piece['label'] == existing_inst['label']:
+                            continue # Discard this piece
+                        
+                        # If different labels, trim the new piece.
+                        # Part of the new piece that comes BEFORE the existing one
+                        if p_start < e_start:
+                            next_pieces.append({**piece, 'end': e_start - 1})
+                        
+                        # Part of the new piece that comes AFTER the existing one
+                        if p_end > e_end:
+                            next_pieces.append({**piece, 'start': e_end + 1})
+                    else:
+                        # No overlap with this existing instance, so the piece is safe (for now)
+                        next_pieces.append(piece)
+                
+                pieces_to_add = next_pieces
+
+            # Add any surviving, valid pieces to the final deconflicted list
+            for piece in pieces_to_add:
+                if piece['start'] <= piece['end']:
+                    deconflicted.append(piece)
+        
+        # --- Final Merge Pass for Same-Behavior Instances ---
+        # After trimming, we might have created adjacent instances of the same behavior.
+        # This pass merges them back together.
+        deconflicted.sort(key=lambda x: (x['label'], x['start']))
+        
+        if not deconflicted: continue
+        
+        merged_instances = [deconflicted[0]]
+        for i in range(1, len(deconflicted)):
+            current_inst = deconflicted[i]
+            last_merged = merged_instances[-1]
+            
+            # If labels match and they are adjacent or overlapping, merge them.
+            if current_inst['label'] == last_merged['label'] and current_inst['start'] <= last_merged['end'] + 1:
+                last_merged['end'] = max(last_merged['end'], current_inst['end'])
+            else:
+                merged_instances.append(current_inst)
+
+        final_clean_instances.extend(merged_instances)
+
+    # --- 3. Sort the final, clean list for readability ---
+    final_clean_instances.sort(key=lambda x: (
+        x.get('label', ''), 
+        x.get('video', ''), 
+        x.get('start', 0)
+    ))
+
+    # --- 4. Rebuild the final YAML structure ---
+    cleaned_data = {
+        "behaviors": data.get("behaviors", []),
+        "labels": defaultdict(list)
+    }
+    for inst in final_clean_instances:
+        inst.pop('_confirmed', None)
+        cleaned_data["labels"][inst['label']].append(inst)
+    
+    final_labels_dict = {k: v for k, v in sorted(cleaned_data["labels"].items())}
+    cleaned_data["labels"] = final_labels_dict
+
+    # --- 5. Save the cleaned and sorted data back to the file ---
+    try:
+        with open(labels_file_path, 'w') as f:
+            yaml.dump(cleaned_data, f, allow_unicode=True, sort_keys=False)
+        log_message(f"Successfully cleaned and sorted labels for '{dataset_name}'.", "INFO")
+        return True
+    except Exception as e:
+        log_message(f"ERROR: Could not write cleaned labels file for '{dataset_name}': {e}", "ERROR")
+        return False
 
 def start_labeling_with_preload(dataset_name: str, model_name: str, video_path_to_label: str, smoothing_window: int) -> bool:
     """

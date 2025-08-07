@@ -340,67 +340,67 @@
       </div>
       <div class="modal-body">
 	  
-        <!-- Edit Whitelist -->
         <h6 class="mt-2">Labeled Directories</h6>
-        <p class="small text-muted">These are the recording directories included in this dataset. You can add more directories to label new videos.</p>
-        <div id="md-whitelist-container" class="mb-3" style="max-height: 100px; overflow-y: auto; background-color: #f8f9fa; padding: 5px; border-radius: 5px;">
-          <!-- Current whitelist will be populated here by JS -->
-        </div>
+        <p class="small text-muted">These are the recording directories included in this dataset.</p>
+        <div id="md-whitelist-container" class="mb-3" style="max-height: 100px; overflow-y: auto; background-color: #f8f9fa; padding: 5px; border-radius: 5px;"></div>
         <div class="d-grid gap-2">
-            <button class="btn btn-outline-primary" id="editWhitelistButton">
-                <i class="bi bi-pencil-square me-2"></i>Edit Labeled Directories
-            </button>
+            <button class="btn btn-outline-primary" id="editWhitelistButton"><i class="bi bi-pencil-square me-2"></i>Edit Labeled Directories</button>
         </div>
         <hr>
 		
-		<!-- ========================================================= -->
-		<!-- DATA QUALITY TOOLS SECTION -->
-		<!-- ========================================================= -->
 		<h6 class="mt-3">Data Quality Tools</h6>
-		<p class="small text-muted">Use these tools to harmonize and improve the consistency of your labeled data across the entire dataset.</p>
+		<p class="small text-muted">Use these tools to improve the consistency of your labeled data.</p>
 		<div class="d-grid gap-2">
-			<button class="btn btn-outline-success" id="reviewByCategoryButton">
-				<i class="bi bi-tags-fill me-2"></i>Review Labels by Behavior
-			</button>
+			<button class="btn btn-outline-success" id="reviewByCategoryButton"><i class="bi bi-tags-fill me-2"></i>Review Labels by Behavior</button>
+
+            <button class="btn btn-outline-warning" id="cleanAndSortButton"><i class="bi bi-magic me-2"></i>Find & Fix Label Conflicts</button>
 		</div>
 		<hr>
-		<!-- ========================================================= -->
 			  
-        <p class="text-muted">This is an advanced action for power users.</p>
-        <p>To rename, merge, or delete behaviors, you must edit the dataset's configuration files (<code>config.yaml</code> and <code>labels.yaml</code>) directly.</p>
-        <div class="alert alert-warning" role="alert">
-          <i class="bi bi-exclamation-triangle-fill me-2"></i><strong>Warning:</strong> Incorrectly editing these files can corrupt your dataset. Please make a backup of your project directory first.
-        </div>
+        <h6 class="mt-3">Advanced Actions</h6>
+        <p class="small text-muted">To rename, merge, or delete behaviors, you must edit the dataset's configuration files directly. This is for power users only.</p>
         <div class="d-grid gap-2">
-          <button class="btn btn-primary" id="revealFilesButton">
-            <i class="bi bi-folder-symlink me-2"></i>Show Dataset Files in Explorer
-          </button>
+          <button class="btn btn-primary" id="revealFilesButton"><i class="bi bi-folder-symlink me-2"></i>Show Dataset Files in Explorer</button>
         </div>
 		
 		<hr>
 
-		<!-- Section 2: Recalculate stats -->
 		<h6 class="mt-3">Advanced: Recalculate Stats</h6>
-		<p class="small text-muted">Use this button if you have manually edited the <code>labels.yaml</code> file outside of this application. This will re-parse the label file, re-calculate the train/test split counts, and update the numbers shown on the dataset card.</p>
-		<div class="alert alert-info small py-2" role="alert">
-		  <i class="bi bi-info-circle-fill me-2"></i>This does not retrain the model. It only updates the displayed instance counts and resets the F1/Precision/Recall metrics to "N/A".
-		</div>
+		<p class="small text-muted">Use this if you have manually edited the `labels.yaml` file. This will re-parse the file and update the instance counts on the dataset card.</p>
 		<div class="d-grid gap-2">
-			<button class="btn btn-outline-warning" id="recalculateStatsButton">
-				<i class="bi bi-calculator-fill me-2"></i>Recalculate Instance Counts
-			</button>
+			<button class="btn btn-outline-info" id="recalculateStatsButton"><i class="bi bi-calculator-fill me-2"></i>Recalculate Instance Counts</button>
 		</div>
         <hr>
+
         <h6 class="mt-3 text-danger">Danger Zone</h6>
-        <p class="small text-muted">This will permanently delete the dataset folder, its labels, and any trained model associated with it. This action cannot be undone.</p>
+        <p class="small text-muted">This will permanently delete the dataset folder, its labels, and any trained model. This action cannot be undone.</p>
         <div class="d-grid gap-2">
-            <button class="btn btn-outline-danger" id="deleteDatasetButton">
-                <i class="bi bi-trash-fill me-2"></i>Delete this Dataset
-            </button>
+            <button class="btn btn-outline-danger" id="deleteDatasetButton"><i class="bi bi-trash-fill me-2"></i>Delete this Dataset</button>
         </div>
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ========================================================================= -->
+<!-- NEW CONFIRMATION MODAL ADDED HERE -->
+<!-- ========================================================================= -->
+<div class="modal" tabindex="-1" id="conflictResolutionModal">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Confirm Label Cleanup</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body" id="cr-modal-body">
+        <!-- Content will be injected by JavaScript -->
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-danger" id="cr-confirm-button">Proceed with Cleanup</button>
       </div>
     </div>
   </div>

@@ -116,6 +116,14 @@ def stop_live_preview():
 # --- Label/Train Page Functions ---
 
 @eel.expose
+def analyze_label_conflicts(name):
+    return label_train_page.analyze_label_conflicts(name)
+
+@eel.expose
+def clean_and_sort_labels(name):
+    return label_train_page.clean_and_sort_labels(name)
+
+@eel.expose
 def get_disagreement_playlist(name):
     return label_train_page.get_disagreement_playlist(name)
 
