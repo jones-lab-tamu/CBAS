@@ -116,6 +116,10 @@ def stop_live_preview():
 # --- Label/Train Page Functions ---
 
 @eel.expose
+def get_label_coverage_report(name):
+    return label_train_page.get_label_coverage_report(name)
+
+@eel.expose
 def analyze_label_conflicts(name):
     return label_train_page.analyze_label_conflicts(name)
 

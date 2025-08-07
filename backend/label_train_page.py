@@ -409,6 +409,69 @@ def import_videos(session_name: str, subject_name: str, video_paths: list[str], 
 # EEL-EXPOSED FUNCTIONS: LABELING WORKFLOW & ACTIONS
 # =================================================================
 
+def get_label_coverage_report(dataset_name: str) -> dict:
+    """
+    Analyzes a dataset's labels to see which subjects are missing labels
+    for which behaviors.
+    """
+    if not gui_state.proj or dataset_name not in gui_state.proj.datasets:
+        return {"error": "Dataset not found."}
+
+    dataset = gui_state.proj.datasets[dataset_name]
+    
+    try:
+        with open(dataset.labels_path, 'r') as f:
+            data = yaml.safe_load(f)
+    except Exception as e:
+        return {"error": f"Could not read or parse labels.yaml: {e}"}
+
+    master_behaviors = set(data.get("behaviors", []))
+    if not master_behaviors:
+        return {"error": "No behaviors defined in the dataset."}
+
+    # --- Step 1: Find all subjects and the behaviors labeled for each ---
+    subject_behaviors = defaultdict(set)
+    all_instances = [
+        inst for behavior_list in data.get("labels", {}).values() for inst in behavior_list
+    ]
+
+    for inst in all_instances:
+        video_path = inst.get("video")
+        label = inst.get("label")
+        if video_path and label:
+            # Extract subject name (assuming it's the directory name inside a session folder)
+            try:
+                subject_name = os.path.basename(os.path.dirname(video_path))
+                subject_behaviors[subject_name].add(label)
+            except Exception:
+                continue # Skip if path is malformed
+
+    if not subject_behaviors:
+        return {"error": "No labeled instances found in the dataset."}
+
+    # --- Step 2: Build the report ---
+    report = {
+        "master_behavior_list": sorted(list(master_behaviors)),
+        "complete_subjects": [],
+        "incomplete_subjects": []
+    }
+
+    for subject, behaviors in sorted(subject_behaviors.items()):
+        missing_behaviors = master_behaviors - behaviors
+        if not missing_behaviors:
+            report["complete_subjects"].append({
+                "name": subject,
+                "count": len(behaviors)
+            })
+        else:
+            report["incomplete_subjects"].append({
+                "name": subject,
+                "count": len(behaviors),
+                "missing": sorted(list(missing_behaviors))
+            })
+            
+    return report
+
 def video_has_labels(dataset_name: str, video_path: str) -> bool:
     """Checks if a specific video has any existing labels in a given dataset."""
     if not gui_state.proj: return False

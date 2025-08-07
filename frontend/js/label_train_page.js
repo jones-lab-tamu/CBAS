@@ -116,6 +116,7 @@ const cropOnImportModalElement = document.getElementById('cropOnImportModal');
 const categoryReviewModalElement = document.getElementById('categoryReviewModal');
 const behaviorSelectModalElement = document.getElementById('behaviorSelectModal');
 const disagreementReviewModalElement = document.getElementById('disagreementReviewModal');
+const labelCoverageModalElement = document.getElementById('labelCoverageModal');
 
 let addDatasetBsModal = addDatasetModalElement ? new bootstrap.Modal(addDatasetModalElement) : null;
 let trainBsModal = trainModalElement ? new bootstrap.Modal(trainModalElement) : null;
@@ -130,6 +131,7 @@ let cropOnImportBsModal = cropOnImportModalElement ? new bootstrap.Modal(cropOnI
 let categoryReviewBsModal = categoryReviewModalElement ? new bootstrap.Modal(categoryReviewModalElement) : null;
 let behaviorSelectBsModal = behaviorSelectModalElement ? new bootstrap.Modal(behaviorSelectModalElement) : null;
 let disagreementReviewBsModal = disagreementReviewModalElement ? new bootstrap.Modal(disagreementReviewModalElement) : null;
+let labelCoverageBsModal = labelCoverageModalElement ? new bootstrap.Modal(labelCoverageModalElement) : null;
 
 
 // --- Import Cropping State ---
@@ -302,7 +304,6 @@ async function showManageDatasetModal(datasetName) {
         };
     }
 
-    // Attach event for the "Find & Fix Label Conflicts" button
     const cleanAndSortBtn = document.getElementById('cleanAndSortButton');
     if (cleanAndSortBtn) {
         cleanAndSortBtn.onclick = async () => {
@@ -327,26 +328,25 @@ async function showManageDatasetModal(datasetName) {
             } else {
                 modalBody.innerHTML = `
                     <div class="alert alert-warning" role="alert">
-                        <strong>Warning:</strong> This is a destructive action that will permanently modify your <code>labels.yaml</code> file and cannot be undone.
+                        <strong>Warning:</strong> This will permanently modify your <code>labels.yaml</code> file and cannot be undone.
                     </div>
                     <p>Our analysis found the following issues:</p>
                     <ul>
                         <li><strong>${report.total_duplicates}</strong> exact duplicate label(s). These will be removed.</li>
-                        <li><strong>${report.total_overlaps}</strong> overlapping label(s). These will be resolved by merging same-behavior labels and keeping the longer of any different-behavior labels.</li>
+                        <li><strong>${report.total_overlaps}</strong> overlapping label(s). These will be resolved by trimming overlapping instances.</li>
                     </ul>
                     <p>After cleanup, the entire file will be sorted for clarity.</p>
                     <p>Are you sure you want to proceed?</p>
                 `;
                 confirmBtn.style.display = 'block';
                 
-                // Attach a one-time click handler for the final confirmation
                 confirmBtn.onclick = async () => {
                     conflictResolutionBsModal.hide();
                     document.getElementById('cover-spin').style.visibility = 'visible';
                     const success = await eel.clean_and_sort_labels(datasetName)();
                     if (success) {
                         alert('Your labels.yaml file has been successfully cleaned and sorted.');
-                        refreshAllDatasets(); // Refresh the UI to reflect any potential changes in counts
+                        refreshAllDatasets();
                     } else {
                         showErrorOnLabelTrainPage('An error occurred during the cleanup process. Your file has not been modified.');
                     }
@@ -358,6 +358,12 @@ async function showManageDatasetModal(datasetName) {
                 conflictResolutionBsModal.show();
             }
         };
+    }
+
+    // Attach event for the "Label Coverage Report" button
+    const labelCoverageBtn = document.getElementById('labelCoverageButton');
+    if (labelCoverageBtn) {
+        labelCoverageBtn.onclick = () => showLabelCoverageModal(datasetName);
     }
 
     const recalcBtn = document.getElementById('recalculateStatsButton');
@@ -411,6 +417,64 @@ async function showManageDatasetModal(datasetName) {
     }
 
     manageDatasetBsModal.show();
+}
+
+async function showLabelCoverageModal(datasetName) {
+    if (!labelCoverageBsModal) return;
+
+    document.getElementById('lc-dataset-name').textContent = datasetName;
+    const reportContainer = document.getElementById('lc-report-container');
+    reportContainer.innerHTML = '<div class="text-center">Generating report...</div>';
+    manageDatasetBsModal.hide();
+    labelCoverageBsModal.show();
+
+    const report = await eel.get_label_coverage_report(datasetName)();
+
+    if (report.error) {
+        reportContainer.innerHTML = `<div class="alert alert-danger">${report.error}</div>`;
+        return;
+    }
+
+    let html = '';
+    const totalBehaviors = report.master_behavior_list.length;
+
+    // Section for Incomplete Subjects (the most important part)
+    if (report.incomplete_subjects && report.incomplete_subjects.length > 0) {
+        html += '<h5><i class="bi bi-exclamation-triangle-fill text-warning me-2"></i>Incomplete Subjects</h5>';
+        html += '<p class="small">These subjects are missing labels for one or more behaviors and are unlikely to be included in the test set.</p>';
+        html += '<ul class="list-group">';
+        report.incomplete_subjects.forEach(subject => {
+            html += `
+                <li class="list-group-item">
+                    <strong>${subject.name}</strong>
+                    <span class="badge bg-warning float-end">${subject.count} / ${totalBehaviors} Behaviors Labeled</span>
+                    <br>
+                    <small class="text-danger">Missing: ${subject.missing.join(', ')}</small>
+                </li>
+            `;
+        });
+        html += '</ul>';
+    } else {
+        html += '<h5><i class="bi bi-check-circle-fill text-success me-2"></i>All Subjects are Complete</h5>';
+        html += '<p>Every subject with labels has at least one instance of every behavior. Your dataset is well-balanced for the train/test split!</p>';
+    }
+
+    // Section for Complete Subjects
+    if (report.complete_subjects && report.complete_subjects.length > 0) {
+        html += '<h5 class="mt-4"><i class="bi bi-check-circle-fill text-success me-2"></i>Complete Subjects</h5>';
+        html += '<ul class="list-group">';
+        report.complete_subjects.forEach(subject => {
+            html += `
+                <li class="list-group-item">
+                    <strong>${subject.name}</strong>
+                    <span class="badge bg-success float-end">${subject.count} / ${totalBehaviors} Behaviors Labeled</span>
+                </li>
+            `;
+        });
+        html += '</ul>';
+    }
+
+    reportContainer.innerHTML = html;
 }
 
 // To show and populate the whitelist editing modal
