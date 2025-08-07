@@ -293,35 +293,38 @@ def get_videos_for_dataset(dataset_name: str) -> list[tuple[str, str]]:
     if not dataset: return []
     
     whitelist = dataset.config.get("whitelist", [])
-    if not whitelist: return []
+    if not whitelist:
+        # If the whitelist is empty, we should return an empty list, not all videos.
+        return []
+
+    # Normalize the whitelisted paths to be absolute paths for robust comparison
+    recordings_root = gui_state.proj.recordings_dir
+    absolute_whitelist_paths = [os.path.normpath(os.path.join(recordings_root, p)) for p in whitelist]
+
 
     video_list = []
-    if gui_state.proj.recordings_dir and os.path.exists(gui_state.proj.recordings_dir):
-        for root, _, files in os.walk(gui_state.proj.recordings_dir):
-            # Create a set of filenames in the current directory for fast lookups.
+    if recordings_root and os.path.exists(recordings_root):
+        for root, _, files in os.walk(recordings_root):
             file_set = set(files)
             
             for file in files:
-                # Only process .mp4 files.
                 if not file.endswith(".mp4"):
                     continue
 
-                # A file is considered an augmented video to be skipped
-                # ONLY IF it ends with '_aug.mp4' AND its corresponding source video exists.
                 is_genuinely_augmented = False
                 if file.endswith("_aug.mp4"):
-                    # Construct the potential source filename by removing the suffix.
-                    source_filename = file[:-8] + ".mp4" # len('_aug.mp4') is 8
-                    # Check if that source file exists in the same directory.
+                    source_filename = file[:-8] + ".mp4"
                     if source_filename in file_set:
                         is_genuinely_augmented = True
 
-                # If it's not a genuinely augmented video, add it to the list.
                 if not is_genuinely_augmented:
                     video_path = os.path.join(root, file)
-                    normalized_path = os.path.normpath(video_path)
-                    if any(os.path.normpath(p) in normalized_path for p in whitelist):
-                        display_name = os.path.relpath(video_path, gui_state.proj.recordings_dir)
+                    normalized_video_dir = os.path.normpath(os.path.dirname(video_path))
+
+                    # The new check: does the video's directory path start with any of
+                    # the approved absolute whitelist paths?
+                    if any(normalized_video_dir.startswith(wl_path) for wl_path in absolute_whitelist_paths):
+                        display_name = os.path.relpath(video_path, recordings_root)
                         video_list.append((video_path, display_name))
     
     return sorted(video_list, key=lambda x: x[1])
@@ -805,7 +808,7 @@ def clean_and_sort_labels(dataset_name: str) -> bool:
                 instance['start'] = float(instance['start'])
                 instance['end'] = float(instance['end'])
                 all_instances.append(instance)
-    
+
     # --- 2. De-confliction (Merge/Trim) ---
     instances_by_video = defaultdict(list)
     for inst in all_instances:
@@ -817,17 +820,11 @@ def clean_and_sort_labels(dataset_name: str) -> bool:
             final_clean_instances.extend(instances)
             continue
 
-        # Sort instances by start time, then by duration (descending) as a tie-breaker
-        # This ensures longer instances are processed first.
         instances.sort(key=lambda x: (x['start'], -(x['end'] - x['start'])))
         
         deconflicted = []
         for new_inst in instances:
-            # This list will hold the pieces of the new instance that don't overlap with anything
-            # that has already been approved and placed in the 'deconflicted' list.
             pieces_to_add = [new_inst]
-            
-            # Compare the new instance against all previously approved instances
             for existing_inst in deconflicted:
                 next_pieces = []
                 while pieces_to_add:
@@ -835,35 +832,24 @@ def clean_and_sort_labels(dataset_name: str) -> bool:
                     p_start, p_end = piece['start'], piece['end']
                     e_start, e_end = existing_inst['start'], existing_inst['end']
 
-                    # Check for overlap
                     if max(p_start, e_start) <= min(p_end, e_end):
-                        # --- Conflict Found ---
-                        # If same label, we can absorb it later, so we discard the new piece.
                         if piece['label'] == existing_inst['label']:
-                            continue # Discard this piece
+                            continue
                         
-                        # If different labels, trim the new piece.
-                        # Part of the new piece that comes BEFORE the existing one
                         if p_start < e_start:
                             next_pieces.append({**piece, 'end': e_start - 1})
                         
-                        # Part of the new piece that comes AFTER the existing one
                         if p_end > e_end:
                             next_pieces.append({**piece, 'start': e_end + 1})
                     else:
-                        # No overlap with this existing instance, so the piece is safe (for now)
                         next_pieces.append(piece)
                 
                 pieces_to_add = next_pieces
 
-            # Add any surviving, valid pieces to the final deconflicted list
             for piece in pieces_to_add:
                 if piece['start'] <= piece['end']:
                     deconflicted.append(piece)
         
-        # --- Final Merge Pass for Same-Behavior Instances ---
-        # After trimming, we might have created adjacent instances of the same behavior.
-        # This pass merges them back together.
         deconflicted.sort(key=lambda x: (x['label'], x['start']))
         
         if not deconflicted: continue
@@ -873,7 +859,6 @@ def clean_and_sort_labels(dataset_name: str) -> bool:
             current_inst = deconflicted[i]
             last_merged = merged_instances[-1]
             
-            # If labels match and they are adjacent or overlapping, merge them.
             if current_inst['label'] == last_merged['label'] and current_inst['start'] <= last_merged['end'] + 1:
                 last_merged['end'] = max(last_merged['end'], current_inst['end'])
             else:
@@ -881,7 +866,7 @@ def clean_and_sort_labels(dataset_name: str) -> bool:
 
         final_clean_instances.extend(merged_instances)
 
-    # --- 3. Sort the final, clean list for readability ---
+    # --- 3. Sort the final, clean list ---
     final_clean_instances.sort(key=lambda x: (
         x.get('label', ''), 
         x.get('video', ''), 
@@ -889,10 +874,11 @@ def clean_and_sort_labels(dataset_name: str) -> bool:
     ))
 
     # --- 4. Rebuild the final YAML structure ---
-    cleaned_data = {
-        "behaviors": data.get("behaviors", []),
-        "labels": defaultdict(list)
-    }
+    # Start with a copy of the original data to preserve all top-level keys like 'whitelist'.
+    cleaned_data = data.copy()
+    
+    # Create a new, empty labels dictionary.
+    cleaned_data["labels"] = defaultdict(list)
     for inst in final_clean_instances:
         inst.pop('_confirmed', None)
         cleaned_data["labels"][inst['label']].append(inst)
