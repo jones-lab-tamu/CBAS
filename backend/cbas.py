@@ -794,12 +794,6 @@ class Project:
         """
         Internal method to load and split datasets with heavy debugging.
         """
-        # =========================================================
-        # DIAGNOSTIC PRINT 1: Confirm function is running with unique time
-        # print(f"DEBUG: _load_dataset_common called at {time.time_ns()} with seed {seed}")
-        # =========================================================
-
-        # The random number generator is seeded for reproducibility.
         rng = np.random.default_rng(seed)
 
         dataset_path = os.path.join(self.datasets_dir, name)
@@ -817,83 +811,54 @@ class Project:
         group_to_behaviors, group_to_instances = {}, {}
         for inst in all_insts:
             if 'video' in inst and inst['video']:
-                group_key = os.path.basename(os.path.dirname(inst['video']))
+
+                # The unique key for a subject/group must be its full relative path
+                # to distinguish between subjects with the same name in different sessions.
+                group_key = os.path.dirname(inst['video']).replace('\\', '/')
                 group_to_instances.setdefault(group_key, []).append(inst)
                 group_to_behaviors.setdefault(group_key, set()).add(inst['label'])
         
-        all_groups = sorted(list(group_to_instances.keys())) # Sort alphabetically for a deterministic starting point
-
-        # =========================================================
-        # DIAGNOSTIC PRINT 2: Show the list BEFORE shuffling
-        # print(f"DEBUG: Group list before shuffle: {all_groups[:5]}...") # Print first 5
-        # =========================================================
-
-        # Shuffle the list using the seeded generator
+        all_groups = sorted(list(group_to_instances.keys()))
         rng.shuffle(all_groups)
-
-        # =========================================================
-        # DIAGNOSTIC PRINT 3: Show the list AFTER shuffling
-        # print(f"DEBUG: Group list AFTER shuffle: {all_groups[:5]}...") # Print first 5 again
-        # =========================================================
         
-        # This entire block is the "First Good Candidate" splitting logic.
-        # =========================================================
         test_groups, behaviors_needed_in_test = set(), set(behaviors)
    
-        # --- Phase 1: Ensure all behaviors are represented in the test set ---
-        # This loop continues until our test set contains at least one instance of every behavior.
         while behaviors_needed_in_test:
             group_found_in_pass = False
-            # Iterate through the RANDOMLY SHUFFLED list of all groups.
             for group in all_groups:
-                # Skip this group if we've already selected it for the test set.
                 if group in test_groups:
                     continue
 
                 behaviors_in_group = group_to_behaviors.get(group, set())
-                # Check if this group contains any of the behaviors we still need.
                 if behaviors_needed_in_test.intersection(behaviors_in_group):
-                    # This is our "first good candidate". Add it to the test set.
                     test_groups.add(group)
-                    # Remove the behaviors it covers from our set of needs.
                     behaviors_needed_in_test.difference_update(behaviors_in_group)
                     group_found_in_pass = True
-                    # IMPORTANT: Break the inner loop to restart the scan from the top.
-                    # This gives groups earlier in the random shuffle a higher chance of being picked.
                     break 
             
-            # Safety break: If we scan all groups and can't find any that cover the
-            # remaining behaviors, exit the loop to prevent an infinite loop.
             if not group_found_in_pass:
                 if behaviors_needed_in_test:
                     print(f"Warning: Could not find groups to cover all behaviors. Missing: {behaviors_needed_in_test}")
                 break
 
-        # --- Phase 2: Add more groups until the desired split percentage is met ---
-        # Now that all behaviors are covered, we pad the test set with more subjects
-        # until it's big enough (e.g., >= 20% of the total data).
         total_size = len(all_insts)
         if total_size > 0:
             current_test_size = sum(len(group_to_instances.get(g, [])) for g in test_groups)
-            # Continue adding groups as long as the test set is smaller than the target split size.
             while current_test_size / total_size < split:
                 group_added_in_pass = False
-                # Iterate through the shuffled list again to find the next available group.
                 for group in all_groups:
                     if group not in test_groups:
                         test_groups.add(group)
                         current_test_size += len(group_to_instances.get(group, []))
                         group_added_in_pass = True
-                        break # Added one group, now re-evaluate the while condition.
+                        break
                 
-                # Safety break: If we run out of groups to add, exit.
                 if not group_added_in_pass:
                     break
-        # =========================================================
         
         train_groups = [g for g in all_groups if g not in test_groups]
-        train_insts = [inst for group in train_groups for inst in group_to_instances[group]]
-        test_insts = [inst for group in test_groups for inst in group_to_instances[group]]
+        train_insts = [inst for group in train_groups for inst in group_to_instances.get(group, [])]
+        test_insts = [inst for group in test_groups for inst in group_to_instances.get(group, [])]
         
         rng.shuffle(train_insts)
         rng.shuffle(test_insts)
@@ -902,7 +867,7 @@ class Project:
         print(f"  - Train groups: {len(train_groups)}, Test groups: {len(test_groups)}")
         
         if not train_insts and test_insts:
-            print("  - [WARN] All labeled data belongs to a single group. Subject-level split is not possible. Falling back to a random 80/20 instance split. Model performance will reflect generalization on new data from the *same* subject, not a new, unseen subject.")
+            print("  - [WARN] All labeled data belongs to a single group. Subject-level split is not possible. Falling back to a random 80/20 instance split.")
             all_insts = test_insts
             rng.shuffle(all_insts)
             split_idx = int(len(all_insts) * (1 - split))

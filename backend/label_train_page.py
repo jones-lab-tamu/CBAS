@@ -452,7 +452,6 @@ def get_label_coverage_report(dataset_name: str) -> dict:
     if not master_behaviors:
         return {"error": "No behaviors defined in the dataset."}
 
-    # --- Step 1: Find all subjects and the behaviors labeled for each ---
     subject_behaviors = defaultdict(set)
     all_instances = [
         inst for behavior_list in data.get("labels", {}).values() for inst in behavior_list
@@ -462,33 +461,39 @@ def get_label_coverage_report(dataset_name: str) -> dict:
         video_path = inst.get("video")
         label = inst.get("label")
         if video_path and label:
-            # Extract subject name (assuming it's the directory name inside a session folder)
             try:
-                subject_name = os.path.basename(os.path.dirname(video_path))
-                subject_behaviors[subject_name].add(label)
+
+                # The unique identifier for a subject is its full relative path,
+                # not just its folder name.
+                subject_path = os.path.dirname(video_path)
+                
+                # Normalize slashes for consistent display
+                subject_path = subject_path.replace('\\', '/')
+
+                subject_behaviors[subject_path].add(label)
+
             except Exception:
-                continue # Skip if path is malformed
+                continue
 
     if not subject_behaviors:
         return {"error": "No labeled instances found in the dataset."}
 
-    # --- Step 2: Build the report ---
     report = {
         "master_behavior_list": sorted(list(master_behaviors)),
         "complete_subjects": [],
         "incomplete_subjects": []
     }
 
-    for subject, behaviors in sorted(subject_behaviors.items()):
+    for subject_path, behaviors in sorted(subject_behaviors.items()):
         missing_behaviors = master_behaviors - behaviors
         if not missing_behaviors:
             report["complete_subjects"].append({
-                "name": subject,
+                "name": subject_path, # Use the full path as the name
                 "count": len(behaviors)
             })
         else:
             report["incomplete_subjects"].append({
-                "name": subject,
+                "name": subject_path, # Use the full path as the name
                 "count": len(behaviors),
                 "missing": sorted(list(missing_behaviors))
             })
@@ -798,7 +803,7 @@ def analyze_label_conflicts(dataset_name: str) -> dict:
 
 def clean_and_sort_labels(dataset_name: str) -> bool:
     """
-    Performs a full cleanup and sort of a labels.yaml file.
+    Performs a full cleanup, normalization, and sort of a labels.yaml file.
     This is a non-destructive operation that resolves conflicts by trimming.
     """
     if not gui_state.proj or dataset_name not in gui_state.proj.datasets:
@@ -886,18 +891,20 @@ def clean_and_sort_labels(dataset_name: str) -> bool:
 
         final_clean_instances.extend(merged_instances)
 
-    # --- 3. Sort the final, clean list ---
+    # --- 3. Normalize all path separators to forward slashes ---
+    for inst in final_clean_instances:
+        if 'video' in inst and isinstance(inst['video'], str):
+            inst['video'] = inst['video'].replace('\\', '/')
+
+    # --- 4. Sort the final, clean list for readability ---
     final_clean_instances.sort(key=lambda x: (
         x.get('label', ''), 
         x.get('video', ''), 
         x.get('start', 0)
     ))
 
-    # --- 4. Rebuild the final YAML structure ---
-    # Start with a copy of the original data to preserve all top-level keys like 'whitelist'.
+    # --- 5. Rebuild the final YAML structure ---
     cleaned_data = data.copy()
-    
-    # Create a new, empty labels dictionary.
     cleaned_data["labels"] = defaultdict(list)
     for inst in final_clean_instances:
         inst.pop('_confirmed', None)
@@ -906,7 +913,7 @@ def clean_and_sort_labels(dataset_name: str) -> bool:
     final_labels_dict = {k: v for k, v in sorted(cleaned_data["labels"].items())}
     cleaned_data["labels"] = final_labels_dict
 
-    # --- 5. Save the cleaned and sorted data back to the file ---
+    # --- 6. Save the cleaned and sorted data back to the file ---
     try:
         with open(labels_file_path, 'w') as f:
             yaml.dump(cleaned_data, f, allow_unicode=True, sort_keys=False)

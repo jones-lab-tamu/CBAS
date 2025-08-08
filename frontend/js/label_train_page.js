@@ -189,10 +189,8 @@ async function showDisagreementModal(datasetName) {
     if (disagreements && disagreements.length > 0) {
         const projectRoot = await eel.get_project_root()();
         
-        // 1. Get the list of already-reviewed items from sessionStorage.
         const reviewedItemsKey = `reviewedDisagreements_${datasetName}`;
         const reviewedItems = JSON.parse(sessionStorage.getItem(reviewedItemsKey) || '[]');
-        // =========================================================================
 
         for (const item of disagreements) {
             const listItem = document.createElement('li');
@@ -202,20 +200,20 @@ async function showDisagreementModal(datasetName) {
             const videoToOpen = item.video_to_open;
             const correctionDataset = item.correction_dataset;
             const videoAbsPath = `${projectRoot}/${videoToOpen}`.replace(/\\/g, '/');
-            const displayPath = item.video_path.split('/').pop();
+            
+            // First, replace all backslashes with forward slashes to normalize the path.
+            // Then, split by the forward slash and pop the last element (the filename).
+            const displayPath = item.video_path.replace(/\\/g, '/').split('/').pop();
 
-            // 2. Create a unique ID for this specific disagreement instance.
             const uniqueId = `${item.video_path}_${item.start_frame}`;
             const isReviewed = reviewedItems.includes(uniqueId);
 
-            // 3. Add a visual indicator if the item has been reviewed.
             const reviewedBadge = isReviewed 
                 ? '<span class="badge bg-success float-end"><i class="bi bi-check-lg"></i> Reviewed</span>' 
                 : '';
             if (isReviewed) {
-                listItem.classList.add('text-muted'); // Fade out the text for reviewed items
+                listItem.classList.add('text-muted');
             }
-            // =========================================================================
 
             listItem.innerHTML = `
                 <div class="d-flex w-100 justify-content-between">
@@ -234,13 +232,10 @@ async function showDisagreementModal(datasetName) {
             `;
 
             listItem.onclick = () => {
-                // =========================================================================
-                // 4. When an item is clicked, add its ID to the reviewed list in sessionStorage.
                 if (!reviewedItems.includes(uniqueId)) {
                     reviewedItems.push(uniqueId);
                     sessionStorage.setItem(reviewedItemsKey, JSON.stringify(reviewedItems));
                 }
-                // Mark the item as reviewed in the current view without a full reload.
                 listItem.classList.add('text-muted');
                 const existingBadge = listItem.querySelector('.float-end');
                 if (!existingBadge) {
@@ -249,7 +244,6 @@ async function showDisagreementModal(datasetName) {
                      newBadge.innerHTML = '<i class="bi bi-check-lg"></i> Reviewed';
                      listItem.querySelector('.d-flex > div').appendChild(newBadge);
                 }
-                // =========================================================================
 
                 disagreementReviewBsModal.hide();
                 const disagreementInfo = {
