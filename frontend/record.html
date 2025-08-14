@@ -49,29 +49,48 @@
 
   <div class="container mt-n5" style="position: relative; z-index: 10;">
     <div class="card bg-dark text-light shadow-sm">
-        <div class="card-body d-flex align-items-center">
-            <label for="session-name-input" class="form-label mb-0 me-3 fw-bold fs-5 text-nowrap">Current Session Name:</label>
-            <div class="input-group">
-                <input type="text" class="form-control" id="session-name-input" placeholder="Enter a name and click away to lock in...">
-                <button class="btn btn-outline-secondary" type="button" id="edit-session-name-btn" style="display: none;">
-                    <i class="bi bi-pencil-fill me-1"></i> Edit
-                </button>
+        <div class="card-body">
+            <!-- Row 1: Session Name -->
+            <div class="d-flex align-items-center mb-3">
+                <label for="session-name-input" class="form-label mb-0 me-3 fw-bold fs-5 text-nowrap">Session Name:</label>
+                <div class="input-group">
+                    <input type="text" class="form-control" id="session-name-input" placeholder="Enter a name and click away to lock in...">
+                    <button class="btn btn-outline-secondary" type="button" id="edit-session-name-btn" style="display: none;">
+                        <i class="bi bi-pencil-fill me-1"></i> Edit
+                    </button>
+                </div>
             </div>
+
+            <!-- Row 2: Live Inference Controls -->
+            <div class="d-flex align-items-center">
+                <div class="form-check form-switch me-3">
+                    <input class="form-check-input" type="checkbox" role="switch" id="live-inference-toggle">
+                    <label class="form-check-label fw-bold fs-5" for="live-inference-toggle">Live Inference</label>
+                </div>
+                <div class="input-group">
+                    <select class="form-select" id="live-inference-model-select" disabled>
+                        <option selected>Enable toggle to select a model...</option>
+                        <!-- Models will be populated by JS -->
+                    </select>
+                </div>
+            </div>
+
         </div>
     </div>
   </div>
 
+
   <!-- Main content area wrapper -->
   <div class="container align-items-center justify-content-center mt-4" id="camera-container-wrapper">
     
-    <!-- INSERT THIS NEW SNIPPET HERE -->
+
     <div id="thumbnail-progress-container" class="mb-4" style="display: none; max-width: 1140px; margin-left: auto; margin-right: auto;">
         <p id="thumbnail-progress-label" class="text-center text-light mb-1">Fetching thumbnails...</p>
         <div class="progress" style="height: 20px;">
             <div id="thumbnail-progress-bar" class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 0%;" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">0%</div>
         </div>
     </div>
-    <!-- END OF NEW SNIPPET -->
+
 
     <!-- The camera cards will be injected here -->
     <div class="row" id="camera-container"></div>

@@ -164,6 +164,16 @@ def get_available_models():
     return label_train_page.get_available_models()
 
 @eel.expose
+def set_live_inference_model(model_name: str | None):
+    """Sets the model to be used for live inference, or None to disable it."""
+    gui_state.live_inference_model_name = model_name
+    if model_name:
+        workthreads.log_message(f"Live inference enabled with model: {model_name}", "INFO")
+    else:
+        workthreads.log_message("Live inference disabled.", "INFO")
+    return True
+
+@eel.expose
 def get_record_tree():
     return label_train_page.get_record_tree()
 

@@ -13,6 +13,7 @@ from typing import Union, List, Dict, Any, TYPE_CHECKING
 import pandas as pd
 import cv2
 import subprocess
+import torch
 
 # Use TYPE_CHECKING block to import types only for static analysis (e.g., by linters
 # or IDEs), preventing runtime circular import errors with the workthreads module.
@@ -63,6 +64,9 @@ label_col_map: Union['Colormap', None] = None
 # =================================================================
 # BACKGROUND THREADS & TASK QUEUES
 # =================================================================
+
+live_inference_model_name: Union[str, None] = None
+live_inference_model_object: Union[torch.nn.Module, None] = None
 
 print_lock: Union[threading.Lock, None] = threading.Lock()
 

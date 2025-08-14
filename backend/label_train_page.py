@@ -1701,7 +1701,7 @@ def delete_dataset(name: str) -> bool:
 
 def start_classification(model_name: str, recordings_whitelist_paths: list[str]):
     """
-    Finds HDF5 files to classify and passes the entire job to the ClassificationThread.
+    Finds HDF5 files to classify and adds them to the persistent classification queue.
     """
     if not gui_state.proj or not gui_state.classify_thread:
         log_message("Project or classification thread not initialized.", "ERROR")
@@ -1710,6 +1710,7 @@ def start_classification(model_name: str, recordings_whitelist_paths: list[str])
     model_to_use = gui_state.proj.models.get(model_name)
     if not model_to_use:
         log_message(f"Model '{model_name}' not found for inference.", "ERROR")
+        eel.showErrorOnLabelTrainPage(f"Model '{model_name}' not found.")()
         return
 
     h5_files_to_classify = []
@@ -1725,12 +1726,23 @@ def start_classification(model_name: str, recordings_whitelist_paths: list[str])
                             h5_files_to_classify.append(full_path)
 
     if not h5_files_to_classify:
-        log_message(f"No new files found to classify with model '{model_name}'. (Check if they are encoded or already classified).", "WARN")
+        log_message(f"No new files found to classify with model '{model_name}'.", "WARN")
         eel.updateInferenceProgress(model_name, 100, "No new files to process.")()
         return
 
-    # The single call to hand off the entire job to the background thread.
-    gui_state.classify_thread.start_inferring(model_to_use, h5_files_to_classify)
+
+    # This function is now responsible for telling the UI that a new batch is starting.
+    total_files = len(h5_files_to_classify)
+    eel.updateInferenceProgress(model_name, 0, f"Processing {total_files} files...")()
+
+    # Set the model for the thread and add all tasks to the queue.
+    gui_state.live_inference_model_name = model_name
+    with gui_state.classify_lock:
+        new_files = [f for f in h5_files_to_classify if f not in gui_state.classify_tasks]
+        gui_state.classify_tasks.extend(new_files)
+    
+    log_message(f"Queued {len(new_files)} files for manual inference with model '{model_name}'.", "INFO")
+
 
 # =================================================================
 # RENDERING & INTERNAL LOGIC (Not Exposed)

@@ -33,6 +33,7 @@ let camerasToFetchCount = 0;
 let camerasFetchedCount = 0;
 let activeStreamsInfo = {}; // Will store { camName: startTime, ... }
 let recordingTimerInterval = null;
+let liveInferenceModel = null;
 
 // =================================================================
 // 3. FUNCTION DEFINITIONS
@@ -834,15 +835,10 @@ function drawImageOnCropCanvas(img) {
 document.addEventListener('DOMContentLoaded', async () => {
     await waitForEelConnection();
     
-    const addCameraModalElement = document.getElementById('addCamera');
-    const statusModalElement = document.getElementById('statusModal');
-    const cameraSettingsModalElement = document.getElementById('cameraSettings');
-    const errorModalElement = document.getElementById('errorModal');
-    
-    if (addCameraModalElement) addCameraBsModal = new bootstrap.Modal(addCameraModalElement);
-    if (statusModalElement) statusBsModal = new bootstrap.Modal(statusModalElement);
-    if (cameraSettingsModalElement) cameraSettingsBsModal = new bootstrap.Modal(cameraSettingsModalElement);
-    if (errorModalElement) generalErrorBsModal = new bootstrap.Modal(errorModalElement);
+    addCameraBsModal = new bootstrap.Modal(document.getElementById('addCamera'));
+    statusBsModal = new bootstrap.Modal(document.getElementById('statusModal'));
+    cameraSettingsBsModal = new bootstrap.Modal(document.getElementById('cameraSettings'));
+    generalErrorBsModal = new bootstrap.Modal(document.getElementById('errorModal'));
     
     loadCameras(); 
     setInterval(updateStatusIcon, 3000);
@@ -898,5 +894,40 @@ document.addEventListener('DOMContentLoaded', async () => {
             sessionInput.focus();
         });
     }
+
+    const liveInferenceToggle = document.getElementById('live-inference-toggle');
+    const modelSelect = document.getElementById('live-inference-model-select');
+
+    // Populate the model dropdown
+    const models = await eel.get_available_models()();
+    if (models && models.length > 0) {
+        modelSelect.innerHTML = '<option selected disabled>Select a model...</option>';
+        models.forEach(modelName => {
+            modelSelect.innerHTML += `<option value="${modelName}">${modelName}</option>`;
+        });
+    } else {
+        modelSelect.innerHTML = '<option selected disabled>No models available</option>';
+    }
+
+    // Event listener for the toggle switch
+    liveInferenceToggle.addEventListener('change', () => {
+        if (liveInferenceToggle.checked) {
+            modelSelect.disabled = false;
+            // Tell the backend to start live inference if a model is already selected
+            if (modelSelect.value && !modelSelect.selectedOptions[0].disabled) {
+                eel.set_live_inference_model(modelSelect.value)();
+            }
+        } else {
+            modelSelect.disabled = true;
+            eel.set_live_inference_model(null)(); // Tell backend to stop
+        }
+    });
+
+    // Event listener for the model selection
+    modelSelect.addEventListener('change', () => {
+        if (liveInferenceToggle.checked && modelSelect.value) {
+            eel.set_live_inference_model(modelSelect.value)();
+        }
+    });
 
 });

@@ -302,13 +302,11 @@ class EncodeThread(threading.Thread):
                     file_to_encode = gui_state.encode_tasks.pop(0)
 
             if file_to_encode:
-
                 try:
                     video_basename = os.path.basename(file_to_encode)
                     log_message(f"Starting encoding for: {video_basename}", "INFO")
 
                     last_reported_percent = -1
-                    # --- Nested callback for dual progress reporting ---
                     def progress_updater(current_file_percent):
                         nonlocal last_reported_percent
                         status = {
@@ -327,7 +325,6 @@ class EncodeThread(threading.Thread):
 
                     progress_updater(0)
 
-                    # Run the encoding process
                     if self.cuda_stream:
                         with torch.cuda.stream(self.cuda_stream):
                             out_file = cbas.encode_file(self.encoder, file_to_encode, progress_callback=progress_updater)
@@ -336,29 +333,28 @@ class EncodeThread(threading.Thread):
 
                     if out_file:
                         log_message(f"Finished encoding: {video_basename}", "INFO")
-                        with gui_state.classify_lock:
-                            if out_file not in gui_state.classify_tasks:
+
+                        # If live inference is on, add the file directly to the classification queue.
+                        if gui_state.live_inference_model_name:
+                            with gui_state.classify_lock:
                                 gui_state.classify_tasks.append(out_file)
+                            log_message(f"Live inference: Queued '{os.path.basename(out_file)}' for classification.", "INFO")
+
                     else:
-                        # This case handles non-crashing failures within encode_file
                         raise RuntimeError("encode_file returned None, indicating a processing failure.")
 
                     progress_updater(100)
 
                 except Exception as e:
-                    # If any error occurs during the encoding of one file, log it and move on.
                     log_message(f"Failed to encode '{os.path.basename(file_to_encode)}'. The file may be corrupted or unreadable. Skipping. Error: {e}", "ERROR")
-                    traceback.print_exc() # Also print full traceback to terminal for debugging
+                    traceback.print_exc()
                 
                 finally:
-                    # This block will run whether the try succeeded or failed.
-                    # It ensures the progress tracking is always updated correctly.
                     self.tasks_processed_in_batch += 1
 
             else:
-                # This block runs when the queue is empty
                 if self.total_initial_tasks > 0:
-                    status = {"overall_total": 0} # Signal to hide the bar
+                    status = {"overall_total": 0}
                     eel.update_global_encoding_progress(status)()
                 
                 self.total_initial_tasks = 0
@@ -388,105 +384,92 @@ class ClassificationThread(threading.Thread):
         super().__init__()
         self.device = torch.device(device_str)
         self.cuda_stream = torch.cuda.Stream(device=self.device) if self.device.type == 'cuda' else None
-        
-        # --- Use threading.Event for clearer state management ---
-        self.new_task_event = threading.Event()
-        self.torch_model = None
-        self.model_meta = None
 
-    def start_inferring(self, model_obj: cbas.Model, files_to_process: list[str]):
-        """
-        Loads a model and prepares the thread to start processing classification tasks.
-        This is now the single entry point to give a new job to the thread.
-        """
-        # It's safer to not hold the lock while loading the model.
-        log_message(f"Loading model '{model_obj.name}' for classification...", "INFO")
+    def _load_model(self, model_name):
+        """Helper to load a model and store it in the global state."""
+        log_message(f"Loading model '{model_name}' for classification...", "INFO")
         try:
+            model_obj = gui_state.proj.models.get(model_name)
+            if not model_obj:
+                raise ValueError(f"Model '{model_name}' not found in project.")
+            
             weights = torch.load(model_obj.weights_path, map_location=self.device, weights_only=True)
-            self.torch_model = classifier_head.classifier(
+            torch_model = classifier_head.classifier(
                 in_features=768,
                 out_features=len(model_obj.config["behaviors"]),
                 seq_len=model_obj.config["seq_len"],
             )
-            self.torch_model.load_state_dict(weights)
-            self.torch_model.to(self.device).eval()
-            self.model_meta = model_obj
+            torch_model.load_state_dict(weights)
+            torch_model.to(self.device).eval()
             
-            # --- Add files to the queue here and set the event ---
-            with gui_state.classify_lock:
-                gui_state.classify_tasks.clear() # Clear any old tasks
-                gui_state.classify_tasks.extend(files_to_process)
-            
-            self.new_task_event.set() # Signal the run() loop to start processing
-            log_message(f"Model '{model_obj.name}' loaded. {len(files_to_process)} tasks queued.", "INFO")
-
+            gui_state.live_inference_model_object = torch_model
+            log_message(f"Model '{model_name}' loaded successfully.", "INFO")
+            return model_obj
         except Exception as e:
-            log_message(f"Error loading model '{model_obj.name}': {e}", "ERROR")
-            # Ensure we don't proceed if loading fails
-            self.torch_model = None
-            self.model_meta = None
-            self.new_task_event.clear()
-
+            log_message(f"Error loading model '{model_name}': {e}", "ERROR")
+            gui_state.live_inference_model_object = None
+            return None
 
     def run(self):
-        """The main loop for the thread. It now waits for a signal to start work."""
+        """The main loop for the thread. Continuously processes the queue."""
+        last_model_name = None
+        model_meta = None
+        
+        # Variables for manual inference progress tracking
+        manual_inference_total = 0
+        manual_inference_processed = 0
+
         while True:
-            self.new_task_event.wait()
+            current_model_name = gui_state.live_inference_model_name
+            if current_model_name != last_model_name:
+                if current_model_name:
+                    model_meta = self._load_model(current_model_name)
+                    # When a new model is loaded for a manual batch, reset progress
+                    with gui_state.classify_lock:
+                        manual_inference_total = len(gui_state.classify_tasks)
+                    manual_inference_processed = 0
+                else:
+                    gui_state.live_inference_model_object = None
+                    model_meta = None
+                last_model_name = current_model_name
 
-            if not self.torch_model or not self.model_meta:
-                log_message("Classification thread woken up but no model is loaded. Resetting.", "WARN")
-                self.new_task_event.clear()
-                continue
-
-            total_files = 0
-            with gui_state.classify_lock:
-                total_files = len(gui_state.classify_tasks)
-
-
-            if total_files > 0:
-                # Use the CORRECT progress update function for the Inference page.
-                eel.updateInferenceProgress(self.model_meta.name, 0, f"Processing {total_files} files...")()
-
-
-            files_processed = 0
-            while True:
-                file_to_classify = None
+            file_to_classify = None
+            if gui_state.live_inference_model_object and model_meta:
                 with gui_state.classify_lock:
                     if gui_state.classify_tasks:
                         file_to_classify = gui_state.classify_tasks.pop(0)
-                    else:
-                        break
 
-                if file_to_classify:
-                    log_message(f"Classifying: {os.path.basename(file_to_classify)} with model '{self.model_meta.name}'", "INFO")
-
+            if file_to_classify:
+                log_message(f"Classifying: {os.path.basename(file_to_classify)} with model '{model_meta.name}'", "INFO")
+                try:
                     if self.cuda_stream:
                         with torch.cuda.stream(self.cuda_stream):
-                            cbas.infer_file(file_to_classify, self.torch_model, self.model_meta.name, self.model_meta.config["behaviors"], self.model_meta.config["seq_len"], device=self.device)
+                            cbas.infer_file(file_to_classify, gui_state.live_inference_model_object, model_meta.name, model_meta.config["behaviors"], model_meta.config["seq_len"], device=self.device)
                     else:
-                        cbas.infer_file(file_to_classify, self.torch_model, self.model_meta.name, self.model_meta.config["behaviors"], self.model_meta.config["seq_len"], device=self.device)
+                        cbas.infer_file(file_to_classify, gui_state.live_inference_model_object, model_meta.name, model_meta.config["behaviors"], model_meta.config["seq_len"], device=self.device)
                     
-                    files_processed += 1
 
-                    # Update the progress bar after each file is processed.
-                    if total_files > 0:
-                        percent_done = (files_processed / total_files) * 100
-                        message = f"Processing {files_processed} / {total_files}: {os.path.basename(file_to_classify)}"
-                        eel.updateInferenceProgress(self.model_meta.name, percent_done, message)()
+                    manual_inference_processed += 1
+                    if manual_inference_total > 0:
+                        percent_done = (manual_inference_processed / manual_inference_total) * 100
+                        message = f"Processing {manual_inference_processed} / {manual_inference_total}: {os.path.basename(file_to_classify)}"
+                        eel.updateInferenceProgress(model_meta.name, percent_done, message)()
 
+                        if manual_inference_processed >= manual_inference_total:
+                            log_message(f"Inference queue for model '{model_meta.name}' is empty. Classification complete.", "INFO")
+                            eel.updateInferenceProgress(model_meta.name, 100, "Inference complete.")()
+                            if gui_state.proj:
+                                log_message("Reloading project data to discover new classification files.", "INFO")
+                                gui_state.proj.reload()
+                            # Reset for the next batch
+                            manual_inference_total = 0
+                            manual_inference_processed = 0
+                            gui_state.live_inference_model_name = None # Clear the model after a manual batch
 
-            if self.model_meta:
-                log_message(f"Inference queue for model '{self.model_meta.name}' is empty. Classification complete.", "INFO")
-                # Final 100% update to signal completion.
-                eel.updateInferenceProgress(self.model_meta.name, 100, "Inference complete.")()
-
-                if gui_state.proj:
-                    log_message("Reloading project data to discover new classification files.", "INFO")
-                    gui_state.proj.reload()
-
-            self.torch_model = None
-            self.model_meta = None
-            self.new_task_event.clear()
+                except Exception as e:
+                    log_message(f"Failed to classify '{os.path.basename(file_to_classify)}'. Error: {e}", "ERROR")
+            else:
+                time.sleep(1)
 
     def get_id(self):
         """Returns the thread's unique identifier."""
