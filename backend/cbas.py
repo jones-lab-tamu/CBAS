@@ -192,7 +192,15 @@ class DinoEncoder(nn.Module):
     def __init__(self, device="cuda"):
         super().__init__()
         self.device = torch.device(device)
-        self.model = transformers.AutoModel.from_pretrained("facebook/dinov2-base").to(self.device)
+        
+        # Select DinoV2 model
+        
+        model_identifier = "facebook/dinov2-with-registers-base"
+        # model_identifier = "facebook/dinov2-base"
+        print(f"Loading DINOv2 encoder model: {model_identifier}")
+        self.model = transformers.AutoModel.from_pretrained(model_identifier).to(self.device)
+        
+        
         self.model.eval()
         for param in self.model.parameters(): param.requires_grad = False
     def forward(self, x: torch.Tensor) -> torch.Tensor:

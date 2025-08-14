@@ -26,7 +26,6 @@ def analyze_split(project_path: str, dataset_name: str, seed: int):
     print("="*50)
 
     try:
-        # Load the project to make the cbas.Project instance available
         gui_state.proj = cbas.Project(project_path)
     except cbas.InvalidProject:
         print(f"ERROR: The provided path is not a valid CBAS project: {project_path}")
@@ -36,10 +35,9 @@ def analyze_split(project_path: str, dataset_name: str, seed: int):
         print(f"ERROR: Dataset '{dataset_name}' not found in the project.")
         return
 
-    # Use the project's internal method to get the exact same split as the training process
     train_insts, test_insts, behaviors = gui_state.proj._load_dataset_common(
         name=dataset_name,
-        split=0.2,  # Use the standard 20% test split
+        split=0.2,
         seed=seed
     )
 
@@ -47,10 +45,9 @@ def analyze_split(project_path: str, dataset_name: str, seed: int):
         print("Could not load or split the dataset. The labels.yaml file might be empty.")
         return
 
-    # --- Analyze the composition of each set ---
     def get_composition_report(instances):
         if not instances:
-            return {}, Counter(), Counter(), set()
+            return set(), Counter(), Counter()
 
         subjects = set()
         instance_counts = Counter()
@@ -58,12 +55,15 @@ def analyze_split(project_path: str, dataset_name: str, seed: int):
 
         for inst in instances:
             try:
-                subject_name = os.path.basename(os.path.dirname(inst['video']))
-                subjects.add(subject_name)
+
+                # The unique identifier for a subject is its full relative path.
+                subject_path = os.path.dirname(inst['video']).replace('\\', '/')
+                subjects.add(subject_path)
+
                 instance_counts[inst['label']] += 1
                 frame_counts[inst['label']] += (inst['end'] - inst['start'] + 1)
             except Exception:
-                continue # Skip malformed instances
+                continue
         
         return subjects, instance_counts, frame_counts
 
@@ -73,16 +73,16 @@ def analyze_split(project_path: str, dataset_name: str, seed: int):
     # --- Print the final report ---
     print("\n--- TRAINING SET COMPOSITION ---")
     print(f"Subjects ({len(train_subjects)}): {', '.join(sorted(list(train_subjects)))}")
-    print("\n{:<15} {:>15} {:>15}".format("Behavior", "Instances", "Frames"))
-    print("-" * 47)
+    print("\n{:<25} {:>15} {:>15}".format("Behavior", "Instances", "Frames"))
+    print("-" * 57)
     for behavior in behaviors:
-        print("{:<15} {:>15} {:>15}".format(
+        print("{:<25} {:>15} {:>15}".format(
             behavior,
             train_inst_counts.get(behavior, 0),
             int(train_frame_counts.get(behavior, 0))
         ))
-    print("-" * 47)
-    print("{:<15} {:>15} {:>15}".format(
+    print("-" * 57)
+    print("{:<25} {:>15} {:>15}".format(
         "TOTAL",
         sum(train_inst_counts.values()),
         int(sum(train_frame_counts.values()))
@@ -90,16 +90,16 @@ def analyze_split(project_path: str, dataset_name: str, seed: int):
 
     print("\n\n--- TEST SET COMPOSITION ---")
     print(f"Subjects ({len(test_subjects)}): {', '.join(sorted(list(test_subjects)))}")
-    print("\n{:<15} {:>15} {:>15}".format("Behavior", "Instances", "Frames"))
-    print("-" * 47)
+    print("\n{:<25} {:>15} {:>15}".format("Behavior", "Instances", "Frames"))
+    print("-" * 57)
     for behavior in behaviors:
-        print("{:<15} {:>15} {:>15}".format(
+        print("{:<25} {:>15} {:>15}".format(
             behavior,
             test_inst_counts.get(behavior, 0),
             int(test_frame_counts.get(behavior, 0))
         ))
-    print("-" * 47)
-    print("{:<15} {:>15} {:>15}".format(
+    print("-" * 57)
+    print("{:<25} {:>15} {:>15}".format(
         "TOTAL",
         sum(test_inst_counts.values()),
         int(sum(test_frame_counts.values()))
