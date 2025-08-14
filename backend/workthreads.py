@@ -302,49 +302,58 @@ class EncodeThread(threading.Thread):
                     file_to_encode = gui_state.encode_tasks.pop(0)
 
             if file_to_encode:
-                video_basename = os.path.basename(file_to_encode)
-                log_message(f"Starting encoding for: {video_basename}", "INFO")
 
-                # --- Nested callback for dual progress reporting ---
-                def progress_updater(current_file_percent):
-                    status = {
-                        "overall_processed": self.tasks_processed_in_batch,
-                        "overall_total": self.total_initial_tasks,
-                        "current_percent": current_file_percent,
-                        "current_file": video_basename
-                    }
-                    eel.update_global_encoding_progress(status)()
+                try:
+                    video_basename = os.path.basename(file_to_encode)
+                    log_message(f"Starting encoding for: {video_basename}", "INFO")
 
-                    # Also log to console/log panel, but less frequently
-                    nonlocal last_reported_percent
-                    current_increment = int(current_file_percent // 10)
-                    last_increment = int(last_reported_percent // 10)
-                    if current_increment > last_increment:
-                        log_message(f"Encoding '{video_basename}': {int(current_file_percent)}% complete...", "INFO")
-                        last_reported_percent = current_file_percent
+                    last_reported_percent = -1
+                    # --- Nested callback for dual progress reporting ---
+                    def progress_updater(current_file_percent):
+                        nonlocal last_reported_percent
+                        status = {
+                            "overall_processed": self.tasks_processed_in_batch,
+                            "overall_total": self.total_initial_tasks,
+                            "current_percent": current_file_percent,
+                            "current_file": video_basename
+                        }
+                        eel.update_global_encoding_progress(status)()
 
-                last_reported_percent = -1
-                progress_updater(0) # Send an initial 0% update for the current file
+                        current_increment = int(current_file_percent // 10)
+                        last_increment = int(last_reported_percent // 10)
+                        if current_increment > last_increment:
+                            log_message(f"Encoding '{video_basename}': {int(current_file_percent)}% complete...", "INFO")
+                            last_reported_percent = current_file_percent
 
-                # Run the encoding process
-                if self.cuda_stream:
-                    with torch.cuda.stream(self.cuda_stream):
+                    progress_updater(0)
+
+                    # Run the encoding process
+                    if self.cuda_stream:
+                        with torch.cuda.stream(self.cuda_stream):
+                            out_file = cbas.encode_file(self.encoder, file_to_encode, progress_callback=progress_updater)
+                    else:
                         out_file = cbas.encode_file(self.encoder, file_to_encode, progress_callback=progress_updater)
-                else:
-                    out_file = cbas.encode_file(self.encoder, file_to_encode, progress_callback=progress_updater)
 
-                if out_file:
-                    log_message(f"Finished encoding: {video_basename}", "INFO")
-                    self.tasks_processed_in_batch += 1
-                    with gui_state.classify_lock:
-                        if out_file not in gui_state.classify_tasks:
-                            gui_state.classify_tasks.append(out_file)
-                else:
-                    log_message(f"Failed to encode: {video_basename}", "WARN")
-                    self.tasks_processed_in_batch += 1
+                    if out_file:
+                        log_message(f"Finished encoding: {video_basename}", "INFO")
+                        with gui_state.classify_lock:
+                            if out_file not in gui_state.classify_tasks:
+                                gui_state.classify_tasks.append(out_file)
+                    else:
+                        # This case handles non-crashing failures within encode_file
+                        raise RuntimeError("encode_file returned None, indicating a processing failure.")
 
-                # Send a final 100% update for the file that just finished
-                progress_updater(100)
+                    progress_updater(100)
+
+                except Exception as e:
+                    # If any error occurs during the encoding of one file, log it and move on.
+                    log_message(f"Failed to encode '{os.path.basename(file_to_encode)}'. The file may be corrupted or unreadable. Skipping. Error: {e}", "ERROR")
+                    traceback.print_exc() # Also print full traceback to terminal for debugging
+                
+                finally:
+                    # This block will run whether the try succeeded or failed.
+                    # It ensures the progress tracking is always updated correctly.
+                    self.tasks_processed_in_batch += 1
 
             else:
                 # This block runs when the queue is empty
