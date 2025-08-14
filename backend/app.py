@@ -288,9 +288,9 @@ def train_model(name, b_size, lr, epochs, seq_len, method, patience, num_runs, n
     return label_train_page.train_model(name, b_size, lr, epochs, seq_len, method, patience, num_runs, num_trials, optimization_target, custom_weights)
     
 @eel.expose
-def start_classification(name, whitelist):
-    return label_train_page.start_classification(name, whitelist)
-
+def start_classification(model_name, whitelist):
+    return label_train_page.start_classification(model_name, whitelist)
+    
 @eel.expose
 def cancel_training_task(name):
     return workthreads.cancel_training_task(name)

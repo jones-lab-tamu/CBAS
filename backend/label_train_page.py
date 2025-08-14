@@ -1699,7 +1699,7 @@ def delete_dataset(name: str) -> bool:
         traceback.print_exc()
         return False
 
-def start_classification(dataset_name_for_model: str, recordings_whitelist_paths: list[str]):
+def start_classification(model_name: str, recordings_whitelist_paths: list[str]):
     """
     Finds HDF5 files to classify and passes the entire job to the ClassificationThread.
     """
@@ -1707,9 +1707,9 @@ def start_classification(dataset_name_for_model: str, recordings_whitelist_paths
         log_message("Project or classification thread not initialized.", "ERROR")
         return
 
-    model_to_use = gui_state.proj.models.get(dataset_name_for_model)
+    model_to_use = gui_state.proj.models.get(model_name)
     if not model_to_use:
-        log_message(f"Model '{dataset_name_for_model}' not found for inference.", "ERROR")
+        log_message(f"Model '{model_name}' not found for inference.", "ERROR")
         return
 
     h5_files_to_classify = []
@@ -1720,14 +1720,13 @@ def start_classification(dataset_name_for_model: str, recordings_whitelist_paths
                 for filename in filenames:
                     if filename.endswith("_cls.h5"):
                         full_path = os.path.join(dirpath, filename)
-                        output_csv = full_path.replace("_cls.h5", f"_{dataset_name_for_model}_outputs.csv")
+                        output_csv = full_path.replace("_cls.h5", f"_{model_name}_outputs.csv")
                         if not os.path.exists(output_csv):
                             h5_files_to_classify.append(full_path)
 
     if not h5_files_to_classify:
-        log_message(f"No new files found to classify with model '{dataset_name_for_model}'. (Check if they are encoded or already classified).", "WARN")
-        eel.updateTrainingStatusOnUI(dataset_name_for_model, "No new files to process.")()
-        eel.updateDatasetLoadProgress(dataset_name_for_model, -1)() # Hide progress bar
+        log_message(f"No new files found to classify with model '{model_name}'. (Check if they are encoded or already classified).", "WARN")
+        eel.updateInferenceProgress(model_name, 100, "No new files to process.")()
         return
 
     # The single call to hand off the entire job to the background thread.

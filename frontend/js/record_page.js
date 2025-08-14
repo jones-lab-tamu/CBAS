@@ -316,6 +316,7 @@ function resetPreviewButton(cameraName) {
 function routeToRecordPage() { routingInProgress = true; window.location.href = './record.html'; }
 function routeToLabelTrainPage() { routingInProgress = true; window.location.href = './label-train.html'; }
 function routeToVisualizePage() { routingInProgress = true; window.location.href = './visualize.html'; }
+function routeToInferencePage() { window.location.href = './inference.html'; }
 
 function showErrorOnRecordPage(message) {
     const el = document.getElementById("error-message");

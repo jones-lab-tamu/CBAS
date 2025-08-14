@@ -431,35 +431,30 @@ class ClassificationThread(threading.Thread):
     def run(self):
         """The main loop for the thread. It now waits for a signal to start work."""
         while True:
-            # Wait for the new_task_event to be set. This is a non-blocking wait.
-            # The thread will sleep efficiently until start_inferring() is called.
             self.new_task_event.wait()
 
-            # Once woken up, check if a model is actually loaded
             if not self.torch_model or not self.model_meta:
                 log_message("Classification thread woken up but no model is loaded. Resetting.", "WARN")
-                self.new_task_event.clear() # Clear the event and go back to waiting
+                self.new_task_event.clear()
                 continue
 
             total_files = 0
             with gui_state.classify_lock:
                 total_files = len(gui_state.classify_tasks)
 
-            if total_files > 0:
-                eel.updateTrainingStatusOnUI(self.model_meta.name, f"Processing {total_files} files...")()
 
-            # --- Main processing loop for the current batch of tasks ---
+            if total_files > 0:
+                # Use the CORRECT progress update function for the Inference page.
+                eel.updateInferenceProgress(self.model_meta.name, 0, f"Processing {total_files} files...")()
+
+
+            files_processed = 0
             while True:
                 file_to_classify = None
                 with gui_state.classify_lock:
                     if gui_state.classify_tasks:
                         file_to_classify = gui_state.classify_tasks.pop(0)
-                        # --- Update progress here ---
-                        remaining_count = len(gui_state.classify_tasks)
-                        percent_done = ((total_files - remaining_count) / total_files) * 100
-                        eel.updateDatasetLoadProgress(self.model_meta.name, percent_done)()
                     else:
-                        # No more tasks in the queue, exit the processing loop
                         break
 
                 if file_to_classify:
@@ -470,18 +465,25 @@ class ClassificationThread(threading.Thread):
                             cbas.infer_file(file_to_classify, self.torch_model, self.model_meta.name, self.model_meta.config["behaviors"], self.model_meta.config["seq_len"], device=self.device)
                     else:
                         cbas.infer_file(file_to_classify, self.torch_model, self.model_meta.name, self.model_meta.config["behaviors"], self.model_meta.config["seq_len"], device=self.device)
+                    
+                    files_processed += 1
 
-            # --- This block runs after the queue is empty ---
-            if self.model_meta: # Check if a model was actually run
+                    # Update the progress bar after each file is processed.
+                    if total_files > 0:
+                        percent_done = (files_processed / total_files) * 100
+                        message = f"Processing {files_processed} / {total_files}: {os.path.basename(file_to_classify)}"
+                        eel.updateInferenceProgress(self.model_meta.name, percent_done, message)()
+
+
+            if self.model_meta:
                 log_message(f"Inference queue for model '{self.model_meta.name}' is empty. Classification complete.", "INFO")
-                eel.updateTrainingStatusOnUI(self.model_meta.name, "Inference complete.")()
+                # Final 100% update to signal completion.
+                eel.updateInferenceProgress(self.model_meta.name, 100, "Inference complete.")()
 
-                # After finishing, tell the project to re-scan the directories to find the new files.
                 if gui_state.proj:
                     log_message("Reloading project data to discover new classification files.", "INFO")
                     gui_state.proj.reload()
 
-            # Reset state for the next job
             self.torch_model = None
             self.model_meta = None
             self.new_task_event.clear()
@@ -743,7 +745,11 @@ class TrainingThread(threading.Thread):
         """Averages reports from multiple runs and saves the single best model."""
         log_message(f"Averaging results from {len(all_reports)} runs...", "INFO")
 
-        # Access the .val_report attribute from each PerformanceReport object.
+
+        # The model name is now the dataset name with a "_model" suffix.
+        model_name = f"{task.name}_model"
+        model_dir = os.path.join(gui_state.proj.models_dir, model_name)
+
         avg_report = {}
         for b in task.behaviors:
             avg_report[b] = {
@@ -756,7 +762,6 @@ class TrainingThread(threading.Thread):
         log_message(f"Final Averaged F1 Score: {avg_f1:.4f}", "INFO")
         eel.updateTrainingStatusOnUI(task.name, f"Training complete. Averaged F1: {avg_f1:.4f}")()
 
-        model_dir = os.path.join(gui_state.proj.models_dir, task.name)
         os.makedirs(model_dir, exist_ok=True)
         torch.save(best_model.state_dict(), os.path.join(model_dir, "model.pth"))
         with open(os.path.join(model_dir, "config.yaml"), "w") as f:
@@ -765,12 +770,11 @@ class TrainingThread(threading.Thread):
         with open(os.path.join(task.dataset.path, "performance_report.yaml"), 'w') as f:
             yaml.dump(avg_report, f)
         
-        gui_state.proj.models[task.name] = cbas.Model(model_dir)
-        task.dataset.config['model'] = task.name 
+        gui_state.proj.models[model_name] = cbas.Model(model_dir)
+        task.dataset.config['model'] = model_name 
         with open(task.dataset.config_path, 'w') as f:
             yaml.dump(task.dataset.config, f, allow_unicode=True)       
         
-        # Update the metrics on the card with new, correct, averaged data.
         for b in task.behaviors:
             b_metrics = avg_report.get(b, {})
             task.dataset.update_metric(b, "F1 Score", round(b_metrics.get('f1-score', 0), 2))
@@ -779,24 +783,19 @@ class TrainingThread(threading.Thread):
             
         plot_dir = task.dataset.path
         
-        # --- 1. Create a sub-directory for detailed run reports ---
         run_reports_dir = os.path.join(plot_dir, "run_reports")
         os.makedirs(run_reports_dir, exist_ok=True)
         log_message(f"Saving detailed run reports to '{run_reports_dir}'.", "INFO")
 
-        # --- 2. Save the individual confusion matrix for each run ---
         all_cms = []
         for i, report in enumerate(all_reports):
             run_cm = report.val_cm
             if run_cm is not None and run_cm.size > 0:
                 all_cms.append(run_cm)
                 run_cm_path = os.path.join(run_reports_dir, f"confusion_matrix_run_{i+1}.png")
-                # We need to pass the behavior names to the plotting function
                 save_confusion_matrix_plot(run_cm, run_cm_path, labels=task.behaviors)
 
-        # --- 3. Calculate and save the AVERAGED confusion matrix ---
         if all_cms:
-            # Stack matrices and compute the mean along the new axis
             avg_cm = np.mean(np.stack(all_cms), axis=0)
             avg_cm_path = os.path.join(plot_dir, "confusion_matrix_AVERAGE.png")
             
@@ -804,7 +803,6 @@ class TrainingThread(threading.Thread):
             save_confusion_matrix_plot(avg_cm, avg_cm_path, labels=task.behaviors, title=avg_title, values_format='.1f')
             log_message(f"Averaged confusion matrix saved to '{avg_cm_path}'.", "INFO")
 
-        # --- 4. Delete the old "_BEST" confusion matrix to avoid confusion ---
         old_best_cm_path = os.path.join(plot_dir, "confusion_matrix_BEST.png")
         if os.path.exists(old_best_cm_path):
             try:
@@ -812,8 +810,6 @@ class TrainingThread(threading.Thread):
             except OSError as e:
                 log_message(f"Could not remove old confusion matrix file: {e}", "WARN")
 
-
-        # --- Plot 1: Averaged Metrics Across All Runs (Bar Charts) ---
         val_reports_list = [r.val_report for r in all_reports]
         plot_averaged_run_metrics(
             reports=val_reports_list,
@@ -822,7 +818,6 @@ class TrainingThread(threading.Thread):
         )
         log_message(f"Averaged performance plots saved to '{plot_dir}'.", "INFO")
 
-        # --- Plot 2: Epoch-by-Epoch Performance of the Single Best Run (Line Graphs) ---
         if best_run_history:
             for metric in ['f1-score', 'precision', 'recall']:
                 plot_report_list_metric(
@@ -833,7 +828,7 @@ class TrainingThread(threading.Thread):
                 )
             log_message(f"Epoch plots for the best run saved to '{plot_dir}'.", "INFO")
 
-        log_message(f"Training for '{task.name}' complete. Model and averaged reports saved.", "INFO")
+        log_message(f"Training for '{task.name}' complete. Model '{model_name}' and reports saved.", "INFO")
         eel.refreshAllDatasets()()
     
     def get_id(self):

@@ -153,6 +153,7 @@ let currentLabelingMode = 'scratch'; // Default to 'scratch'
 function routeToRecordPage() { routingInProgress = true; window.location.href = './record.html'; }
 function routeToLabelTrainPage() { routingInProgress = true; window.location.href = './label-train.html'; }
 function routeToVisualizePage() { routingInProgress = true; window.location.href = './visualize.html'; }
+function routeToInferencePage() { window.location.href = './inference.html'; }
 
 function getTextColorForBg(hexColor) {
     if (!hexColor) return '#000000';
@@ -1977,7 +1978,6 @@ async function loadInitialDatasetCards(datasets = null) {
                             </div>
                             <div class="card-body d-flex flex-column">`;
 
-                // --- STATE VIEWS (NEW, LABELED, TRAINED) ---
                 htmlContent += `
                     <div class="card-state-view" id="state-view-new-${datasetName}" style="display: ${state === 'new' ? 'flex' : 'none'};"><div class="text-center my-auto"><p class="text-muted">Your dataset is empty.</p><button class="btn btn-primary" onclick="showPreLabelOptions('${datasetName}')"><i class="bi bi-pen-fill me-2"></i>Label First Video</button></div></div>
                     <div class="card-state-view" id="state-view-labeled-${datasetName}" style="display: ${state === 'labeled' ? 'flex' : 'none'}; flex-direction: column;"><div><p class="small text-muted mb-2">You have labeled examples. You can add more, or train your first model.</p><div class="table-responsive" style="max-height: 150px;"><table class="table table-sm table-hover small"><tbody>${behaviors.map(b => `<tr><td>${b}</td><td class="text-end">${(metrics[b] || {})['Train #'] || '0 (0)'}</td><td class="text-end">${(metrics[b] || {})['Test #'] || '0 (0)'}</td></tr>`).join('')}</tbody></table></div></div></div>
@@ -2018,9 +2018,7 @@ async function loadInitialDatasetCards(datasets = null) {
                     htmlContent += `<button class="btn btn-sm btn-success" type="button" onclick="checkAndShowTrainModal('${datasetName}')" data-bs-toggle="tooltip" title="${trainTooltip}">${trainText}</button>`;
                 }
                 
-                if (state === 'trained') {
-                    htmlContent += `<button class="btn btn-sm btn-warning" type="button" onclick="showInferenceModal('${datasetName}')" data-bs-toggle="tooltip" title="Use this trained model to classify new, unlabeled videos.">Infer</button>`;
-                }
+                // The "Infer" button is now removed from here.
                 
                 htmlContent += `</div></div></div>`;
             }

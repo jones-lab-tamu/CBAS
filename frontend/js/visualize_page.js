@@ -25,6 +25,7 @@ let latestVizTaskId = 0; // The ID of the most recent request sent from the fron
 function routeToRecordPage() { routingInProgress = true; window.location.href = './record.html'; }
 function routeToLabelTrainPage() { routingInProgress = true; window.location.href = './label-train.html'; }
 function routeToVisualizePage() { routingInProgress = true; window.location.href = './visualize.html'; }
+function routeToInferencePage() { window.location.href = './inference.html'; }
 
 /**
  * Controls the visibility of UI sections based on the selected visualization mode.
