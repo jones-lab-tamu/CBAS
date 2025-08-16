@@ -6,6 +6,7 @@ which are exposed to the JavaScript frontend via Eel.
 """
 
 import os
+import torch
 
 # Local application imports
 import cbas
@@ -54,33 +55,30 @@ def create_project(parent_directory: str, project_name: str) -> tuple[bool, dict
 def load_project(path: str) -> tuple[bool, dict | None]:
     """
     Loads an existing CBAS project from a given path.
-
-    On successful load, this function also:
-    1.  Queues any unencoded video files for background processing.
-    2.  Starts the file system watcher to monitor for new recordings.
-
-    Args:
-        path (str): The path to the root directory of the CBAS project.
-
-    Returns:
-        A tuple containing a success flag (bool) and a dictionary with project
-        paths, or (False, None) on failure.
     """
     print(f"Attempting to load project from: {path}")
     try:
-        # Instantiate the Project class, which loads all sub-components
         gui_state.proj = cbas.Project(path)
         print(f"Project loaded successfully: {gui_state.proj.path}")
+        
+        # Now that the project is loaded, initialize the global DINO encoder
+        # using the project-specific model identifier.
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        gui_state.dino_encoder = cbas.DinoEncoder(
+            model_identifier=gui_state.proj.encoder_model_identifier,
+            device=device
+        )
+
     except cbas.InvalidProject as e:
         print(f"Error: {e}. Path is not a valid project.")
         return False, None
     except Exception as e:
         print(f"An unexpected error occurred while loading project {path}: {e}")
+        # This will catch the model loading errors from the DinoEncoder
+        eel.showErrorOnStartup(f"Could not load project. A common cause is an error loading the encoder model. Please check the terminal for details.\n\nOriginal Error: {e}")()
         return False, None
     
     # --- Post-Load Tasks ---
-
-    # 1. Queue up existing unencoded files
     if gui_state.proj and gui_state.encode_lock:
         files_to_queue = [
             f for day in gui_state.proj.recordings.values()
@@ -90,14 +88,12 @@ def load_project(path: str) -> tuple[bool, dict | None]:
         
         if files_to_queue:
             with gui_state.encode_lock:
-                # Add only files not already in the queue
                 new_files = [f for f in files_to_queue if f not in gui_state.encode_tasks]
                 gui_state.encode_tasks.extend(new_files)
             print(f"Queued {len(new_files)} unencoded files for processing.")
         else:
             print("No unencoded files found to queue.")
 
-    # 2. Start the recording watcher
     if gui_state.proj:
         try:
             if not gui_state.recording_observer or not gui_state.recording_observer.is_alive():
@@ -108,7 +104,6 @@ def load_project(path: str) -> tuple[bool, dict | None]:
         except Exception as e:
             print(f"Error trying to start recording watcher: {e}")
 
-    # Return project paths to the frontend
     project_info = {
         "project_path": gui_state.proj.path,
         "cameras_dir": gui_state.proj.cameras_dir,

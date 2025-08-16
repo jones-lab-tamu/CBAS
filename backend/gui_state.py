@@ -28,12 +28,10 @@ if TYPE_CHECKING:
 # GLOBAL PROJECT STATE
 # =================================================================
 
-# By enclosing the type names in quotes, we create "forward references".
-# This tells Python's typing system what the type *will be* at runtime,
-# without needing to import the module directly, thus breaking the circular dependency.
 proj: Union['cbas.Project', None] = None
 """The currently loaded cbas.Project instance. None if no project is open."""
 
+dino_encoder: Union['cbas.DinoEncoder', None] = None
 
 # =================================================================
 # LABELING INTERFACE STATE

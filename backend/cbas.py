@@ -189,20 +189,29 @@ def _create_matplotlib_actogram(binned_activity, light_cycle_booleans, tau, bin_
     return fig
 
 class DinoEncoder(nn.Module):
-    def __init__(self, device="cuda"):
+    def __init__(self, model_identifier: str, device="cuda"):
         super().__init__()
         self.device = torch.device(device)
         
-        # Select DinoV2 model
-        
-        model_identifier = "facebook/dinov2-with-registers-base"
-        # model_identifier = "facebook/dinov2-base"
-        print(f"Loading DINOv2 encoder model: {model_identifier}")
-        self.model = transformers.AutoModel.from_pretrained(model_identifier).to(self.device)
-        
-        
+        print(f"Loading DINO encoder model: {model_identifier}")
+        try:
+            self.model = transformers.AutoModel.from_pretrained(model_identifier).to(self.device)
+        except Exception as e:
+            # Provide a helpful error message to the user via the log
+            from workthreads import log_message
+            log_message("--- MODEL LOADING FAILED ---", "ERROR")
+            log_message(f"Could not load the encoder model: '{model_identifier}'.", "ERROR")
+            log_message("If you are trying to use a new or gated model (like DINOv3), please ensure you have:", "ERROR")
+            log_message("1. Logged into the Hugging Face Hub ('huggingface-cli login').", "ERROR")
+            log_message("2. Agreed to the model's terms of use on its Hugging Face page.", "ERROR")
+            log_message("3. Installed the latest version of 'transformers' from source if required.", "ERROR")
+            log_message(f"Original error: {e}", "ERROR")
+            # Re-raise the exception to stop the application startup
+            raise e
+
         self.model.eval()
         for param in self.model.parameters(): param.requires_grad = False
+        
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, S, H, W = x.shape
         x = x.to(self.device).unsqueeze(2).repeat(1, 1, 3, 1, 1).reshape(B * S, 3, H, W)
@@ -597,8 +606,27 @@ class Project:
         self.datasets_dir = os.path.join(path, "data_sets")
         for subdir in [self.cameras_dir, self.recordings_dir, self.models_dir, self.datasets_dir]:
             os.makedirs(subdir, exist_ok=True)
+        
+
+        # Load the project-specific config file if it exists
+        self.project_config = {}
+        config_path = os.path.join(self.path, "cbas_config.yaml")
+        if os.path.exists(config_path):
+            print(f"Found project-specific config file: {config_path}")
+            try:
+                with open(config_path, 'r') as f:
+                    self.project_config = yaml.safe_load(f)
+            except Exception as e:
+                print(f"WARNING: Could not read or parse cbas_config.yaml. Using defaults. Error: {e}")
+        
+        # Determine the encoder model to use for this project
+        self.encoder_model_identifier = self.project_config.get(
+            "encoder_model_identifier", 
+            "facebook/dinov2-with-registers-base" # DINOv2 with registers, the safe default
+        )
+
         self.active_recordings: dict[str, tuple[subprocess.Popen, float, str]] = {}
-        self.current_session_name: str | None = None # <-- ADD THIS LINE
+        self.current_session_name: str | None = None
         self._load_cameras()
         self._load_recordings()
         self._load_models()

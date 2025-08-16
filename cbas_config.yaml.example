@@ -1,0 +1,23 @@
+# =========================================================================
+# CBAS Project-Specific Configuration (EXAMPLE)
+# =========================================================================
+# To use this file, RENAME it to "cbas_config.yaml" and place it in the
+# ROOT directory of the specific CBAS project you want to configure.
+# (In the folder that contains cameras/, data_sets/, models/,
+# and recordings/ subfolders).
+#
+# WARNING: These are advanced, experimental settings. Using a new encoder
+# will require re-encoding all videos in that specific project.
+# =========================================================================
+
+# --- Choose ONE of the following models by uncommenting the line ---
+
+# Experimental, state-of-the-art model. Requires special installation steps.
+# See documentation for details on authenticating and installing transformers from source.
+# encoder_model_identifier: "facebook/dinov3-vitb16-pretrain-lvd1689m"
+
+# Stable default, recommended for most users.
+encoder_model_identifier: "facebook/dinov2-with-registers-base"
+
+# Original legacy model.
+# encoder_model_identifier: "facebook/dinov2-base"

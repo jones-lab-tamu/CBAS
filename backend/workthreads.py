@@ -279,12 +279,9 @@ def augment_dataset_worker(source_dataset_name: str, new_dataset_name: str):
 
 class EncodeThread(threading.Thread):
     """A background thread that continuously processes video encoding tasks serially."""
-    # Accept an encoder object, not a string
-    def __init__(self, encoder_model: cbas.DinoEncoder):
+    def __init__(self):
         super().__init__()
-        # Store the received model and its device
-        self.encoder = encoder_model
-        self.device = self.encoder.device
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.cuda_stream = torch.cuda.Stream(device=self.device) if self.device.type == 'cuda' else None
         self.total_initial_tasks = 0
         self.tasks_processed_in_batch = 0
@@ -292,6 +289,11 @@ class EncodeThread(threading.Thread):
     def run(self):
         """The main loop for the thread. Pulls tasks from the global queue."""
         while True:
+            # Wait until a project and encoder are loaded.
+            if not gui_state.proj or not gui_state.dino_encoder:
+                time.sleep(2) # Wait for a project to be loaded
+                continue
+
             file_to_encode = None
             with gui_state.encode_lock:
                 if gui_state.encode_tasks:
@@ -325,21 +327,20 @@ class EncodeThread(threading.Thread):
 
                     progress_updater(0)
 
+                    # Use the globally stored dino_encoder
+                    encoder_to_use = gui_state.dino_encoder
                     if self.cuda_stream:
                         with torch.cuda.stream(self.cuda_stream):
-                            out_file = cbas.encode_file(self.encoder, file_to_encode, progress_callback=progress_updater)
+                            out_file = cbas.encode_file(encoder_to_use, file_to_encode, progress_callback=progress_updater)
                     else:
-                        out_file = cbas.encode_file(self.encoder, file_to_encode, progress_callback=progress_updater)
+                        out_file = cbas.encode_file(encoder_to_use, file_to_encode, progress_callback=progress_updater)
 
                     if out_file:
                         log_message(f"Finished encoding: {video_basename}", "INFO")
-
-                        # If live inference is on, add the file directly to the classification queue.
                         if gui_state.live_inference_model_name:
                             with gui_state.classify_lock:
                                 gui_state.classify_tasks.append(out_file)
                             log_message(f"Live inference: Queued '{os.path.basename(out_file)}' for classification.", "INFO")
-
                     else:
                         raise RuntimeError("encode_file returned None, indicating a processing failure.")
 
@@ -1043,14 +1044,13 @@ def start_threads():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Initializing worker threads on device: {device}")
 
-    # Initialize the DINO Encoder here
-    print("Loading DINOv2 model for encoding thread...")
-    dino_encoder = cbas.DinoEncoder(device=device)
-    print("DINOv2 model loaded.")
+    # The DinoEncoder will be initialized only after a project is loaded,
+    # using the project-specific settings.
+    gui_state.dino_encoder = None
 
     gui_state.encode_lock = threading.Lock()
-    # Pass the initialized model object to the thread
-    gui_state.encode_thread = EncodeThread(encoder_model=dino_encoder)
+    # The EncodeThread is  initialized without the encoder model.
+    gui_state.encode_thread = EncodeThread()
     gui_state.encode_thread.daemon = True
     gui_state.encode_thread.start()
 
@@ -1064,7 +1064,6 @@ def start_threads():
     gui_state.classify_thread.start()
     
     print("All background threads started.")
-
 
 def start_recording_watcher():
     """Initializes and starts the file system watcher."""

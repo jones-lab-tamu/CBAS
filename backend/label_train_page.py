@@ -224,35 +224,34 @@ def load_dataset_configs() -> dict:
         
     dataset_configs = {}
     for name, dataset in gui_state.proj.datasets.items():
-        # Start with the existing config
         config = dataset.config.copy()
         
-        # --- Determine the state ---
-        # State 1: Has a model been trained from this dataset?
-        model_path = os.path.join(gui_state.proj.models_dir, name, "model.pth")
-
-        # A dataset is only 'trained' if BOTH the model file exists AND its own dataset folder exists.
-        # This prevents orphaned models from causing UI state issues.
-        if os.path.exists(model_path) and os.path.exists(dataset.path):
-            config['state'] = 'trained'
-
+        # The state is determined by finding the associated model.
+        # First, check the config file for a direct link to the model.
+        model_name = config.get("model") # e.g., "cbas_aug_model"
+        
+        # If a model name is linked, check if that model actually exists.
+        if model_name and model_name in gui_state.proj.models:
+            model_path = gui_state.proj.models[model_name].weights_path
+            if os.path.exists(model_path):
+                config['state'] = 'trained'
+            else:
+                # The link is broken, treat as labeled
+                config['state'] = 'labeled'
         else:
-            # State 2: If not trained, does it have any labels?
-            # Check if any behavior in the labels file has at least one entry.
+            # No model is linked, check if it has labels.
             has_labels = False
             if dataset.labels and "labels" in dataset.labels:
                 for behavior_name in dataset.labels["labels"]:
-                    if dataset.labels["labels"][behavior_name]: # Check if the list is not empty
+                    if dataset.labels["labels"][behavior_name]:
                         has_labels = True
                         break
             
             if has_labels:
                 config['state'] = 'labeled'
             else:
-                # State 3: If not trained and no labels, it's new.
                 config['state'] = 'new'
 
-        # Check if a disagreement report exists for this dataset
         disagreement_report_path = os.path.join(dataset.path, "disagreement_report.yaml")
         config['has_disagreements'] = os.path.exists(disagreement_report_path)
 

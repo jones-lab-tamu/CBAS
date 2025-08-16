@@ -1,3 +1,7 @@
+# ==================================
+# CBAS Project-Specific Ignore Rules
+# ==================================
+
 # Python
 venv/
 .venv/
@@ -15,3 +19,8 @@ npm-debug.log
 # OS-generated files
 .DS_Store
 Thumbs.db
+
+# Ignore the project-specific configuration file.
+# This file allows power users to specify an experimental encoder model
+# without affecting the default, stable configuration for regular users.
+cbas_config.yaml

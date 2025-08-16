@@ -135,6 +135,10 @@ This model is not loaded by default. To use it in your project:
 
 The next time you open the "Label/Train" page or click the "Refresh Datasets" button, the `JonesLabModel` card will appear, and it will be available for inference.
 
+### Advanced: Using Experimental Encoder Models
+
+CBAS allows power users to experiment with different feature encoder models on a per-project basis. To do this, find the cbas_config.yaml.example file in the application's root directory. Copy this file into the root of your specific CBAS project folder (i.e., the folder that contains the `cameras/`, `data_sets/`, `models/`, and `recordings/` sbufolders) and rename it to cbas_config.yaml. Edit the file to select the desired model. Note that using experimental models like DINOv3 may require additional installation steps.
+
 --------------
 ## Hardware Requirements
 
