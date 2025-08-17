@@ -54,16 +54,23 @@ def encode_file(encoder: nn.Module, path: str, progress_callback=None) -> str | 
     if video_len == 0:
         print(f"Warning: Video {path} contains no frames. Skipping.")
         return None
+        
     out_file_path = os.path.splitext(path)[0] + "_cls.h5"
     CHUNK_SIZE = 512
+    
     with h5py.File(out_file_path, "w") as h5f:
+
+        # Add the encoder's model identifier as a file-level attribute.
+        # This "stamps" the file with its creator's identity.
+        if gui_state.proj:
+            h5f.attrs['encoder_model_identifier'] = gui_state.proj.encoder_model_identifier
+
         dset = h5f.create_dataset("cls", (0, 768), maxshape=(None, 768), dtype='f4')
         for i in range(0, video_len, CHUNK_SIZE):
             end_index = min(i + CHUNK_SIZE, video_len)
             frames_np = reader.get_batch(range(i, end_index)).asnumpy()
             
             if progress_callback:
-                # Calculate percentage based on the number of frames processed so far
                 percent_complete = (end_index / video_len) * 100
                 progress_callback(percent_complete)         
                        
@@ -73,6 +80,7 @@ def encode_file(encoder: nn.Module, path: str, progress_callback=None) -> str | 
             embeddings_out = embeddings_batch.squeeze(1).cpu().numpy()
             dset.resize(dset.shape[0] + len(embeddings_out), axis=0)
             dset[-len(embeddings_out):] = embeddings_out
+            
     print(f"Successfully encoded {os.path.basename(path)} to {os.path.basename(out_file_path)}")
     return out_file_path
 
