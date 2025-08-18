@@ -929,7 +929,7 @@ def start_labeling_with_preload(dataset_name: str, model_name: str, video_path_t
     try:
         print(f"Request to pre-label '{os.path.basename(video_path_to_label)}' with model '{model_name}'...")
         if gui_state.proj is None: raise ValueError("Project not loaded")
-        
+
         dataset = gui_state.proj.datasets.get(dataset_name)
         model_obj = gui_state.proj.models.get(model_name)
         if not dataset or not model_obj: raise ValueError("Dataset or Model not found.")
@@ -947,11 +947,24 @@ def start_labeling_with_preload(dataset_name: str, model_name: str, video_path_t
             return False
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        torch_model = classifier_head.classifier(
-            in_features=768,
-            out_features=len(model_obj.config["behaviors"]),
-            seq_len=model_obj.config["seq_len"],
-        ).to(device)
+        
+        # Smart Loader Logic for Guided Labeling
+        arch_type = model_obj.config.get('architecture', 'lstm_legacy')
+        log_message(f"Guided Labeling using model with architecture: '{arch_type}'", "INFO")
+
+        if arch_type == 'lstm_with_deltas':
+            torch_model = classifier_head.ClassifierLSTMDeltas(
+                in_features=768,
+                out_features=len(model_obj.config["behaviors"]),
+                seq_len=model_obj.config["seq_len"],
+            ).to(device)
+        else: # Handles legacy models
+            torch_model = classifier_head.ClassifierLegacyLSTM(
+                in_features=768,
+                out_features=len(model_obj.config["behaviors"]),
+                seq_len=model_obj.config["seq_len"],
+            ).to(device)
+           
         torch_model.load_state_dict(torch.load(model_obj.weights_path, map_location=device, weights_only=True))
         torch_model.eval()
 

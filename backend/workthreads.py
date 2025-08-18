@@ -387,27 +387,45 @@ class ClassificationThread(threading.Thread):
         self.cuda_stream = torch.cuda.Stream(device=self.device) if self.device.type == 'cuda' else None
 
     def _load_model(self, model_name):
-        """Helper to load a model and store it in the global state."""
+        """
+        Helper to "smartly" load a model by checking its architecture tag
+        in its config file. Supports both legacy and new temporal delta models.
+        """
         log_message(f"Loading model '{model_name}' for classification...", "INFO")
         try:
             model_obj = gui_state.proj.models.get(model_name)
             if not model_obj:
                 raise ValueError(f"Model '{model_name}' not found in project.")
-            
+
+            arch_type = model_obj.config.get('architecture', 'lstm_legacy')
+            log_message(f"Detected model architecture: '{arch_type}'", "INFO")
+
+            if arch_type == 'lstm_with_deltas':
+                torch_model = classifier_head.ClassifierLSTMDeltas(
+                    in_features=768,
+                    out_features=len(model_obj.config["behaviors"]),
+                    seq_len=model_obj.config["seq_len"],
+                )
+            else:
+                torch_model = classifier_head.ClassifierLegacyLSTM(
+                    in_features=768,
+                    out_features=len(model_obj.config["behaviors"]),
+                    seq_len=model_obj.config["seq_len"],
+                )
+
             weights = torch.load(model_obj.weights_path, map_location=self.device, weights_only=True)
-            torch_model = classifier_head.classifier(
-                in_features=768,
-                out_features=len(model_obj.config["behaviors"]),
-                seq_len=model_obj.config["seq_len"],
-            )
             torch_model.load_state_dict(weights)
-            torch_model.to(self.device).eval()
+            torch_model.to(self.device)
             
+            # Set to eval mode here, once, upon loading
+            torch_model.eval()
+
             gui_state.live_inference_model_object = torch_model
             log_message(f"Model '{model_name}' loaded successfully.", "INFO")
             return model_obj
         except Exception as e:
             log_message(f"Error loading model '{model_name}': {e}", "ERROR")
+            traceback.print_exc()
             gui_state.live_inference_model_object = None
             return None
 
@@ -424,7 +442,7 @@ class ClassificationThread(threading.Thread):
             current_model_name = gui_state.live_inference_model_name
             if current_model_name != last_model_name:
                 if current_model_name:
-                    model_meta = self._load_model(current_model_name)
+                    model_meta = self._load_model(current_model_name) # This helper now calls model.eval()
                     # When a new model is loaded for a manual batch, reset progress
                     with gui_state.classify_lock:
                         manual_inference_total = len(gui_state.classify_tasks)
@@ -443,13 +461,22 @@ class ClassificationThread(threading.Thread):
             if file_to_classify:
                 log_message(f"Classifying: {os.path.basename(file_to_classify)} with model '{model_meta.name}'", "INFO")
                 try:
+                    # Pass all required arguments to infer_file
+                    infer_args = {
+                        "file_path": file_to_classify,
+                        "model": gui_state.live_inference_model_object,
+                        "dataset_name": model_meta.name,
+                        "behaviors": model_meta.config["behaviors"],
+                        "seq_len": model_meta.config["seq_len"],
+                        "device": self.device
+                    }
+                    
                     if self.cuda_stream:
                         with torch.cuda.stream(self.cuda_stream):
-                            cbas.infer_file(file_to_classify, gui_state.live_inference_model_object, model_meta.name, model_meta.config["behaviors"], model_meta.config["seq_len"], device=self.device)
+                            cbas.infer_file(**infer_args)
                     else:
-                        cbas.infer_file(file_to_classify, gui_state.live_inference_model_object, model_meta.name, model_meta.config["behaviors"], model_meta.config["seq_len"], device=self.device)
+                        cbas.infer_file(**infer_args)
                     
-
                     manual_inference_processed += 1
                     if manual_inference_total > 0:
                         percent_done = (manual_inference_processed / manual_inference_total) * 100
@@ -469,6 +496,7 @@ class ClassificationThread(threading.Thread):
 
                 except Exception as e:
                     log_message(f"Failed to classify '{os.path.basename(file_to_classify)}'. Error: {e}", "ERROR")
+                    traceback.print_exc()
             else:
                 time.sleep(1)
 
@@ -730,7 +758,6 @@ class TrainingThread(threading.Thread):
         log_message(f"Averaging results from {len(all_reports)} runs...", "INFO")
 
 
-        # The model name is now the dataset name with a "_model" suffix.
         model_name = f"{task.name}_model"
         model_dir = os.path.join(gui_state.proj.models_dir, model_name)
 
@@ -748,8 +775,15 @@ class TrainingThread(threading.Thread):
 
         os.makedirs(model_dir, exist_ok=True)
         torch.save(best_model.state_dict(), os.path.join(model_dir, "model.pth"))
+        
+        # Tag the new model with its architecture
+        model_config_data = {
+            "seq_len": task.sequence_length,
+            "behaviors": task.behaviors,
+            "architecture": "lstm_with_deltas" # Add the new tag
+        }
         with open(os.path.join(model_dir, "config.yaml"), "w") as f:
-            yaml.dump({"seq_len": task.sequence_length, "behaviors": task.behaviors}, f)
+            yaml.dump(model_config_data, f)
         
         with open(os.path.join(task.dataset.path, "performance_report.yaml"), 'w') as f:
             yaml.dump(avg_report, f)

@@ -85,6 +85,10 @@ def encode_file(encoder: nn.Module, path: str, progress_callback=None) -> str | 
     return out_file_path
 
 def infer_file(file_path: str, model: nn.Module, dataset_name: str, behaviors: list[str], seq_len: int, device=None) -> str | None:
+    """
+    Runs inference on a single HDF5 file and saves the results to a CSV.
+    This version is updated to be compatible with the final model API.
+    """
     output_file = file_path.replace("_cls.h5", f"_{dataset_name}_outputs.csv")
     try:
         with h5py.File(file_path, "r") as f:
@@ -95,11 +99,13 @@ def infer_file(file_path: str, model: nn.Module, dataset_name: str, behaviors: l
     if cls_np.ndim < 2 or cls_np.shape[0] < seq_len:
         print(f"Warning: HDF5 file {file_path} is too short for inference. Skipping.")
         return None
+        
     cls_np_f32 = cls_np.astype(np.float32)
-    cls = torch.from_numpy(cls_np_f32 - np.mean(cls_np_f32, axis=0))
+    cls = torch.from_numpy(cls_np_f32) # No need to mean-center here, model does it
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.to(device).eval()
+    
+    # The calling function (ClassificationThread.run) is responsible for setting model.eval()
     predictions, batch_windows = [], []
     half_seqlen = seq_len // 2
     for i in range(half_seqlen, len(cls) - half_seqlen):
@@ -109,10 +115,14 @@ def infer_file(file_path: str, model: nn.Module, dataset_name: str, behaviors: l
             if not batch_windows: continue
             batch_tensor = torch.stack(batch_windows)
             with torch.no_grad():
-                logits = model.forward_nodrop(batch_tensor.to(device))
+                # Call the unified forward method and unpack correctly
+                # The model is already in eval mode, so dropout is off.
+                logits, _ = model(batch_tensor.to(device))
             predictions.extend(torch.softmax(logits, dim=1).cpu().numpy())
             batch_windows = []
+            
     if not predictions: return None
+    
     padded_predictions = []
     for i in range(len(cls)):
         if i < half_seqlen:
@@ -121,6 +131,7 @@ def infer_file(file_path: str, model: nn.Module, dataset_name: str, behaviors: l
             padded_predictions.append(predictions[-1])
         else:
             padded_predictions.append(predictions[i - half_seqlen])
+            
     pd.DataFrame(np.array(padded_predictions), columns=behaviors).to_csv(output_file, index=False)
     return output_file
 
@@ -972,11 +983,9 @@ class PerformanceReport:
         
 def train_lstm_model(train_set, test_set, seq_len: int, behaviors: list, cancel_event: threading.Event, batch_size=512, lr=1e-4, epochs=10, device=None, class_weights=None, patience=3, progress_callback=None, optimization_target="weighted avg") -> tuple:
     """
-    Trains the LSTM-based classifier head.
-    Accepts an optimization_target to determine which F1 score to use for model selection.
+    Trains the classifier head. This is the final, corrected version compatible
+    with the production-ready ClassifierLSTMDeltas class.
     """
-
-    # Import the log_message function locally to avoid circular import errors.
     from workthreads import log_message
 
     if len(train_set) == 0: return None, None, -1
@@ -985,8 +994,18 @@ def train_lstm_model(train_set, test_set, seq_len: int, behaviors: list, cancel_
     train_loader = torch.utils.data.DataLoader(train_set, batch_size, shuffle=True, collate_fn=collate_fn, num_workers=0, pin_memory=(device.type == 'cuda'), drop_last=False)
     test_loader = torch.utils.data.DataLoader(test_set, batch_size, shuffle=False, collate_fn=collate_fn, num_workers=0) if len(test_set) > 0 else None
     
-    model = classifier_head.classifier(in_features=768, out_features=len(behaviors), seq_len=seq_len).to(device)
-    optimizer = optim.Adam(model.parameters(), lr=lr)
+    model = classifier_head.ClassifierLSTMDeltas(
+        in_features=768,
+        out_features=len(behaviors),
+        seq_len=seq_len
+    ).to(device)
+    
+    log_message(f"Successfully instantiated model architecture: {type(model).__name__}", "INFO")
+    
+    optimizer = optim.Adam([
+        {'params': [p for name, p in model.named_parameters() if name != 'gate']},
+        {'params': model.gate, 'weight_decay': 1e-3}
+    ], lr=lr)
     loss_weights = torch.tensor(class_weights, dtype=torch.float).to(device) if class_weights else None
     criterion = nn.CrossEntropyLoss(weight=loss_weights)
     
@@ -1005,13 +1024,16 @@ def train_lstm_model(train_set, test_set, seq_len: int, behaviors: list, cancel_
         for i, (d, l) in enumerate(train_loader):
             d, l = d.to(device).float(), l.to(device)
             optimizer.zero_grad()
-            lstm_logits, linear_logits, rawm = model(d)
-            inv_loss = criterion(lstm_logits + linear_logits, l)
+            
+            final_logits, rawm = model(d)
+            inv_loss = criterion(final_logits, l)
+            
             rawm_centered = rawm - rawm.mean(dim=0)
             covm_loss = torch.tensor(0.0).to(device)
             if rawm_centered.ndim == 2 and rawm_centered.shape[0] > 1:
                 covm = (rawm_centered.T @ rawm_centered) / (rawm_centered.shape[0] - 1)
                 covm_loss = torch.sum(torch.pow(off_diagonal(covm), 2))
+                
             loss = inv_loss + covm_loss
             loss.backward()
             optimizer.step()
@@ -1021,14 +1043,13 @@ def train_lstm_model(train_set, test_set, seq_len: int, behaviors: list, cancel_
         train_actuals, train_predictions = [], []
         with torch.no_grad():
             for d, l in train_loader:
-                logits = model.forward_nodrop(d.to(device).float())
+                logits, _ = model(d.to(device).float())
                 train_actuals.extend(l.cpu().numpy())
                 train_predictions.extend(logits.argmax(1).cpu().numpy())
         
         if not train_actuals:
             epochs_no_improve += 1 
-            if epochs_no_improve >= patience:
-                break
+            if epochs_no_improve >= patience: break
             continue
 
         train_report = classification_report(train_actuals, train_predictions, target_names=behaviors, output_dict=True, zero_division=0, labels=range(len(behaviors)))
@@ -1039,7 +1060,7 @@ def train_lstm_model(train_set, test_set, seq_len: int, behaviors: list, cancel_
             val_actuals, val_predictions = [], []
             with torch.no_grad():
                 for d, l in test_loader:
-                    logits = model.forward_nodrop(d.to(device).float())
+                    logits, _ = model(d.to(device).float())
                     val_actuals.extend(l.cpu().numpy())
                     val_predictions.extend(logits.argmax(1).cpu().numpy())
             if val_actuals:
@@ -1049,13 +1070,12 @@ def train_lstm_model(train_set, test_set, seq_len: int, behaviors: list, cancel_
         epoch_reports.append(PerformanceReport(train_report, train_cm, val_report, val_cm))
         
         optimization_key = optimization_target
-        
         current_val_f1 = val_report.get(optimization_key, {}).get("f1-score", -1.0)
         current_train_f1 = train_report.get(optimization_key, {}).get("f1-score", -1.0)
-
+        
         if progress_callback:
             progress_callback(f"Epoch {e + 1} Val F1: {current_val_f1:.4f}")
-
+        
         print(f"--- Epoch {e+1} | Train F1: {current_train_f1:.4f} | Val F1: {current_val_f1:.4f} ({optimization_key}) ---")
         
         if current_val_f1 > best_f1:
@@ -1068,13 +1088,16 @@ def train_lstm_model(train_set, test_set, seq_len: int, behaviors: list, cancel_
             log_message(f"Early stopping triggered at epoch {e + 1}.", "INFO")
             break                      
             
-    if best_model_state is None and epochs > 0:
-        if not test_loader:
-             best_model_state = model.state_dict().copy()
-             best_epoch = epochs - 1
+    if best_model_state is None and epochs > 0 and not test_loader:
+        best_model_state = model.state_dict().copy()
+        best_epoch = epochs - 1
              
     if best_model_state:
-        final_model = classifier_head.classifier(in_features=768, out_features=len(behaviors), seq_len=seq_len)
+        final_model = classifier_head.ClassifierLSTMDeltas(
+            in_features=768,
+            out_features=len(behaviors),
+            seq_len=seq_len
+        )
         final_model.load_state_dict(best_model_state)
         return final_model.eval(), epoch_reports, best_epoch
         
