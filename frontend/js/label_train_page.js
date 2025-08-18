@@ -1967,30 +1967,43 @@ async function loadInitialDatasetCards(datasets = null) {
                 const behaviors = config.behaviors || [];
                 const metrics = config.metrics || {};
 
+
+                // Unique IDs are created for the collapse button and the collapsible element
+                const collapseId = `collapse-${datasetName.replace(/[\W_]+/g, '-')}`;
+
                 htmlContent += `
                     <div class="col-md-6 col-lg-4 d-flex">
                         <div class="card shadow h-100 flex-fill">
-                            <div class="card-header bg-dark text-white">
+                            <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
                                 <h5 class="card-title mb-0">
                                     ${datasetName}
                                     ${datasetName.endsWith('_aug') ? '<span class="badge bg-info ms-2">Augmented</span>' : ''}
                                 </h5>
+                                <!-- The new collapse toggle button -->
+                                <button class="btn btn-sm btn-outline-light" type="button" data-bs-toggle="collapse" data-bs-target="#${collapseId}" aria-expanded="true" aria-controls="${collapseId}">
+                                    <i class="bi bi-arrows-angle-contract"></i>
+                                </button>
                             </div>
-                            <div class="card-body d-flex flex-column">`;
+                            <!-- The collapsible card body -->
+                            <div class="collapse show" id="${collapseId}">
+                                <div class="card-body d-flex flex-column">`;
 
+                // --- STATE VIEWS (NEW, LABELED, TRAINED) ---
                 htmlContent += `
                     <div class="card-state-view" id="state-view-new-${datasetName}" style="display: ${state === 'new' ? 'flex' : 'none'};"><div class="text-center my-auto"><p class="text-muted">Your dataset is empty.</p><button class="btn btn-primary" onclick="showPreLabelOptions('${datasetName}')"><i class="bi bi-pen-fill me-2"></i>Label First Video</button></div></div>
                     <div class="card-state-view" id="state-view-labeled-${datasetName}" style="display: ${state === 'labeled' ? 'flex' : 'none'}; flex-direction: column;"><div><p class="small text-muted mb-2">You have labeled examples. You can add more, or train your first model.</p><div class="table-responsive" style="max-height: 150px;"><table class="table table-sm table-hover small"><tbody>${behaviors.map(b => `<tr><td>${b}</td><td class="text-end">${(metrics[b] || {})['Train #'] || '0 (0)'}</td><td class="text-end">${(metrics[b] || {})['Test #'] || '0 (0)'}</td></tr>`).join('')}</tbody></table></div></div></div>
                     <div class="card-state-view" id="state-view-trained-${datasetName}" style="display: ${state === 'trained' ? 'flex' : 'none'}; flex-direction: column; font-size: 0.85rem;"><p class="small text-muted mb-2">Your model is trained. Use it to infer on new videos, or improve it by adding more labels.</p><div class="table-responsive"><table class="table table-sm table-hover small"><thead><tr><th>Behavior</th>${['Train Inst<br><small>(Frames)</small>', 'Test Inst<br><small>(Frames)</small>', 'Precision', 'Recall', 'F1 Score'].map(h => `<th class="text-center">${h}</th>`).join('')}</tr></thead><tbody>${behaviors.map(b => { const bMetrics = metrics[b] || {}; return `<tr><td>${b}</td><td class="text-center">${bMetrics['Train #'] || 'N/A'}</td><td class="text-center">${bMetrics['Test #'] || 'N/A'}</td><td class="text-center">${bMetrics['Precision'] || 'N/A'}</td><td class="text-center">${bMetrics['Recall'] || 'N/A'}</td><td class="text-center">${bMetrics['F1 Score'] || 'N/A'}</td></tr>`; }).join('')}</tbody></table></div></div>`;
 
                 htmlContent += `
-                    <div class="mt-auto">
-                        <div class="progress mt-2" id="progress-container-${datasetName}" style="height: 20px; display: none;"><div class="progress-bar progress-bar-striped progress-bar-animated" id="progress-bar-${datasetName}" role="progressbar" style="width: 0%;"></div></div>
-                        <div id="dataset-status-${datasetName}" class="mt-2 small text-info"></div>
-                    </div>`;
+                                    <div class="mt-auto">
+                                        <div class="progress mt-2" id="progress-container-${datasetName}" style="height: 20px; display: none;"><div class="progress-bar progress-bar-striped progress-bar-animated" id="progress-bar-${datasetName}" role="progressbar" style="width: 0%;"></div></div>
+                                        <div id="dataset-status-${datasetName}" class="mt-2 small text-info"></div>
+                                    </div>
+                                </div> <!-- End of inner card-body -->
+                            </div> <!-- End of collapse div -->`;
+
 
                 htmlContent += `
-                            </div>
                             <div class="card-footer d-flex justify-content-end align-items-center flex-wrap gap-1">
                                 <button class="btn btn-sm btn-outline-secondary me-auto" type="button" onclick="showManageDatasetModal('${datasetName}')" data-bs-toggle="tooltip" title="Manage dataset files and settings"><i class="bi bi-folder2-open"></i> Manage</button>`;
                 
@@ -2017,8 +2030,6 @@ async function loadInitialDatasetCards(datasets = null) {
                     const trainTooltip = state === 'trained' ? 'Re-train the model, potentially with new labels or different settings.' : 'Train a new model using the labels in this dataset.';
                     htmlContent += `<button class="btn btn-sm btn-success" type="button" onclick="checkAndShowTrainModal('${datasetName}')" data-bs-toggle="tooltip" title="${trainTooltip}">${trainText}</button>`;
                 }
-                
-                // The "Infer" button is now removed from here.
                 
                 htmlContent += `</div></div></div>`;
             }
