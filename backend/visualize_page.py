@@ -88,11 +88,9 @@ def _generate_actograms_task(root: str, sub_dir: str, model: str, behaviors: lis
         if not all_csv_paths:
              raise FileNotFoundError("No classification CSVs found for this model/subject.")
         
-        # Sort files numerically to ensure correct temporal order
-        try:
-            all_csv_paths.sort(key=lambda p: int(re.search(r'_(\d+)_' + model, os.path.basename(p)).group(1)))
-        except (AttributeError, ValueError):
-            all_csv_paths.sort()
+        # Sort files by their modification time to ensure correct chronological order,
+        # which is robust to any user-provided file naming convention.
+        all_csv_paths.sort(key=os.path.getmtime)
             
         master_df = pd.concat((pd.read_csv(f) for f in all_csv_paths), ignore_index=True)
         workthreads.log_message(f"Task {task_id}: Master DataFrame created with {len(master_df)} frames.", "INFO")
@@ -164,8 +162,72 @@ def generate_actograms(root: str, sub_dir: str, model: str, behaviors: list, fra
 
 def generate_and_save_data(output_directory: str, root: str, sub_dir: str, model: str, behaviors: list, framerate: str,
                            binsize_from_gui: str, start: str, threshold: str):
-    # This existing function does not need changes.
-    pass # Implementation is omitted for brevity but should be kept as is.
+    """
+    (WORKER) Generates binned actogram data for multiple behaviors and saves it to a single CSV file.
+    """
+    try:
+        workthreads.log_message(f"Starting data export for {len(behaviors)} behavior(s)...", "INFO")
+        
+        # --- 1. Parameter Conversion ---
+        framerate_val = int(framerate)
+        binsize_minutes_val = int(binsize_from_gui)
+        threshold_val = float(threshold) / 100.0
+
+        # --- 2. Load and Concatenate All Relevant Data ---
+        recording = gui_state.proj.recordings.get(root, {}).get(sub_dir)
+        if not recording or not os.path.isdir(recording.path):
+            raise FileNotFoundError(f"Recording path does not exist for {root}/{sub_dir}")
+
+        all_csv_paths = [os.path.join(recording.path, f) for f in os.listdir(recording.path) if f.endswith(f"_{model}_outputs.csv")]
+        if not all_csv_paths:
+            raise FileNotFoundError("No classification CSVs found for this model/subject.")
+        
+        # Use the robust chronological sort by modification time
+        all_csv_paths.sort(key=os.path.getmtime)
+            
+        master_df = pd.concat((pd.read_csv(f) for f in all_csv_paths), ignore_index=True)
+        workthreads.log_message(f"Loaded master DataFrame with {len(master_df)} frames for export.", "INFO")
+
+        # --- 3. Generate Binned Data for Each Behavior ---
+        export_data = {}
+        max_len = 0
+        for behavior_name in behaviors:
+            # Use the cbas.Actogram object to perform the binning calculation
+            actogram = cbas.Actogram(
+                behavior=behavior_name,
+                framerate=framerate_val, start=float(start), binsize_minutes=binsize_minutes_val,
+                threshold=threshold_val, lightcycle="LD", # lightcycle doesn't affect data
+                preloaded_df=master_df, model=model
+            )
+            binned_activity = actogram.binned_activity
+            export_data[behavior_name] = binned_activity
+            if len(binned_activity) > max_len:
+                max_len = len(binned_activity)
+
+        # --- 4. Assemble and Save the Final CSV ---
+        # Pad shorter behaviors with NaN to ensure all columns have the same length
+        for behavior_name in behaviors:
+            current_len = len(export_data[behavior_name])
+            if current_len < max_len:
+                export_data[behavior_name].extend([np.nan] * (max_len - current_len))
+
+        export_df = pd.DataFrame(export_data)
+        
+        # Create a meaningful filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"BinnedData_{sub_dir}_{model}_{timestamp}.csv"
+        output_path = os.path.join(output_directory, filename)
+        
+        export_df.to_csv(output_path, index_label="Bin")
+        workthreads.log_message(f"Successfully exported binned data to: {output_path}", "INFO")
+        
+        # Notify the user of success
+        eel.showErrorOnVisualizePage(f"Successfully exported data to:\n{output_path}")()
+
+    except Exception as e:
+        workthreads.log_message(f"Error during data export: {e}", "ERROR")
+        traceback.print_exc()
+        eel.showErrorOnVisualizePage(f"Failed to export data: {e}")()
 
 
 # =================================================================
