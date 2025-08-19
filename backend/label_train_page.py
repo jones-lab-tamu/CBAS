@@ -582,7 +582,7 @@ def _start_labeling_worker(name: str, video_to_open: str = None, preloaded_insta
         # Step 2: If this is a guided session, process the model's predictions.
         if preloaded_instances:
             labeling_mode = 'review'
-            model_name_for_ui = name 
+            model_name_for_ui = getattr(gui_state, "live_inference_model_name", "") 
 
             gui_state.label_unfiltered_instances = preloaded_instances.copy()
             
@@ -965,7 +965,12 @@ def start_labeling_with_preload(dataset_name: str, model_name: str, video_path_t
                 seq_len=model_obj.config["seq_len"],
             ).to(device)
            
-        torch_model.load_state_dict(torch.load(model_obj.weights_path, map_location=device, weights_only=True))
+        # Portable weight loading
+        try:
+            state = torch.load(model_obj.weights_path, map_location=device, weights_only=True)
+        except TypeError:
+            state = torch.load(model_obj.weights_path, map_location=device)
+        torch_model.load_state_dict(state)
         torch_model.eval()
 
         h5_path = os.path.splitext(video_path_to_label)[0] + "_cls.h5"
@@ -1071,7 +1076,8 @@ def refilter_instances(new_threshold: int, mode: str = 'below'):
     # =========================================================================
 
     # Step 1: Get the two master lists: all raw predictions and all human labels.
-    unfiltered_predictions = gui_state.label_unfiltered_instances
+    unfiltered_predictions = getattr(gui_state, "label_unfiltered_instances", None) or []
+    # If it’s empty, we’ll just rebuild buffer from human labels (already handled later)
     
     # It's crucial to get the human labels from the original dataset object,
     # not the potentially modified session buffer, to ensure a clean slate.
@@ -1491,14 +1497,14 @@ def pop_instance_from_buffer():
 def stage_for_commit():
     """Enters confirmation mode and triggers a re-render showing only staged labels."""
     gui_state.label_confirmation_mode = True
-    eel.setConfirmationModeUI(True)
+    eel.setConfirmationModeUI(True)()
     render_image()
 
 
 def cancel_commit_stage():
     """Exits confirmation mode and triggers a re-render of the normal view."""
     gui_state.label_confirmation_mode = False
-    eel.setConfirmationModeUI(False)
+    eel.setConfirmationModeUI(False)()
     render_image()
 
 # =================================================================
@@ -1678,6 +1684,9 @@ def train_model(name: str, batch_size: str, learning_rate: str, epochs: str, seq
     if not gui_state.training_thread: return
 
     try:
+        # Generate a master seed for this entire training job
+        master_seed = int(time.time()) # A simple time-based seed is sufficient
+    
         task = workthreads.TrainingTask(
             name=name, dataset=gui_state.proj.datasets[name],
             behaviors=gui_state.proj.datasets[name].config.get('behaviors', []),
@@ -1688,6 +1697,7 @@ def train_model(name: str, batch_size: str, learning_rate: str, epochs: str, seq
             num_runs=int(num_runs),
             num_trials=int(num_trials),
             optimization_target=optimization_target,
+            seed=master_seed, # Pass the new seed
             custom_weights=custom_weights
         )
         gui_state.training_thread.queue_task(task)
@@ -1864,6 +1874,7 @@ def fill_colors(canvas_img: np.ndarray, total_frames: int, view_start_frame: int
             b_idx = behaviors.index(inst['label'])
             color_hex = colors[b_idx].lstrip("#")
             bgr_color = tuple(int(color_hex[i:i+2], 16) for i in (4, 2, 0))
+            bgr_outline = tuple(max(0, min(255, int(c * 0.7))) for c in bgr_color)
             
             start_px = int(timeline_w * (inst.get("start", 0) - view_start_frame) / view_duration)
             end_px = int(timeline_w * (inst.get("end", 0) + 1 - view_start_frame) / view_duration)
@@ -1877,9 +1888,12 @@ def fill_colors(canvas_img: np.ndarray, total_frames: int, view_start_frame: int
                     if is_model_prediction and not is_confirmed:
                         # State 1: Unconfirmed Model Prediction (draw semi-transparent)
                         overlay = canvas_img.copy()
+                        # draw the FILLED area on overlay (not on canvas_img)
                         cv2.rectangle(overlay, (start_px, 0), (end_px, 49), bgr_color, -1)
-                        alpha = 0.4  # More transparent
+                        alpha = 0.4 # transparent
                         cv2.addWeighted(overlay, alpha, canvas_img, 1 - alpha, 0, canvas_img)
+                        # optional thin outline on canvas_img afterwards:
+                        cv2.rectangle(canvas_img, (start_px, 0), (end_px, 49), bgr_outline, 1)
                     else:
                         # State 2: Human Label or Confirmed Prediction (draw solid)
                         cv2.rectangle(canvas_img, (start_px, 0), (end_px, 49), bgr_color, -1)
@@ -1888,10 +1902,12 @@ def fill_colors(canvas_img: np.ndarray, total_frames: int, view_start_frame: int
                 else:
                     # State 3: Inactive/Ghosted Behavior in Review Mode (draw very transparent)
                     overlay = canvas_img.copy()
+                    # draw the FILLED area on overlay (not on canvas_img)
                     cv2.rectangle(overlay, (start_px, 0), (end_px, 49), bgr_color, -1)
-                    alpha = 0.2 # <-- Even more transparent
+                    alpha = 0.2  # even more transparent
                     cv2.addWeighted(overlay, alpha, canvas_img, 1 - alpha, 0, canvas_img)
-                    cv2.rectangle(canvas_img, (start_px, 0), (end_px, 49), tuple(c*0.7 for c in bgr_color), 1)
+                    # optional thin outline on canvas_img afterwards:
+                    cv2.rectangle(canvas_img, (start_px, 0), (end_px, 49), bgr_outline, 1)
 
         except (ValueError, IndexError):
             # If the behavior label is not found, draw it in a bright, obvious "error" color.

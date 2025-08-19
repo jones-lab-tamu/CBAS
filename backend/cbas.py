@@ -16,6 +16,8 @@ import random # Other parts of the code still use it
 import yaml
 import re
 import threading
+import json
+from collections import defaultdict
 
 # Third-party imports
 import cv2
@@ -40,6 +42,206 @@ import gui_state
 from subprocess import Popen, PIPE, DEVNULL 
 import sys
 
+CHUNK_SIZE = 512
+
+def _reflect_indices(idx: np.ndarray, N: int) -> np.ndarray:
+    """Helper to safely reflect indices for padding."""
+    if N == 1:
+        return np.zeros_like(idx)
+    # fold into [0, 2N)
+    m = np.mod(idx, 2 * N)
+    m = np.where(m < 0, m + 2 * N, m)
+    # reflect the second half back to [0, N-1]
+    return np.where(m >= N, 2 * N - m - 1, m)
+
+### DATA LOADING ###
+
+# This is the per-worker, thread-local HDF5 file handle cache.
+# It ensures that each DataLoader worker manages its own file handles safely.
+_worker_state = threading.local()
+
+def compute_class_weights_from_instances(
+    train_insts: list,
+    behaviors: list,
+    epsilon: float = 1e-6
+):
+    """
+    Compute per-class weights based on training instance counts.
+    
+    Args:
+        train_insts (list): A list of training instances, where each inst has a
+                            'label' field corresponding to a behavior.
+        behaviors (list): List of all behavior class names (str).
+        epsilon (float): Small constant to assign weight to zero-count classes.
+
+    Returns:
+        torch.Tensor: Normalized weight tensor of shape (num_classes,).
+    """
+    # Count frequency of each behavior
+    counts = {b: 0 for b in behaviors}
+    for inst in train_insts:
+        lbl = inst.get("label")
+        if lbl in counts:
+            counts[lbl] += 1
+
+    # Convert counts to weights (inverse frequency)
+    raw_weights = []
+    for b in behaviors:
+        c = counts[b]
+        if c == 0:
+            raw_weights.append(1.0 / epsilon)   # rare class gets big weight
+        else:
+            raw_weights.append(1.0 / c)
+
+    # Normalize weights so they sum to num_classes
+    weights = np.array(raw_weights, dtype=np.float32)
+    weights = weights / weights.sum() * len(behaviors)
+
+    return torch.tensor(weights, dtype=torch.float32)
+
+def _get_cache():
+    if not hasattr(_worker_state, "cache"):
+        _worker_state.cache = {}   # path -> h5py.File
+        _worker_state.lru = []     # list of paths by recency
+    return _worker_state.cache, _worker_state.lru
+
+def _open_h5(path, max_open=96):
+    cache, lru = _get_cache()
+    f = cache.get(path)
+    if f and f.id.valid:
+        if lru and lru[-1] != path:
+            try: lru.remove(path)
+            except ValueError: pass
+            lru.append(path)
+        return f
+    try:
+        f = h5py.File(path, "r", libver="latest", swmr=True)
+        cache[path] = f
+        lru.append(path)
+        while len(lru) > max_open:
+            old = lru.pop(0)
+            try: cache.pop(old).close()
+            except Exception: pass
+        return f
+    except OSError as e:
+        print(f"WORKER ERROR: Could not open H5 file {path}. OS Error: {e}. Shrinking cache.")
+        while len(lru) > max_open // 2:
+            old = lru.pop(0)
+            try: cache.pop(old).close()
+            except Exception: pass
+        f = h5py.File(path, "r", libver="latest", swmr=True)
+        cache[path] = f
+        lru.append(path)
+        return f
+        
+class WindowDataset(torch.utils.data.Dataset):
+    """
+    Final, robust, and truly lazy PyTorch dataset.
+    Generates pointers and reads data on-the-fly in __getitem__.
+    """
+    def __init__(self, instances, seq_len, project_path, behaviors, h5_key="cls"):
+        self.seq_len = seq_len
+        self.project_path = project_path
+        self.behaviors = behaviors
+        self.h5_key = h5_key
+        self.instances = instances
+        self.frame_map = []
+        self.nframes_cache = {}
+
+        total_frames = 0
+        for inst_idx, inst in enumerate(self.instances):
+            start, end = int(inst["start"]), int(inst["end"])
+            num_inst_frames = (end - start) + 1
+            if num_inst_frames > 0:
+                self.frame_map.append({
+                    "inst_idx": inst_idx,
+                    "start_frame_global": total_frames,
+                    "end_frame_global": total_frames + num_inst_frames - 1,
+                })
+                total_frames += num_inst_frames
+        
+        self.total_length = total_frames
+
+    def __del__(self):
+        """Close any open file handles when the worker is destroyed."""
+        cache, lru = _get_cache()
+        for path, f in list(cache.items()):
+            try:
+                if f and f.id.valid:
+                    f.close()
+            except Exception:
+                pass
+        cache.clear()
+        lru.clear()
+
+    def __len__(self):
+        return self.total_length
+
+    def __getitem__(self, i):
+        if i >= self.total_length:
+            raise IndexError("Index out of range")
+
+        target_map_entry = next((m for m in self.frame_map if m["start_frame_global"] <= i <= m["end_frame_global"]), None)
+        if target_map_entry is None:
+            return torch.zeros((self.seq_len, 768), dtype=torch.float32), torch.tensor(-1, dtype=torch.int64)
+
+        instance = self.instances[target_map_entry["inst_idx"]]
+        center_frame = int(instance["start"]) + (i - target_map_entry["start_frame_global"])
+        
+        try:
+            label_index = self.behaviors.index(instance["label"].strip())
+        except (ValueError, KeyError):
+            return torch.zeros((self.seq_len, 768), dtype=torch.float32), torch.tensor(-1, dtype=torch.int64)
+
+        cls_path = os.path.join(self.project_path, os.path.splitext(instance["video"])[0] + "_cls.h5")
+
+        if cls_path not in self.nframes_cache:
+            if not os.path.exists(cls_path): return torch.zeros((self.seq_len, 768), dtype=torch.float32), torch.tensor(-1, dtype=torch.int64)
+            try:
+                with h5py.File(cls_path, "r") as f:
+                    self.nframes_cache[cls_path] = f[self.h5_key].shape[0]
+            except Exception:
+                return torch.zeros((self.seq_len, 768), dtype=torch.float32), torch.tensor(-1, dtype=torch.int64)
+        
+        nframes = self.nframes_cache[cls_path]
+        
+        if center_frame >= nframes:
+            # Use the worker-local state to ensure we only log this warning once per file per worker.
+            if not hasattr(_worker_state, "warned_files"):
+                _worker_state.warned_files = set()
+            
+            if cls_path not in _worker_state.warned_files:
+                print(f"WORKER WARNING: Stale labels detected for {os.path.basename(cls_path)}. "
+                      f"Labels point to frames beyond the video length ({center_frame} >= {nframes}). "
+                      f"These out-of-bounds labels will be skipped. This may indicate a labeling error or a truncated video file.")
+                _worker_state.warned_files.add(cls_path)
+            
+            return torch.zeros((self.seq_len, 768), dtype=torch.float32), torch.tensor(-1, dtype=torch.int64)
+
+        f = _open_h5(cls_path)
+        dset = f[self.h5_key]
+        
+        half = self.seq_len // 2
+        l, r = center_frame - half, center_frame + half + 1
+        
+        idx_temporal = _reflect_indices(np.arange(l, r), nframes)
+        
+        unique_indices_to_read, inverse_indices = np.unique(idx_temporal, return_inverse=True)
+        
+        data_from_h5 = dset[unique_indices_to_read, :]
+        x = data_from_h5[inverse_indices]
+        
+        x = np.asarray(x, dtype=np.float32)
+        y = np.int64(label_index)
+        return torch.from_numpy(x), torch.tensor(y)
+
+
+def seed_worker(worker_id):
+    """Seeding function for DataLoader workers to ensure reproducibility."""
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
+    
 class InvalidProject(Exception):
     def __init__(self, path):
         super().__init__(f"Path '{path}' is not a valid CBAS project directory.")
@@ -54,37 +256,62 @@ def encode_file(encoder: nn.Module, path: str, progress_callback=None) -> str | 
     if video_len == 0:
         print(f"Warning: Video {path} contains no frames. Skipping.")
         return None
-        
+
     out_file_path = os.path.splitext(path)[0] + "_cls.h5"
-    CHUNK_SIZE = 512
-    
-    with h5py.File(out_file_path, "w") as h5f:
+    tmp_file_path = out_file_path + ".tmp"  # Write to a temporary file first
 
-        # Add the encoder's model identifier as a file-level attribute.
-        # This "stamps" the file with its creator's identity.
-        if gui_state.proj:
-            h5f.attrs['encoder_model_identifier'] = gui_state.proj.encoder_model_identifier
-
-        dset = h5f.create_dataset("cls", (0, 768), maxshape=(None, 768), dtype='f4')
-        for i in range(0, video_len, CHUNK_SIZE):
-            end_index = min(i + CHUNK_SIZE, video_len)
-            frames_np = reader.get_batch(range(i, end_index)).asnumpy()
+    try:
+        with h5py.File(tmp_file_path, "w") as h5f:
+            if gui_state.proj:
+                h5f.attrs['encoder_model_identifier'] = gui_state.proj.encoder_model_identifier
+                h5f.attrs['schema_version'] = "1.0"
+                # Add video-specific metadata if needed
             
-            if progress_callback:
-                percent_complete = (end_index / video_len) * 100
-                progress_callback(percent_complete)         
-                       
-            frames_tensor = torch.from_numpy(frames_np[:, :, :, 1] / 255.0).float()
-            with torch.no_grad(), torch.amp.autocast(device_type=encoder.device.type if encoder.device.type != 'mps' else 'cpu'):
-                embeddings_batch = encoder(frames_tensor.unsqueeze(1).to(encoder.device))
-            embeddings_out = embeddings_batch.squeeze(1).cpu().numpy()
-            dset.resize(dset.shape[0] + len(embeddings_out), axis=0)
-            dset[-len(embeddings_out):] = embeddings_out
-            
-    print(f"Successfully encoded {os.path.basename(path)} to {os.path.basename(out_file_path)}")
-    return out_file_path
+            dset = h5f.create_dataset(
+                "cls", shape=(0, 768), maxshape=(None, 768),
+                dtype='f2', chunks=(8192, 768)
+            )
 
-def infer_file(file_path: str, model: nn.Module, dataset_name: str, behaviors: list[str], seq_len: int, device=None) -> str | None:
+            for i in range(0, video_len, CHUNK_SIZE):
+                end_index = min(i + CHUNK_SIZE, video_len)
+                frames_np = reader.get_batch(range(i, end_index)).asnumpy()
+
+                if progress_callback:
+                    percent_complete = (end_index / video_len) * 100
+                    progress_callback(percent_complete)
+
+                frames_tensor = torch.from_numpy(frames_np[:, :, :, 1] / 255.0).float()
+
+                device_type = "cuda" if encoder.device.type == "cuda" else "cpu"
+                with torch.no_grad(), torch.autocast(device_type=device_type, enabled=(device_type == "cuda")):
+                    embeddings_batch = encoder(frames_tensor.unsqueeze(1).to(encoder.device))
+                    embeddings_out = embeddings_batch.squeeze(1).cpu().numpy()
+                    dset.resize(dset.shape[0] + len(embeddings_out), axis=0)
+                    dset[-len(embeddings_out):] = embeddings_out
+
+                h5f.flush()  # Ensure all data is written
+
+        # <-- at this point h5f is closed
+        os.replace(tmp_file_path, out_file_path)
+
+        print(f"Successfully encoded {os.path.basename(path)} to {os.path.basename(out_file_path)}")
+        return out_file_path
+
+    except Exception as e:
+        print(f"ERROR during encoding for {path}: {e}")
+        if os.path.exists(tmp_file_path):
+            os.remove(tmp_file_path)
+        return None
+
+def infer_file(
+    file_path: str,
+    model: nn.Module,
+    dataset_name: str,
+    behaviors: list[str],
+    seq_len: int,
+    device=None,
+    temperature=1.0,
+) -> str | None:
     """
     Runs inference on a single HDF5 file and saves the results to a CSV.
     This version is updated to be compatible with the final model API.
@@ -96,33 +323,40 @@ def infer_file(file_path: str, model: nn.Module, dataset_name: str, behaviors: l
     except Exception as e:
         print(f"Error reading HDF5 file {file_path}: {e}")
         return None
+
     if cls_np.ndim < 2 or cls_np.shape[0] < seq_len:
         print(f"Warning: HDF5 file {file_path} is too short for inference. Skipping.")
         return None
-        
+
     cls_np_f32 = cls_np.astype(np.float32)
-    cls = torch.from_numpy(cls_np_f32) # No need to mean-center here, model does it
+    cls = torch.from_numpy(cls_np_f32)  # No need to mean-center here, model does it
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
+
+    # Ensure model is on same device as input tensors
+    param = next(model.parameters(), None)
+    if param is not None and param.device != device:
+        model = model.to(device)
+
     # The calling function (ClassificationThread.run) is responsible for setting model.eval()
     predictions, batch_windows = [], []
     half_seqlen = seq_len // 2
     for i in range(half_seqlen, len(cls) - half_seqlen):
-        window = cls[i - half_seqlen: i + half_seqlen + 1]
+        window = cls[i - half_seqlen : i + half_seqlen + 1]
         batch_windows.append(window)
         if len(batch_windows) >= 4096 or i == len(cls) - half_seqlen - 1:
-            if not batch_windows: continue
+            if not batch_windows:
+                continue
             batch_tensor = torch.stack(batch_windows)
             with torch.no_grad():
-                # Call the unified forward method and unpack correctly
-                # The model is already in eval mode, so dropout is off.
                 logits, _ = model(batch_tensor.to(device))
-            predictions.extend(torch.softmax(logits, dim=1).cpu().numpy())
+                scaled_logits = logits / max(1e-3, temperature)
+                predictions.extend(torch.softmax(scaled_logits, dim=1).cpu().numpy())
             batch_windows = []
-            
-    if not predictions: return None
-    
+
+    if not predictions:
+        return None
+
     padded_predictions = []
     for i in range(len(cls)):
         if i < half_seqlen:
@@ -131,7 +365,7 @@ def infer_file(file_path: str, model: nn.Module, dataset_name: str, behaviors: l
             padded_predictions.append(predictions[-1])
         else:
             padded_predictions.append(predictions[i - half_seqlen])
-            
+
     pd.DataFrame(np.array(padded_predictions), columns=behaviors).to_csv(output_file, index=False)
     return output_file
 
@@ -166,7 +400,7 @@ def _create_matplotlib_actogram(binned_activity, light_cycle_booleans, tau, bin_
         pattern = [1]*int(12*60/bin_size_minutes) + [0]*int(12*60/bin_size_minutes)
         cmap = LinearSegmentedColormap.from_list("light_cmap", [dark_grey, light_grey])
     else: # LD
-        pattern = np.repeat([b for b in light_cycle_booleans], (60 / bin_size_minutes))
+        pattern = np.repeat([int(b) for b in light_cycle_booleans], int(60 // bin_size_minutes))
         cmap = LinearSegmentedColormap.from_list("light_cmap", [dark_grey, light_yellow])
     double_plotted_light = np.array([np.concatenate([pattern, pattern]) for _ in range(num_days)])
     if base_color:
@@ -762,7 +996,10 @@ class Project:
         print(f"Deleting dataset '{name}' and its associated model...")
         
         dataset_path = self.datasets[name].path
-        model_path = os.path.join(self.models_dir, name)
+        model_paths = [
+            os.path.join(self.models_dir, name),
+            os.path.join(self.models_dir, f"{name}_model"),
+        ]
 
         try:
             # Delete the dataset folder
@@ -771,9 +1008,10 @@ class Project:
                 print(f"  - Successfully removed dataset folder: {dataset_path}")
 
             # Delete the model folder if it exists
-            if os.path.isdir(model_path):
-                shutil.rmtree(model_path)
-                print(f"  - Successfully removed model folder: {model_path}")
+            for mp in model_paths:
+                if os.path.isdir(mp):
+                    shutil.rmtree(mp)
+                    print(f"  - Successfully removed model folder: {mp}")
 
             # Remove from the in-memory dictionaries
             self.datasets.pop(name, None)
@@ -786,65 +1024,7 @@ class Project:
             # As a safety measure, reload the project state from disk to ensure consistency
             self.reload()
             return False
-    
-    def convert_instances(self, project_root_path: str, insts: list, seq_len: int, behaviors: list, progress_callback=None) -> tuple:
-        seqs, labels = [], []
-        half_seqlen = seq_len // 2
-        instances_by_video = {}
-        for inst in insts:
-            video_path = inst.get("video")
-            if video_path: instances_by_video.setdefault(video_path, []).append(inst)
-        total_videos = len(instances_by_video)
-        for i, (relative_video_path, video_instances) in enumerate(instances_by_video.items()):
-            if progress_callback: progress_callback((i + 1) / total_videos * 100)
-            absolute_video_path = os.path.join(project_root_path, relative_video_path)
-            cls_path = os.path.splitext(absolute_video_path)[0] + "_cls.h5"
-            if not os.path.exists(cls_path):
-                print(f"Warning: H5 file not found, skipping instances for {relative_video_path}")
-                continue
-            try:
-                with h5py.File(cls_path, "r") as f: cls_arr = f["cls"][:]
-            except Exception as e:
-                print(f"Warning: Could not read H5 file {cls_path}: {e}")
-                continue
-            if cls_arr.ndim < 2 or cls_arr.shape[0] < seq_len: continue
-            cls_centered = cls_arr - np.mean(cls_arr, axis=0)
-            for inst in video_instances:
-                start = int(inst.get("start", -1))
-                end = int(inst.get("end", -1))
-                if start == -1 or end == -1: continue
-                
-                # Iterates over every single labeled frame, from the
-                # true start to the true end of the instance.
-                valid_start = start
-                valid_end = end
-
-                # The loop includes the final frame by using "+ 1".
-                for frame_idx in range(valid_start, valid_end + 1):
-                    window_start = frame_idx - half_seqlen
-                    window_end = frame_idx + half_seqlen + 1
-                    
-                    # Elegant safety checks prevent out-of-bounds errors at the absolute
-                    # beginning or end of a video file, discarding the minimum data.
-                    if window_start < 0: continue
-                    if window_end > cls_centered.shape[0]: continue
-                                        
-                    window = cls_centered[window_start:window_end]
-                    if window.shape[0] != seq_len: continue
-                    
-                    try:
-                        label_index = behaviors.index(inst["label"].strip())
-                        seqs.append(torch.from_numpy(window).float())
-                        labels.append(torch.tensor(label_index).long())
-                    except ValueError:
-                        print(f"WARNING: The label '{inst['label']}' in video '{inst['video']}' is not in the master behavior list. This instance will be SKIPPED. Please check for typos in your labels.yaml file.")
-
-        if not seqs: return [], []
-        shuffled_pairs = list(zip(seqs, labels))
-        random.shuffle(shuffled_pairs)
-        seqs, labels = zip(*shuffled_pairs)
-        return list(seqs), list(labels)
-        
+           
     def _load_dataset_common(self, name, split, seed):
         """
         Internal method to load and split datasets with heavy debugging.
@@ -937,33 +1117,27 @@ class Project:
 
         return train_insts, test_insts, behaviors
         
-    def load_dataset(self, name: str, seed: int = 42, split: float = 0.2, seq_len: int = 15, progress_callback=None) -> tuple:
+    def load_dataset(self, name: str, seed: int = 42, split: float = 0.2, seq_len: int = 31, progress_callback=None) -> tuple:
         train_insts, test_insts, behaviors = self._load_dataset_common(name, split, seed)
         if train_insts is None: return None, None, None, None
         
-        def train_prog(p): progress_callback(p*0.5) if progress_callback else None
-        def test_prog(p): progress_callback(50 + p*0.5) if progress_callback else None
+        # Pass raw instances directly to the lazy dataset
+        train_dataset = WindowDataset(train_insts, seq_len, self.path, behaviors)
+        test_dataset = WindowDataset(test_insts, seq_len, self.path, behaviors)
         
-        train_seqs, train_labels = self.convert_instances(self.path, train_insts, seq_len, behaviors, train_prog)
-        test_seqs, test_labels = self.convert_instances(self.path, test_insts, seq_len, behaviors, test_prog)
+        return train_dataset, test_dataset, train_insts, test_insts
         
-        return BalancedDataset(train_seqs, train_labels, behaviors), StandardDataset(test_seqs, test_labels), train_insts, test_insts
-        
-    def load_dataset_for_weighted_loss(self, name, seed=42, split=0.2, seq_len=15, progress_callback=None) -> tuple:
+    def load_dataset_for_weighted_loss(self, name, seed=42, split=0.2, seq_len=31, progress_callback=None):
         train_insts, test_insts, behaviors = self._load_dataset_common(name, split, seed)
-        if train_insts is None: return None, None, None, None, None
-        
-        def train_prog(p): progress_callback(p*0.5) if progress_callback else None
-        def test_prog(p): progress_callback(50 + p*0.5) if progress_callback else None
-        
-        train_seqs, train_labels = self.convert_instances(self.path, train_insts, seq_len, behaviors, train_prog)
-        if not train_labels: return None, None, None, None, None
-        
-        class_counts = np.bincount([lbl.item() for lbl in train_labels], minlength=len(behaviors))
-        weights = [sum(class_counts) / (len(behaviors) * c) if c > 0 else 0 for c in class_counts]
-        test_seqs, test_labels = self.convert_instances(self.path, test_insts, seq_len, behaviors, test_prog)
-        
-        return StandardDataset(train_seqs, train_labels), StandardDataset(test_seqs, test_labels), weights, train_insts, test_insts
+        if train_insts is None:
+            return None, None, None, None, None
+
+        train_dataset = WindowDataset(train_insts, seq_len, self.path, behaviors)
+        test_dataset = WindowDataset(test_insts, seq_len, self.path, behaviors)
+
+        weights = compute_class_weights_from_instances(train_insts, behaviors)
+
+        return train_dataset, test_dataset, weights, train_insts, test_insts
 
 def collate_fn(batch):
     dcls, lbls = zip(*batch)
@@ -981,124 +1155,192 @@ class PerformanceReport:
         self.val_report = val_report
         self.val_cm = val_cm
         
-def train_lstm_model(train_set, test_set, seq_len: int, behaviors: list, cancel_event: threading.Event, batch_size=512, lr=1e-4, epochs=10, device=None, class_weights=None, patience=3, progress_callback=None, optimization_target="weighted avg") -> tuple:
-    """
-    Trains the classifier head. This is the final, corrected version compatible
-    with the production-ready ClassifierLSTMDeltas class.
-    """
+def train_lstm_model(train_set, test_set, seq_len: int, behaviors: list, cancel_event: threading.Event,batch_size=512, lr=1e-4, epochs=10, device=None, class_weights=None,patience=3, progress_callback=None, optimization_target="weighted avg", seed: int = 42) -> tuple:
     from workthreads import log_message
 
-    if len(train_set) == 0: return None, None, -1
-    if device is None: device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # Initialize loaders as None 
+    train_loader, test_loader = None, None
 
-    train_loader = torch.utils.data.DataLoader(train_set, batch_size, shuffle=True, collate_fn=collate_fn, num_workers=0, pin_memory=(device.type == 'cuda'), drop_last=False)
-    test_loader = torch.utils.data.DataLoader(test_set, batch_size, shuffle=False, collate_fn=collate_fn, num_workers=0) if len(test_set) > 0 else None
-    
-    model = classifier_head.ClassifierLSTMDeltas(
-        in_features=768,
-        out_features=len(behaviors),
-        seq_len=seq_len
-    ).to(device)
-    
-    log_message(f"Successfully instantiated model architecture: {type(model).__name__}", "INFO")
-    
-    optimizer = optim.Adam([
-        {'params': [p for name, p in model.named_parameters() if name != 'gate']},
-        {'params': model.gate, 'weight_decay': 1e-3}
-    ], lr=lr)
-    loss_weights = torch.tensor(class_weights, dtype=torch.float).to(device) if class_weights else None
-    criterion = nn.CrossEntropyLoss(weight=loss_weights)
-    
-    best_f1, best_model_state, best_epoch = -1.0, None, -1
-    epoch_reports, epochs_no_improve = [], 0
-    
-    for e in range(epochs):
-        if cancel_event.is_set():
-            print(f"Cancellation detected within training loop at epoch {e+1}.")
-            return None, epoch_reports, best_epoch
-        
-        if progress_callback:
-            progress_callback(f"Training Epoch {e + 1}/{epochs}...")
-        
-        model.train()
-        for i, (d, l) in enumerate(train_loader):
-            d, l = d.to(device).float(), l.to(device)
-            optimizer.zero_grad()
-            
-            final_logits, rawm = model(d)
-            inv_loss = criterion(final_logits, l)
-            
-            rawm_centered = rawm - rawm.mean(dim=0)
-            covm_loss = torch.tensor(0.0).to(device)
-            if rawm_centered.ndim == 2 and rawm_centered.shape[0] > 1:
-                covm = (rawm_centered.T @ rawm_centered) / (rawm_centered.shape[0] - 1)
-                covm_loss = torch.sum(torch.pow(off_diagonal(covm), 2))
-                
-            loss = inv_loss + covm_loss
-            loss.backward()
-            optimizer.step()
-            if i % 50 == 0: print(f"[Epoch {e+1}/{epochs} Batch {i}/{len(train_loader)}] Loss: {loss.item():.4f}")
-            
-        model.eval()
-        train_actuals, train_predictions = [], []
-        with torch.no_grad():
-            for d, l in train_loader:
-                logits, _ = model(d.to(device).float())
-                train_actuals.extend(l.cpu().numpy())
-                train_predictions.extend(logits.argmax(1).cpu().numpy())
-        
-        if not train_actuals:
-            epochs_no_improve += 1 
-            if epochs_no_improve >= patience: break
-            continue
+    try:
 
-        train_report = classification_report(train_actuals, train_predictions, target_names=behaviors, output_dict=True, zero_division=0, labels=range(len(behaviors)))
-        train_cm = confusion_matrix(train_actuals, train_predictions, labels=range(len(behaviors)))
-        val_report, val_cm = {}, np.array([])
-        
-        if test_loader:
-            val_actuals, val_predictions = [], []
-            with torch.no_grad():
-                for d, l in test_loader:
-                    logits, _ = model(d.to(device).float())
-                    val_actuals.extend(l.cpu().numpy())
-                    val_predictions.extend(logits.argmax(1).cpu().numpy())
-            if val_actuals:
-                val_report = classification_report(val_actuals, val_predictions, target_names=behaviors, output_dict=True, zero_division=0, labels=range(len(behaviors)))
-                val_cm = confusion_matrix(val_actuals, val_predictions, labels=range(len(behaviors)))
-                
-        epoch_reports.append(PerformanceReport(train_report, train_cm, val_report, val_cm))
-        
-        optimization_key = optimization_target
-        current_val_f1 = val_report.get(optimization_key, {}).get("f1-score", -1.0)
-        current_train_f1 = train_report.get(optimization_key, {}).get("f1-score", -1.0)
-        
-        if progress_callback:
-            progress_callback(f"Epoch {e + 1} Val F1: {current_val_f1:.4f}")
-        
-        print(f"--- Epoch {e+1} | Train F1: {current_train_f1:.4f} | Val F1: {current_val_f1:.4f} ({optimization_key}) ---")
-        
-        if current_val_f1 > best_f1:
-            best_f1, best_epoch, best_model_state = current_val_f1, e, model.state_dict().copy()
-            epochs_no_improve = 0
+        if len(train_set) == 0: return None, None, -1
+        if device is None: device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        # --- 1. REPRODUCIBILITY ---
+        torch.manual_seed(seed)
+        np.random.seed(seed)
+        random.seed(seed)
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True
+        g = torch.Generator()
+        g.manual_seed(seed)
+
+        # --- 2. DATALOADER SETUP ---
+        if device.type == 'cpu':
+            cores = os.cpu_count() or 2
+            num_workers = max(1, min(4, cores // 2))
         else:
-            epochs_no_improve += 1
-            
-        if test_loader and epochs_no_improve >= patience:
-            log_message(f"Early stopping triggered at epoch {e + 1}.", "INFO")
-            break                      
-            
-    if best_model_state is None and epochs > 0 and not test_loader:
-        best_model_state = model.state_dict().copy()
-        best_epoch = epochs - 1
-             
-    if best_model_state:
-        final_model = classifier_head.ClassifierLSTMDeltas(
-            in_features=768,
-            out_features=len(behaviors),
-            seq_len=seq_len
+            num_workers = 8
+
+        dl_common = dict(
+            batch_size=batch_size,
+            pin_memory=(device.type == 'cuda'),
+            persistent_workers=(num_workers > 0),
+            num_workers=num_workers,
+            worker_init_fn=seed_worker,
         )
-        final_model.load_state_dict(best_model_state)
-        return final_model.eval(), epoch_reports, best_epoch
+
+        train_kwargs = dict(**dl_common, shuffle=True, generator=g)
+        test_kwargs  = dict(**dl_common, shuffle=False)
+
+        if num_workers > 0:
+            train_kwargs["prefetch_factor"] = 4
+            test_kwargs["prefetch_factor"]  = 2
+
+        train_loader = torch.utils.data.DataLoader(train_set, **train_kwargs)
+        test_loader  = (torch.utils.data.DataLoader(test_set, **test_kwargs)
+                        if len(test_set) > 0 else None)
         
-    return None, None, -1
+        # --- 3. MODEL & OPTIMIZER ---
+        model = classifier_head.ClassifierLSTMDeltas(
+            in_features=768, out_features=len(behaviors), seq_len=seq_len
+        ).to(device)
+
+        # Optional: get a handle to the special param (if it exists)
+        gate_param = getattr(model, "gate", None)
+
+        # Build param groups by identity (safer than name matching)
+        base_params = []
+        for n, p in model.named_parameters():
+            if not p.requires_grad:
+                continue
+            if gate_param is not None and id(p) == id(gate_param):
+                continue
+            base_params.append(p)
+
+        param_groups = []
+        if base_params:
+            param_groups.append({"params": base_params, "weight_decay": 1e-4})
+        if gate_param is not None:
+            param_groups.append({"params": [gate_param], "weight_decay": 1e-3})
+
+        optimizer = torch.optim.AdamW(param_groups, lr=lr)
+       
+        loss_weights = torch.tensor(class_weights, dtype=torch.float).to(device) if class_weights else None
+        
+        criterion = nn.CrossEntropyLoss(weight=loss_weights)
+        
+        best_f1, best_model_state, best_epoch = -1.0, None, -1
+        epoch_reports, epochs_no_improve = [], 0
+        
+        for e in range(epochs):
+            if cancel_event.is_set(): return None, epoch_reports, best_epoch
+            if progress_callback: progress_callback(f"Training Epoch {e + 1}/{epochs}...")
+            
+            model.train()
+            for i, (d, l) in enumerate(train_loader):
+                valid_mask = l != -1
+                if not valid_mask.any(): continue
+                d, l = d[valid_mask], l[valid_mask]
+                
+                d = d.to(device, non_blocking=True)
+                l = l.to(device, non_blocking=True)
+                optimizer.zero_grad()
+                
+                final_logits, rawm = model(d)
+                inv_loss = criterion(final_logits, l)
+                
+                rawm_centered = rawm - rawm.mean(dim=0)
+                covm_loss = torch.tensor(0.0).to(device)
+                if rawm_centered.ndim == 2 and rawm_centered.shape[0] > 1:
+                    covm = (rawm_centered.T @ rawm_centered) / (rawm_centered.shape[0] - 1)
+                    covm_loss = torch.sum(torch.pow(off_diagonal(covm), 2))
+                    
+                loss = inv_loss + covm_loss
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                optimizer.step()
+                
+                if i % 50 == 0:
+                    print(f"[Epoch {e+1}/{epochs} Batch {i}/{len(train_loader)}] Loss: {loss.item():.4f}")
+                
+            model.eval()
+            train_actuals, train_predictions = [], []
+            with torch.no_grad():
+                for d, l in train_loader:
+                    valid_mask = l != -1
+                    if not valid_mask.any():
+                        continue
+                    d = d[valid_mask]
+                    l = l[valid_mask]
+                    logits, _ = model(d.to(device).float())
+                    train_actuals.extend(l.cpu().numpy())
+                    train_predictions.extend(logits.argmax(1).cpu().numpy())
+            
+            if not train_actuals:
+                epochs_no_improve += 1 
+                if epochs_no_improve >= patience: break
+                continue
+
+            train_report = classification_report(train_actuals, train_predictions, target_names=behaviors, output_dict=True, zero_division=0, labels=range(len(behaviors)))
+            train_cm = confusion_matrix(train_actuals, train_predictions, labels=range(len(behaviors)))
+            val_report, val_cm = {}, np.array([])
+            
+            if test_loader:
+                val_actuals, val_predictions = [], []
+                with torch.no_grad():
+                    for d, l in test_loader:
+                        valid_mask = l != -1
+                        if not valid_mask.any():
+                            continue
+                        d = d[valid_mask]
+                        l = l[valid_mask]
+                        logits, _ = model(d.to(device).float())
+                        val_actuals.extend(l.cpu().numpy())
+                        val_predictions.extend(logits.argmax(1).cpu().numpy())
+                if val_actuals:
+                    val_report = classification_report(val_actuals, val_predictions, target_names=behaviors, output_dict=True, zero_division=0, labels=range(len(behaviors)))
+                    val_cm = confusion_matrix(val_actuals, val_predictions, labels=range(len(behaviors)))
+                    
+            epoch_reports.append(PerformanceReport(train_report, train_cm, val_report, val_cm))
+            
+            optimization_key = optimization_target
+            current_val_f1 = val_report.get(optimization_key, {}).get("f1-score", -1.0)
+            current_train_f1 = train_report.get(optimization_key, {}).get("f1-score", -1.0)
+            
+            if progress_callback:
+                progress_callback(f"Epoch {e + 1} Val F1: {current_val_f1:.4f}")
+            
+            print(f"--- Epoch {e+1} | Train F1: {current_train_f1:.4f} | Val F1: {current_val_f1:.4f} ({optimization_key}) ---")
+            
+            if current_val_f1 > best_f1:
+                best_f1, best_epoch, best_model_state = current_val_f1, e, model.state_dict().copy()
+                epochs_no_improve = 0
+            else:
+                epochs_no_improve += 1
+                
+            if test_loader and epochs_no_improve >= patience:
+                log_message(f"Early stopping triggered at epoch {e + 1}.", "INFO")
+                break                      
+                
+        if best_model_state is None and epochs > 0 and not test_loader:
+            best_model_state = model.state_dict().copy()
+            best_epoch = epochs - 1
+                 
+        if best_model_state:
+            final_model = classifier_head.ClassifierLSTMDeltas(
+                in_features=768, out_features=len(behaviors), seq_len=seq_len
+            )
+            final_model.load_state_dict(best_model_state)
+            final_model = final_model.to(device).eval()   # ensure device alignment
+            return final_model.eval(), epoch_reports, best_epoch
+            
+        return None, None, -1
+        
+    finally:
+        # This block will execute no matter how the function exits (return, error, etc.)
+        log_message("Training function finished. Cleaning up DataLoader workers...", "INFO")
+        if train_loader:
+            del train_loader
+        if test_loader:
+            del test_loader

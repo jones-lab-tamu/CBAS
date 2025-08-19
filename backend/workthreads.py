@@ -11,6 +11,7 @@ tasks, ensuring the main application and GUI remain responsive. This includes:
 """
 
 # Standard library imports
+from __future__ import annotations # For forward reference in type hints
 import threading
 import time
 import ctypes
@@ -19,11 +20,12 @@ import os
 import yaml
 import re
 import traceback
+import json
 
 # Third-party imports
 import torch
 import matplotlib
-matplotlib.use("Agg")  # Set backend for non-GUI thread compatibility
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from sklearn.metrics import ConfusionMatrixDisplay
 from watchdog.observers import Observer
@@ -37,7 +39,6 @@ import cbas
 import gui_state
 import classifier_head
 import subprocess
-import shutil
 
 _last_restart_times = {}
 file_watcher_handler = None
@@ -68,6 +69,40 @@ def log_message(message: str, level: str = "INFO"):
 # =================================================================
 # WORKER THREAD CLASSES
 # =================================================================
+
+def fit_temperature(model, val_loader, device):
+    """Finds the optimal temperature for calibrating model confidence."""
+    model.eval()
+    T = torch.nn.Parameter(torch.ones(1, device=device))
+    optimizer = torch.optim.LBFGS([T], lr=0.01, max_iter=50)
+    criterion = torch.nn.CrossEntropyLoss()
+    
+    all_logits, all_labels = [], []
+    with torch.no_grad():
+        for d, l in val_loader:
+            valid_mask = l != -1
+            if not valid_mask.any(): continue
+            d, l = d[valid_mask], l[valid_mask]
+            logits, _ = model(d.to(device))
+            all_logits.append(logits)
+            all_labels.append(l)
+    
+    if not all_logits: return 1.0
+    
+    all_logits = torch.cat(all_logits).detach()
+    all_labels = torch.cat(all_labels).to(device)
+
+    def eval_loss():
+        optimizer.zero_grad()
+        # Use softplus for stability
+        temp = torch.clamp(torch.nn.functional.softplus(T) + 1e-3, max=10.0)
+        loss = criterion(all_logits / temp, all_labels)
+        loss.backward()
+        return loss
+    
+    optimizer.step(eval_loss)
+    final_temp = torch.clamp(torch.nn.functional.softplus(T) + 1e-3, max=10.0)
+    return float(final_temp.detach().cpu().item())
 
 def _recording_monitor_worker():
     """
@@ -111,71 +146,6 @@ def _recording_monitor_worker():
                             log_message(f"An exception occurred while trying to restart '{name}': {e}", "ERROR")
                     else:
                         log_message(f"Skipping restart for '{name}'; it failed within the {RESTART_COOLDOWN}s cooldown period.", "WARN")
-
-def sync_labels_worker(source_dataset_name: str, target_dataset_name: str):
-    """
-    (WORKER) Rebuilds the labels.yaml for an augmented dataset from its source.
-    This is a fast, file-only operation.
-    """
-    try:
-        log_message(f"Starting label sync for '{target_dataset_name}'...", "INFO")
-        source_dataset = gui_state.proj.datasets.get(source_dataset_name)
-        target_dataset = gui_state.proj.datasets.get(target_dataset_name)
-
-        if not source_dataset or not target_dataset:
-            raise ValueError("Could not find source or target dataset.")
-
-        # 1. Re-read the source labels to ensure they are the absolute latest
-        with open(source_dataset.labels_path, 'r') as f:
-            source_labels_data = yaml.safe_load(f)
-
-        # 2. Start with a fresh copy of the source labels
-        new_target_labels = source_labels_data.copy()
-        
-        # 3. Create the list of augmented labels
-        augmented_labels_to_add = []
-        all_source_instances = [inst for behavior_list in source_labels_data["labels"].values() for inst in behavior_list]
-
-        for instance in all_source_instances:
-            new_instance = instance.copy()
-            # Construct the expected augmented video path
-            relative_video_path = new_instance["video"]
-            base_name, ext = os.path.splitext(relative_video_path)
-            augmented_video_rel_path = f"{base_name}_aug{ext}"
-            
-            # Check if the augmented video actually exists before adding the label
-            augmented_video_abs_path = os.path.join(gui_state.proj.path, augmented_video_rel_path)
-            if os.path.exists(augmented_video_abs_path):
-                new_instance["video"] = augmented_video_rel_path
-                augmented_labels_to_add.append(new_instance)
-            else:
-                log_message(f"Skipping sync for missing augmented video: {augmented_video_rel_path}", "WARN")
-
-        # 4. Add the new augmented labels to the target dictionary
-        for inst in augmented_labels_to_add:
-            behavior_name = inst.get("label")
-            if behavior_name in new_target_labels["labels"]:
-                new_target_labels["labels"][behavior_name].append(inst)
-
-        # 5. Overwrite the target labels.yaml with the new, complete data
-        with open(target_dataset.labels_path, "w") as f:
-            yaml.dump(new_target_labels, f, allow_unicode=True)
-
-        # Now that labels.yaml is updated, reload the dataset's internal state
-        # and recalculate the counts in its config.yaml
-        target_dataset.labels = new_target_labels # Update in-memory labels
-        target_dataset.update_instance_counts_in_config(gui_state.proj)
-
-        log_message(f"Successfully synced labels from '{source_dataset_name}' to '{target_dataset_name}'.", "INFO")
-        
-        # Refresh the UI, which will now read the updated config.yaml
-        eel.refreshAllDatasets()()
-
-    except Exception as e:
-        log_message(f"Label sync failed: {e}", "ERROR")
-        import traceback
-        traceback.print_exc()
-        eel.showErrorOnLabelTrainPage(f"Label sync failed: {e}")()
 
 def augment_dataset_worker(source_dataset_name: str, new_dataset_name: str):
     """
@@ -275,7 +245,7 @@ def augment_dataset_worker(source_dataset_name: str, new_dataset_name: str):
         traceback.print_exc()
         eel.showErrorOnLabelTrainPage(f"Augmentation failed: {e}")()
     finally:
-        eel.spawn(eel.update_augmentation_progress(-1))
+        eel.update_augmentation_progress(-1)()
 
 class EncodeThread(threading.Thread):
     """A background thread that continuously processes video encoding tasks serially."""
@@ -387,54 +357,84 @@ class ClassificationThread(threading.Thread):
         self.cuda_stream = torch.cuda.Stream(device=self.device) if self.device.type == 'cuda' else None
 
     def _load_model(self, model_name):
-        """
-        Helper to "smartly" load a model by checking its architecture tag
-        in its config file. Supports both legacy and new temporal delta models.
-        """
-        log_message(f"Loading model '{model_name}' for classification...", "INFO")
+        """Loads a full model bundle, returns the model object and its metadata."""
+        log_message(f"Loading model bundle '{model_name}'...", "INFO")
         try:
             model_obj = gui_state.proj.models.get(model_name)
-            if not model_obj:
-                raise ValueError(f"Model '{model_name}' not found in project.")
+            if not model_obj: raise ValueError(f"Model '{model_name}' not found.")
 
-            arch_type = model_obj.config.get('architecture', 'lstm_legacy')
-            log_message(f"Detected model architecture: '{arch_type}'", "INFO")
+            meta_path = os.path.join(model_obj.path, "model_meta.json")
+            if not os.path.exists(meta_path):
+                log_message("Legacy model detected (no meta.json). Loading with default settings.", "WARN")
+                meta = {
+                    "head_architecture_version": "ClassifierLegacyLSTM",
+                    "hyperparameters": model_obj.config,
+                    "encoder_model_identifier": gui_state.proj.encoder_model_identifier
+                }
+            else:
+                with open(meta_path, 'r') as f:
+                    meta = json.load(f)
 
-            if arch_type == 'lstm_with_deltas':
+            project_encoder = gui_state.proj.encoder_model_identifier
+            model_encoder = meta.get("encoder_model_identifier")
+            if model_encoder and model_encoder != project_encoder:
+                err_msg = f"Encoder mismatch! Project is for '{project_encoder}', but model was trained with '{model_encoder}'. Please re-encode videos."
+                log_message(err_msg, "ERROR")
+                try:
+                    eel.showErrorOnLabelTrainPage(err_msg)()
+                except Exception as e:
+                    print(f"Eel call failed: {e}")
+                return None, None
+
+            arch_version = meta.get("head_architecture_version", "ClassifierLegacyLSTM")
+            hparams = meta.get("hyperparameters", {})
+
+            # Ensure fallbacks for legacy bundles
+            if "behaviors" not in hparams:
+                hparams["behaviors"] = model_obj.config.get("behaviors", [])
+            if "seq_len" not in hparams:
+                hparams["seq_len"] = model_obj.config.get("seq_len", 31)
+
+            meta["hyperparameters"] = hparams
+            
+            if arch_version.startswith("ClassifierLSTMDeltas"):
                 torch_model = classifier_head.ClassifierLSTMDeltas(
-                    in_features=768,
-                    out_features=len(model_obj.config["behaviors"]),
-                    seq_len=model_obj.config["seq_len"],
+                    in_features=768, out_features=len(model_obj.config["behaviors"]),
+                    seq_len=hparams.get("seq_len", 31)
                 )
             else:
                 torch_model = classifier_head.ClassifierLegacyLSTM(
-                    in_features=768,
-                    out_features=len(model_obj.config["behaviors"]),
-                    seq_len=model_obj.config["seq_len"],
+                    in_features=768, out_features=len(model_obj.config["behaviors"]),
+                    seq_len=hparams.get("seq_len", 31)
                 )
 
-            weights = torch.load(model_obj.weights_path, map_location=self.device, weights_only=True)
+            # Use portable torch.load
+            weights_path = os.path.join(model_obj.path, "model.pth")
+            if not os.path.exists(weights_path) and hasattr(model_obj, "weights_path"):
+                weights_path = model_obj.weights_path  # legacy fallback
+
+            try:
+                weights = torch.load(weights_path, map_location=self.device, weights_only=True)
+            except TypeError:
+                weights = torch.load(weights_path, map_location=self.device)
             torch_model.load_state_dict(weights)
-            torch_model.to(self.device)
-            
-            # Set to eval mode here, once, upon loading
-            torch_model.eval()
+
+            torch_model.to(self.device).eval()
 
             gui_state.live_inference_model_object = torch_model
             log_message(f"Model '{model_name}' loaded successfully.", "INFO")
-            return model_obj
+            return torch_model, meta
         except Exception as e:
-            log_message(f"Error loading model '{model_name}': {e}", "ERROR")
+            log_message(f"Error loading model bundle '{model_name}': {e}", "ERROR")
             traceback.print_exc()
             gui_state.live_inference_model_object = None
-            return None
+            return None, None
 
     def run(self):
         """The main loop for the thread. Continuously processes the queue."""
         last_model_name = None
-        model_meta = None
+        torch_model, model_meta = None, None
         
-        # Variables for manual inference progress tracking
         manual_inference_total = 0
         manual_inference_processed = 0
 
@@ -442,57 +442,54 @@ class ClassificationThread(threading.Thread):
             current_model_name = gui_state.live_inference_model_name
             if current_model_name != last_model_name:
                 if current_model_name:
-                    model_meta = self._load_model(current_model_name) # This helper now calls model.eval()
-                    # When a new model is loaded for a manual batch, reset progress
+                    torch_model, model_meta = self._load_model(current_model_name)
                     with gui_state.classify_lock:
                         manual_inference_total = len(gui_state.classify_tasks)
                     manual_inference_processed = 0
                 else:
-                    gui_state.live_inference_model_object = None
-                    model_meta = None
+                    gui_state.live_inference_model_object, torch_model, model_meta = None, None, None
                 last_model_name = current_model_name
 
             file_to_classify = None
-            if gui_state.live_inference_model_object and model_meta:
+            if torch_model and model_meta:
                 with gui_state.classify_lock:
                     if gui_state.classify_tasks:
                         file_to_classify = gui_state.classify_tasks.pop(0)
 
             if file_to_classify:
-                log_message(f"Classifying: {os.path.basename(file_to_classify)} with model '{model_meta.name}'", "INFO")
+                # Unpack metadata safely and use it
+                model_name_for_ui = last_model_name
+                hparams = model_meta.get("hyperparameters", {})
+                behaviors_for_infer = hparams.get("behaviors", [])
+                seq_len_for_infer   = hparams.get("seq_len", 31)
+                temperature_for_infer = float(model_meta.get("calibration", {}).get("temperature", 1.0))
+                
+                log_message(f"Classifying: {os.path.basename(file_to_classify)} with model '{model_name_for_ui}'", "INFO")
                 try:
-                    # Pass all required arguments to infer_file
                     infer_args = {
-                        "file_path": file_to_classify,
-                        "model": gui_state.live_inference_model_object,
-                        "dataset_name": model_meta.name,
-                        "behaviors": model_meta.config["behaviors"],
-                        "seq_len": model_meta.config["seq_len"],
-                        "device": self.device
+                        "file_path": file_to_classify, "model": torch_model,
+                        "dataset_name": model_name_for_ui, "behaviors": behaviors_for_infer,
+                        "seq_len": seq_len_for_infer, "device": self.device,
+                        "temperature": temperature_for_infer,
                     }
                     
                     if self.cuda_stream:
-                        with torch.cuda.stream(self.cuda_stream):
-                            cbas.infer_file(**infer_args)
+                        with torch.cuda.stream(self.cuda_stream): cbas.infer_file(**infer_args)
                     else:
                         cbas.infer_file(**infer_args)
                     
                     manual_inference_processed += 1
                     if manual_inference_total > 0:
                         percent_done = (manual_inference_processed / manual_inference_total) * 100
-                        message = f"Processing {manual_inference_processed} / {manual_inference_total}: {os.path.basename(file_to_classify)}"
-                        eel.updateInferenceProgress(model_meta.name, percent_done, message)()
+                        message = f"Processing {manual_inference_processed}/{manual_inference_total}: {os.path.basename(file_to_classify)}"
+                        eel.updateInferenceProgress(model_name_for_ui, percent_done, message)()
 
                         if manual_inference_processed >= manual_inference_total:
-                            log_message(f"Inference queue for model '{model_meta.name}' is empty. Classification complete.", "INFO")
-                            eel.updateInferenceProgress(model_meta.name, 100, "Inference complete.")()
-                            if gui_state.proj:
-                                log_message("Reloading project data to discover new classification files.", "INFO")
-                                gui_state.proj.reload()
-                            # Reset for the next batch
-                            manual_inference_total = 0
-                            manual_inference_processed = 0
-                            gui_state.live_inference_model_name = None # Clear the model after a manual batch
+                            log_message(f"Inference queue for model '{model_name_for_ui}' is empty.", "INFO")
+                            eel.updateInferenceProgress(model_name_for_ui, 100, "Inference complete.")()
+                            if gui_state.proj: gui_state.proj.reload()
+                            manual_inference_total, manual_inference_processed = 0, 0
+                            gui_state.live_inference_model_name = None
 
                 except Exception as e:
                     log_message(f"Failed to classify '{os.path.basename(file_to_classify)}'. Error: {e}", "ERROR")
@@ -556,7 +553,7 @@ class TrainingThread(threading.Thread):
             else:
                 time.sleep(1)
 
-    def _execute_training_task(self, task: "TrainingTask"):
+    def _execute_training_task(self, task: TrainingTask):
         """Orchestrates the training process across multiple random data splits."""
         overall_best_model = None
         overall_best_f1 = -1.0
@@ -567,15 +564,18 @@ class TrainingThread(threading.Thread):
         best_run_train_insts = None
 
         try:
+            master_rng = np.random.default_rng(task.seed)
+        
             for run_num in range(task.num_runs):
+                run_seed = int(master_rng.integers(2**32 - 1))
                 if self.cancel_event.is_set():
                     log_message(f"Skipping run {run_num + 1} for '{task.name}' due to cancellation.", "WARN")
                     break
 
                 log_message(f"--- Starting Run {run_num + 1}/{task.num_runs} for Dataset: {task.name} ---", "INFO")
-                eel.spawn(eel.updateTrainingStatusOnUI(task.name, f"Run {run_num + 1}/{task.num_runs}: Loading new data split..."))
+                eel.updateTrainingStatusOnUI(task.name, f"Run {run_num + 1}/{task.num_runs}: Loading new data split...")()
                 
-                def update_progress(p): eel.spawn(eel.updateDatasetLoadProgress(task.name, p))
+                def update_progress(p): eel.updateDatasetLoadProgress(task.name, p)()
                 
                 weights = None
                 if task.training_method == "weighted_loss":
@@ -598,10 +598,10 @@ class TrainingThread(threading.Thread):
                 
                 if train_ds is None or len(train_ds) == 0:
                     log_message(f"Dataset loading for run {run_num + 1} failed or produced an empty training set. Aborting task.", "ERROR")
-                    eel.spawn(eel.updateTrainingStatusOnUI(task.name, "Training failed: Empty training set in data split."))
+                    eel.updateTrainingStatusOnUI(task.name, "Training failed: Empty training set in data split.")()
                     return
                 
-                eel.spawn(eel.updateDatasetLoadProgress(task.name, 100))
+                eel.updateDatasetLoadProgress(task.name, 100)()
                 log_message(f"Dataset for run {run_num + 1} loaded successfully.", "INFO")
 
                 run_best_model, run_best_f1 = None, -1.0
@@ -618,11 +618,11 @@ class TrainingThread(threading.Thread):
                             current_best = max(run_best_f1, float(f1_match.group(1)))
                         f1_text = f"{current_best:.4f}" if current_best >= 0 else "N/A"
                         display_message = f"Run {run_num + 1}/{task.num_runs}, Trial {i + 1}/{NUM_INNER_TRIALS}... Best F1: {f1_text}"
-                        eel.spawn(eel.updateTrainingStatusOnUI(task.name, display_message, message))
+                        eel.updateTrainingStatusOnUI(task.name, display_message, message)()
 
                     trial_model, trial_reports, trial_best_epoch = cbas.train_lstm_model(
                         train_ds, test_ds, task.sequence_length, task.behaviors, self.cancel_event,
-                        lr=task.learning_rate, batch_size=task.batch_size,
+                        seed=run_seed, lr=task.learning_rate, batch_size=task.batch_size,
                         epochs=task.epochs, device=self.device, class_weights=weights,
                         patience=task.patience, progress_callback=training_progress_updater,
                         optimization_target=task.optimization_target
@@ -648,7 +648,7 @@ class TrainingThread(threading.Thread):
 
             if self.cancel_event.is_set():
                 log_message(f"Training for '{task.name}' was cancelled by user.", "WARN")
-                eel.spawn(eel.updateTrainingStatusOnUI(task.name, "Training cancelled."))
+                eel.updateTrainingStatusOnUI(task.name, "Training cancelled.")()
                 return
 
             if overall_best_model and all_run_reports:
@@ -661,12 +661,12 @@ class TrainingThread(threading.Thread):
                 )
             else:
                 log_message(f"Training failed for '{task.name}'. No valid model could be trained.", "ERROR")
-                eel.spawn(eel.updateTrainingStatusOnUI(task.name, "Training failed."))
+                eel.updateTrainingStatusOnUI(task.name, "Training failed.")()
 
         except Exception as e:
             log_message(f"Critical error during training task for {task.name}: {e}", "ERROR")
             traceback.print_exc()
-            eel.spawn(eel.updateTrainingStatusOnUI(task.name, f"Training Error: {e}"))
+            eel.updateTrainingStatusOnUI(task.name, f"Training Error: {e}")()
             
     def _generate_disagreement_report(self, task, model, train_insts):
         """
@@ -674,7 +674,7 @@ class TrainingThread(threading.Thread):
         with the human labels. Saves a report for user review.
         """
         log_message(f"Generating disagreement report for '{task.name}'...", "INFO")
-        eel.spawn(eel.updateTrainingStatusOnUI(task.name, "Analyzing model errors..."))
+        eel.updateTrainingStatusOnUI(task.name, "Analyzing model errors...")()
 
         disagreements = []
         
@@ -754,50 +754,90 @@ class TrainingThread(threading.Thread):
         log_message(f"Disagreement report with {len(disagreements)} items saved.", "INFO")             
 
     def _save_averaged_training_results(self, task, best_model, all_reports, best_run_history, best_run_cm):
-        """Averages reports from multiple runs and saves the single best model."""
-        log_message(f"Averaging results from {len(all_reports)} runs...", "INFO")
+        """Saves the final model bundle with provenance, metrics, and calibration."""
+        log_message(f"Finalizing and saving model bundle for '{task.name}'...", "INFO")
+        
+        # --- 1. CALIBRATION ---
+        _, test_pointers, _, test_insts = gui_state.proj.load_dataset(task.name, seed=42, seq_len=task.sequence_length)
+        if test_pointers and len(test_pointers) > 0:
+            val_loader = torch.utils.data.DataLoader(
+                test_pointers,
+                batch_size=task.batch_size,
+                num_workers=4,
+                pin_memory=(self.device.type == "cuda"),
+                worker_init_fn=cbas.seed_worker,
+                collate_fn=cbas.collate_fn,   # optional, for symmetry
+            )
+            log_message("Calibrating model temperature on validation set...", "INFO")
+            temperature = fit_temperature(best_model, val_loader, self.device)
+            best_model = best_model.to(self.device)  # safety: ensure model back on device
+            log_message(f"Optimal temperature found: {temperature:.4f}", "INFO")
+        else:
+            temperature = 1.0
+            log_message("No validation set found, using default temperature of 1.0.", "WARN")
 
+        # --- 2. PROVENANCE & METADATA ---
+        all_f1s = [r.val_report.get(task.optimization_target, {}).get('f1-score', 0) for r in all_reports]
+        mean_f1 = np.mean(all_f1s)
+        ci_95 = 1.96 * np.std(all_f1s) / np.sqrt(len(all_f1s)) if len(all_f1s) > 1 else 0
 
+        commit_hash = "N/A"
+        try:
+            commit_hash = subprocess.check_output(['git', 'rev-parse', 'HEAD']).strip().decode('utf-8')
+        except Exception:
+            log_message("Could not get git commit hash.", "WARN")
+
+        model_meta = {
+            "model_bundle_schema": "1.0",
+            "cbas_commit_hash": commit_hash,
+            "encoder_model_identifier": gui_state.proj.encoder_model_identifier,
+            "head_architecture_version": type(best_model).__name__,
+            "hyperparameters": {
+                "seq_len": task.sequence_length,
+                "behaviors": task.behaviors,
+                "use_acceleration": getattr(best_model, 'use_acceleration', "N/A"),
+                "learning_rate": task.learning_rate,
+                "batch_size": task.batch_size,
+            },
+            "training_run_info": {
+                "num_runs": task.num_runs,
+                "optimization_target": task.optimization_target,
+            },
+            "performance": {
+                "mean_macro_f1": float(mean_f1),
+                "ci_95_macro_f1": float(ci_95),
+            },
+            "calibration": {
+                "temperature": temperature,
+            }
+        }
+
+        # --- 3. SAVING THE BUNDLE ---
         model_name = f"{task.name}_model"
         model_dir = os.path.join(gui_state.proj.models_dir, model_name)
-
-        avg_report = {}
-        for b in task.behaviors:
-            avg_report[b] = {
-                'precision': float(np.mean([r.val_report.get(b, {}).get('precision', 0) for r in all_reports])),
-                'recall': float(np.mean([r.val_report.get(b, {}).get('recall', 0) for r in all_reports])),
-                'f1-score': float(np.mean([r.val_report.get(b, {}).get('f1-score', 0) for r in all_reports])),
-            }
-        
-        avg_f1 = np.mean([r.val_report.get('weighted avg', {}).get('f1-score', 0) for r in all_reports])
-        log_message(f"Final Averaged F1 Score: {avg_f1:.4f}", "INFO")
-        eel.updateTrainingStatusOnUI(task.name, f"Training complete. Averaged F1: {avg_f1:.4f}")()
-
         os.makedirs(model_dir, exist_ok=True)
+
+        # Save weights
         torch.save(best_model.state_dict(), os.path.join(model_dir, "model.pth"))
-        
-        # Tag the new model with its architecture
-        model_config_data = {
-            "seq_len": task.sequence_length,
+
+        # write a tiny config.yaml for Model() loader compatibility
+        model_config = {
+            "name": model_name,
             "behaviors": task.behaviors,
-            "architecture": "lstm_with_deltas" # Add the new tag
+            "seq_len": task.sequence_length
         }
         with open(os.path.join(model_dir, "config.yaml"), "w") as f:
-            yaml.dump(model_config_data, f)
-        
-        with open(os.path.join(task.dataset.path, "performance_report.yaml"), 'w') as f:
-            yaml.dump(avg_report, f)
-        
-        gui_state.proj.models[model_name] = cbas.Model(model_dir)
-        task.dataset.config['model'] = model_name 
-        with open(task.dataset.config_path, 'w') as f:
-            yaml.dump(task.dataset.config, f, allow_unicode=True)       
-        
-        for b in task.behaviors:
-            b_metrics = avg_report.get(b, {})
-            task.dataset.update_metric(b, "F1 Score", round(b_metrics.get('f1-score', 0), 2))
-            task.dataset.update_metric(b, "Recall", round(b_metrics.get('recall', 0), 2))
-            task.dataset.update_metric(b, "Precision", round(b_metrics.get('precision', 0), 2))
+            yaml.dump(model_config, f, allow_unicode=True)
+
+        # Save meta (unchanged)
+        with open(os.path.join(model_dir, "model_meta.json"), "w") as f:
+            json.dump(model_meta, f, indent=4)
+
+        # After saving, refresh the project’s in-memory models so GUI sees it
+        try:
+            gui_state.proj._load_models()
+        except Exception as e:
+            log_message(f"Could not refresh models list: {e}", "WARN")
             
         plot_dir = task.dataset.path
         
@@ -868,7 +908,7 @@ class TrainingThread(threading.Thread):
 
 class TrainingTask():
     """A simple data class to hold all parameters for a single training job."""
-    def __init__(self, name, dataset, behaviors, batch_size, learning_rate, epochs, sequence_length, training_method, patience, num_runs, num_trials, optimization_target, custom_weights=None):
+    def __init__(self, name, dataset, behaviors, batch_size, learning_rate, epochs, sequence_length, training_method, patience, num_runs, num_trials, optimization_target, seed, custom_weights=None):
         self.name, self.dataset, self.behaviors = name, dataset, behaviors
         self.batch_size, self.learning_rate = batch_size, learning_rate
         self.epochs, self.sequence_length = epochs, sequence_length
@@ -877,6 +917,7 @@ class TrainingTask():
         self.num_runs = num_runs
         self.num_trials = num_trials
         self.optimization_target = optimization_target
+        self.seed = seed # Store the seed
         self.custom_weights = custom_weights
 
 def cancel_training_task(dataset_name: str):
@@ -1069,8 +1110,7 @@ def sync_augmented_dataset(source_dataset_name: str, target_dataset_name: str):
         return
 
     print(f"Spawning worker to sync labels from '{source_dataset_name}' to '{target_dataset_name}'")
-    # We will create this worker function next
-    eel.spawn(workthreads.sync_labels_worker, source_dataset_name, target_dataset_name)
+    eel.spawn(sync_labels_worker, source_dataset_name, target_dataset_name)
 
 
 def start_threads():
@@ -1096,6 +1136,10 @@ def start_threads():
     gui_state.classify_thread = ClassificationThread(device)
     gui_state.classify_thread.daemon = True
     gui_state.classify_thread.start()
+    
+    # Start the ffmpeg self-healing monitor
+    monitor = threading.Thread(target=_recording_monitor_worker, daemon=True)
+    monitor.start()
     
     print("All background threads started.")
 
@@ -1135,11 +1179,9 @@ def stop_threads():
 # =================================================================
 
 def start_label_sync(source_dataset_name: str, target_dataset_name: str):
-    """
-    (LAUNCHER) Spawns the label synchronization worker in a background thread.
-    This function is called from other modules to safely start the process.
-    """
+    """(LAUNCHER) Spawns the label synchronization worker."""
     log_message(f"Spawning worker to sync labels from '{source_dataset_name}' to '{target_dataset_name}'", "INFO")
+    # Use correct eel.spawn pattern and call the single, correct worker function
     eel.spawn(sync_labels_worker, source_dataset_name, target_dataset_name)
 
 
