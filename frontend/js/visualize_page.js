@@ -13,6 +13,9 @@ let routingInProgress = false;
 const errorModalElement = document.getElementById("errorModal");
 let generalErrorBsModal = errorModalElement ? new bootstrap.Modal(errorModalElement) : null;
 
+let refreshDebounceTimer = null;
+const DEBOUNCE_DELAY = 10000; // 10 seconds of inactivity before refreshing
+
 let currentSelection = { root: null, session: null, model: null };
 
 // --- Task Management ---
@@ -68,6 +71,47 @@ function showActogramLoadingIndicator() {
 // =================================================================
 // EEL-EXPOSED FUNCTIONS (Called FROM Python)
 // =================================================================
+
+/**
+ * Handles notifications from the backend that new data exists.
+ * This function debounces the requests to prevent UI flickering during rapid file creation.
+ */
+eel.expose(notify_new_data_available);
+function notify_new_data_available() {
+    // When a notification arrives, clear any existing timer.
+    clearTimeout(refreshDebounceTimer);
+    console.log("New data notification received. Resetting refresh timer.");
+
+    // Start a new timer. The refresh will only happen after a 10-second pause in new file creation.
+    refreshDebounceTimer = setTimeout(() => {
+        console.log("Debounce timer finished. Reloading project data and refreshing UI.");
+        
+        const container = document.getElementById('directories');
+        if (container) {
+            container.innerHTML = "<p class='text-light p-3'><div class='spinner-border spinner-border-sm' role='status'></div> Refreshing data...</p>";
+        }
+
+        // 1. Tell the backend to re-scan the entire project from disk.
+        // We use the existing reload_project_data function for robustness.
+        eel.reload_project_data()().then(success => {
+            if (success) {
+                // 2. If the backend reload was successful, rebuild the UI trees.
+                const currentMode = document.getElementById('mode-actogram').checked ? 'actogram' : 'ethogram';
+                if (currentMode === 'actogram') {
+                    initializeActogramUI();
+                } else {
+                    initializeEthogramUI();
+                }
+            } else {
+                console.error("Backend failed to reload project data.");
+                if (container) {
+                    container.innerHTML = "<p class='text-danger p-3'>Error refreshing data.</p>";
+                }
+            }
+        });
+
+    }, DEBOUNCE_DELAY);
+}
 
 eel.expose(showErrorOnVisualizePage);
 function showErrorOnVisualizePage(message) {

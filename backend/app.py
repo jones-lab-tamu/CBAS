@@ -50,6 +50,11 @@ def load_project(path):
 # --- Record Page Functions ---
 
 @eel.expose
+def get_live_inference_status():
+    """Returns the name of the currently active live inference model, or None."""
+    return gui_state.live_inference_model_name
+
+@eel.expose
 def save_all_camera_settings(settings):
     return record_page.save_all_camera_settings(settings)
 

@@ -840,6 +840,34 @@ document.addEventListener('DOMContentLoaded', async () => {
     cameraSettingsBsModal = new bootstrap.Modal(document.getElementById('cameraSettings'));
     generalErrorBsModal = new bootstrap.Modal(document.getElementById('errorModal'));
     
+	// Synchronize the live inference toggle with the backend state on page load
+    try {
+        const currentModel = await eel.get_live_inference_status()();
+        const liveInferenceToggle = document.getElementById('live-inference-toggle');
+        const modelSelect = document.getElementById('live-inference-model-select');
+
+        // First, populate the model dropdown regardless of the toggle state
+        const models = await eel.get_available_models()();
+        if (models && models.length > 0) {
+            modelSelect.innerHTML = '<option selected disabled>Select a model...</option>';
+            models.forEach(modelName => {
+                modelSelect.innerHTML += `<option value="${modelName}">${modelName}</option>`;
+            });
+        } else {
+            modelSelect.innerHTML = '<option selected disabled>No models available</option>';
+        }
+
+        // Now, set the UI state based on the backend's response
+        if (currentModel && liveInferenceToggle && modelSelect) {
+            liveInferenceToggle.checked = true;
+            modelSelect.disabled = false;
+            modelSelect.value = currentModel;
+        }
+    } catch (e) {
+        console.error("Could not sync live inference status:", e);
+    }
+	
+	
     loadCameras(); 
     setInterval(updateStatusIcon, 3000);
     
