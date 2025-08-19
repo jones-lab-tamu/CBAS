@@ -766,8 +766,8 @@ class Project:
                 continue
             if cls_arr.ndim < 2 or cls_arr.shape[0] < seq_len: continue
             
-            # The new ClassifierLSTMDeltas model does not require mean-centering the input.
-            # This line is removed to match the model's expectation.
+            # The new ClassifierLSTMDeltas model does not require external mean-centering.
+            # This line was a vestige of the older model and has been removed to prevent train/serve skew.
             # cls_centered = cls_arr - np.mean(cls_arr, axis=0)
             
             for inst in video_instances:

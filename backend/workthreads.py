@@ -55,12 +55,11 @@ def log_message(message: str, level: str = "INFO"):
     timestamp = datetime.now().strftime('%H:%M:%S')
     formatted_message = f"[{timestamp}] [{level}] {message}"
     
-    # Use a lock to make the print statement atomic and thread-safe
     if gui_state.print_lock:
         with gui_state.print_lock:
             print(formatted_message)
     else:
-        print(formatted_message) # Fallback if lock not initialized
+        print(formatted_message)
     
     if gui_state.log_queue:
         gui_state.log_queue.put(formatted_message)
@@ -80,9 +79,7 @@ def fit_temperature(model, val_loader, device):
     all_logits, all_labels = [], []
     with torch.no_grad():
         for d, l in val_loader:
-            valid_mask = l != -1
-            if not valid_mask.any(): continue
-            d, l = d[valid_mask], l[valid_mask]
+            # No need to mask here, in-RAM loader provides clean data
             logits, _ = model(d.to(device))
             all_logits.append(logits)
             all_labels.append(l)
@@ -94,7 +91,6 @@ def fit_temperature(model, val_loader, device):
 
     def eval_loss():
         optimizer.zero_grad()
-        # Use softplus for stability
         temp = torch.clamp(torch.nn.functional.softplus(T) + 1e-3, max=10.0)
         loss = criterion(all_logits / temp, all_labels)
         loss.backward()
@@ -110,28 +106,24 @@ def _recording_monitor_worker():
     are running. If a process has terminated, it automatically restarts it.
     """
     global _last_restart_times
-    RESTART_COOLDOWN = 60 # Cooldown in seconds before restarting the same camera
+    RESTART_COOLDOWN = 60
 
     while True:
-        time.sleep(5) # Check every 5 seconds
+        time.sleep(5)
         
         if gui_state.proj and gui_state.proj.active_recordings:
-            # Iterate over a copy to allow safe modification during the loop
             for name, (proc, start_time, session_name) in list(gui_state.proj.active_recordings.items()):
                 if proc.poll() is not None:
                     log_message(f"Recording process for '{name}' terminated unexpectedly (exit code: {proc.returncode}).", "WARN")
                     
-                    # Remove the dead process from the active list
                     del gui_state.proj.active_recordings[name]
                     
-                    # --- SELF-HEALING LOGIC ---
                     current_time = time.time()
                     last_restart = _last_restart_times.get(name, 0)
                     
                     if (current_time - last_restart) > RESTART_COOLDOWN:
                         log_message(f"Attempting to automatically restart recording for '{name}'...", "INFO")
                         try:
-                            # Get the camera object and tell it to start again with the correct session name
                             camera_obj = gui_state.proj.cameras.get(name)
                             if camera_obj:
                                 success = camera_obj.start_recording(session_name)
@@ -153,14 +145,10 @@ def augment_dataset_worker(source_dataset_name: str, new_dataset_name: str):
     This process is resumable and idempotent.
     """
     try:
-        # 1. Get the source dataset
         source_dataset = gui_state.proj.datasets.get(source_dataset_name)
         if not source_dataset:
             raise ValueError(f"Source dataset '{source_dataset_name}' not found.")
 
-        # =========================================================================
-        # Get or Create the new dataset
-        # =========================================================================
         if new_dataset_name in gui_state.proj.datasets:
             log_message(f"Found existing dataset '{new_dataset_name}'. Resuming augmentation...", "INFO")
             new_dataset = gui_state.proj.datasets[new_dataset_name]
@@ -173,7 +161,6 @@ def augment_dataset_worker(source_dataset_name: str, new_dataset_name: str):
             )
             if not new_dataset:
                 raise RuntimeError(f"Failed to create new dataset folder for '{new_dataset_name}'.")
-        # =========================================================================
 
         ffmpeg_filter_chain = "hflip,eq=brightness=0.03:contrast=1.1,gblur=sigma=0.2"
         
@@ -198,9 +185,6 @@ def augment_dataset_worker(source_dataset_name: str, new_dataset_name: str):
             augmented_video_name = f"{os.path.splitext(os.path.basename(source_video_path))[0]}_aug.mp4"
             output_video_path = os.path.join(video_dir, augmented_video_name)
 
-            # =========================================================================
-            # Check Before Processing
-            # =========================================================================
             if os.path.exists(output_video_path):
                 log_message(f"Skipping already augmented video: {os.path.basename(output_video_path)}", "INFO")
             else:
@@ -213,11 +197,9 @@ def augment_dataset_worker(source_dataset_name: str, new_dataset_name: str):
                     output_video_path
                 ]
                 subprocess.run(command, check=True)
-            # =========================================================================
             
             processed_videos[source_video_path] = output_video_path
 
-        # This final part now runs safely after all videos are confirmed to exist
         log_message("Finalizing label file...", "INFO")
         new_labels = []
         for instance in all_instances:
@@ -241,7 +223,6 @@ def augment_dataset_worker(source_dataset_name: str, new_dataset_name: str):
 
     except Exception as e:
         log_message(f"Augmentation failed: {e}", "ERROR")
-        import traceback
         traceback.print_exc()
         eel.showErrorOnLabelTrainPage(f"Augmentation failed: {e}")()
     finally:
@@ -259,9 +240,8 @@ class EncodeThread(threading.Thread):
     def run(self):
         """The main loop for the thread. Pulls tasks from the global queue."""
         while True:
-            # Wait until a project and encoder are loaded.
             if not gui_state.proj or not gui_state.dino_encoder:
-                time.sleep(2) # Wait for a project to be loaded
+                time.sleep(2)
                 continue
 
             file_to_encode = None
@@ -297,7 +277,6 @@ class EncodeThread(threading.Thread):
 
                     progress_updater(0)
 
-                    # Use the globally stored dino_encoder
                     encoder_to_use = gui_state.dino_encoder
                     if self.cuda_stream:
                         with torch.cuda.stream(self.cuda_stream):
@@ -333,14 +312,12 @@ class EncodeThread(threading.Thread):
                 time.sleep(1)
 
     def get_id(self):
-        """Returns the thread's unique identifier."""
         if hasattr(self, "_thread_id"): return self._thread_id
         for id, thread in threading._active.items():
             if thread is self: return id
         return None
 
     def raise_exception(self):
-        """A method to forcefully terminate the thread from the outside."""
         thread_id = self.get_id()
         if thread_id is not None:
             res = ctypes.pythonapi.PyThreadState_SetAsyncExc(thread_id, ctypes.py_object(SystemExit))
@@ -357,7 +334,6 @@ class ClassificationThread(threading.Thread):
         self.cuda_stream = torch.cuda.Stream(device=self.device) if self.device.type == 'cuda' else None
 
     def _load_model(self, model_name):
-        """Loads a full model bundle, returns the model object and its metadata."""
         log_message(f"Loading model bundle '{model_name}'...", "INFO")
         try:
             model_obj = gui_state.proj.models.get(model_name)
@@ -389,7 +365,6 @@ class ClassificationThread(threading.Thread):
             arch_version = meta.get("head_architecture_version", "ClassifierLegacyLSTM")
             hparams = meta.get("hyperparameters", {})
 
-            # Ensure fallbacks for legacy bundles
             if "behaviors" not in hparams:
                 hparams["behaviors"] = model_obj.config.get("behaviors", [])
             if "seq_len" not in hparams:
@@ -408,10 +383,9 @@ class ClassificationThread(threading.Thread):
                     seq_len=hparams.get("seq_len", 31)
                 )
 
-            # Use portable torch.load
             weights_path = os.path.join(model_obj.path, "model.pth")
             if not os.path.exists(weights_path) and hasattr(model_obj, "weights_path"):
-                weights_path = model_obj.weights_path  # legacy fallback
+                weights_path = model_obj.weights_path
 
             try:
                 weights = torch.load(weights_path, map_location=self.device, weights_only=True)
@@ -457,7 +431,6 @@ class ClassificationThread(threading.Thread):
                         file_to_classify = gui_state.classify_tasks.pop(0)
 
             if file_to_classify:
-                # Unpack metadata safely and use it
                 model_name_for_ui = last_model_name
                 hparams = model_meta.get("hyperparameters", {})
                 behaviors_for_infer = hparams.get("behaviors", [])
@@ -477,6 +450,8 @@ class ClassificationThread(threading.Thread):
                         with torch.cuda.stream(self.cuda_stream): cbas.infer_file(**infer_args)
                     else:
                         cbas.infer_file(**infer_args)
+                    
+                    eel.spawn(eel.notify_new_data_available())
                     
                     manual_inference_processed += 1
                     if manual_inference_total > 0:
@@ -498,14 +473,12 @@ class ClassificationThread(threading.Thread):
                 time.sleep(1)
 
     def get_id(self):
-        """Returns the thread's unique identifier."""
         if hasattr(self, "_thread_id"): return self._thread_id
         for id, thread in threading._active.items():
             if thread is self: return id
         return None
 
     def raise_exception(self):
-        """A method to forcefully terminate the thread from the outside."""
         thread_id = self.get_id()
         if thread_id is not None:
             res = ctypes.pythonapi.PyThreadState_SetAsyncExc(thread_id, ctypes.py_object(SystemExit))
@@ -564,8 +537,6 @@ class TrainingThread(threading.Thread):
         best_run_train_insts = None
 
         try:
-            master_rng = np.random.default_rng(task.seed)
-        
             for run_num in range(task.num_runs):
                 if self.cancel_event.is_set():
                     log_message(f"Skipping run {run_num + 1} for '{task.name}' due to cancellation.", "WARN")
@@ -583,17 +554,15 @@ class TrainingThread(threading.Thread):
                     )
                 elif task.training_method == 'custom_weights' and task.custom_weights:
                     log_message(f"Using custom performance-based class weights: {task.custom_weights}", "INFO")
-                    # Convert the dictionary of weights into an ordered list based on the dataset's behaviors
                     weights = [task.custom_weights.get(b, 1.0) for b in task.behaviors]
-                    # Use the standard balanced loader, but we'll pass the weights to the loss function
                     train_ds, test_ds, train_insts, _ = gui_state.proj.load_dataset(
                         task.name, seq_len=task.sequence_length, progress_callback=update_progress, seed=run_num
                     )
-                else: # Default to Balanced Sampling (oversampling)
+                else: 
                     train_ds, test_ds, train_insts, _ = gui_state.proj.load_dataset(
                         task.name, seq_len=task.sequence_length, progress_callback=update_progress, seed=run_num
                     )
-                    weights = None # Ensure weights is None for balanced sampling
+                    weights = None
                 
                 if train_ds is None or len(train_ds) == 0:
                     log_message(f"Dataset loading for run {run_num + 1} failed or produced an empty training set. Aborting task.", "ERROR")
@@ -757,19 +726,17 @@ class TrainingThread(threading.Thread):
         log_message(f"Finalizing and saving model bundle for '{task.name}'...", "INFO")
         
         # --- 1. CALIBRATION ---
-        _, test_pointers, _, test_insts = gui_state.proj.load_dataset(task.name, seed=42, seq_len=task.sequence_length)
-        if test_pointers and len(test_pointers) > 0:
+        _, test_set, _, test_insts = gui_state.proj.load_dataset(task.name, seed=42, seq_len=task.sequence_length)
+        if test_set and len(test_set) > 0:
             val_loader = torch.utils.data.DataLoader(
-                test_pointers,
+                test_set,
                 batch_size=task.batch_size,
-                num_workers=4,
-                pin_memory=(self.device.type == "cuda"),
-                worker_init_fn=cbas.seed_worker,
-                collate_fn=cbas.collate_fn,   # optional, for symmetry
+                num_workers=0,
+                pin_memory=(self.device.type == "cuda")
             )
             log_message("Calibrating model temperature on validation set...", "INFO")
             temperature = fit_temperature(best_model, val_loader, self.device)
-            best_model = best_model.to(self.device)  # safety: ensure model back on device
+            best_model = best_model.to(self.device)
             log_message(f"Optimal temperature found: {temperature:.4f}", "INFO")
         else:
             temperature = 1.0
@@ -816,10 +783,8 @@ class TrainingThread(threading.Thread):
         model_dir = os.path.join(gui_state.proj.models_dir, model_name)
         os.makedirs(model_dir, exist_ok=True)
 
-        # Save weights
         torch.save(best_model.state_dict(), os.path.join(model_dir, "model.pth"))
 
-        # write a tiny config.yaml for Model() loader compatibility
         model_config = {
             "name": model_name,
             "behaviors": task.behaviors,
@@ -828,11 +793,9 @@ class TrainingThread(threading.Thread):
         with open(os.path.join(model_dir, "config.yaml"), "w") as f:
             yaml.dump(model_config, f, allow_unicode=True)
 
-        # Save meta (unchanged)
         with open(os.path.join(model_dir, "model_meta.json"), "w") as f:
             json.dump(model_meta, f, indent=4)
 
-        # After saving, refresh the project’s in-memory models so GUI sees it
         try:
             gui_state.proj._load_models()
         except Exception as e:
@@ -885,6 +848,51 @@ class TrainingThread(threading.Thread):
                 )
             log_message(f"Epoch plots for the best run saved to '{plot_dir}'.", "INFO")
 
+        try:
+            opt_key = task.optimization_target
+            def _f1_of(rep):
+                return float(rep.val_report.get(opt_key, {}).get("f1-score", 0.0))
+
+            best_report_dict = {}
+            if all_reports:
+                best_idx = int(np.argmax([_f1_of(r) for r in all_reports]))
+                best_report_dict = all_reports[best_idx].val_report or {}
+
+            perf_report_path = os.path.join(plot_dir, "performance_report.yaml")
+            with open(perf_report_path, "w", encoding="utf-8") as f:
+                yaml.dump(best_report_dict, f, allow_unicode=True)
+            log_message(f"Wrote performance report to '{perf_report_path}'.", "INFO")
+
+            ds = task.dataset
+            config = dict(ds.config)
+            metrics_block = {}
+
+            train_counts = getattr(ds, "instance_counts", {}).get("train", {}) if hasattr(ds, "instance_counts") else {}
+            test_counts  = getattr(ds, "instance_counts", {}).get("test",  {}) if hasattr(ds, "instance_counts") else {}
+
+            for b in task.behaviors:
+                br = best_report_dict.get(b, {})
+                metrics_block[b] = {
+                    "Precision": round(float(br.get("precision", 0.0)), 2),
+                    "Recall":    round(float(br.get("recall", 0.0)), 2),
+                    "F1 Score":  round(float(br.get("f1-score", 0.0)), 2),
+                    "Train #":   train_counts.get(b, "N/A"),
+                    "Test #":    test_counts.get(b, "N/A"),
+                }
+
+            config["metrics"] = metrics_block
+            config["state"] = "trained"
+            config["trained_model"] = model_name
+
+            with open(ds.config_path, "w", encoding="utf-8") as f:
+                yaml.dump(config, f, allow_unicode=True)
+            ds.config = config
+
+            log_message(f"Updated dataset metrics in '{ds.config_path}'.", "INFO")
+
+        except Exception as e:
+            log_message(f"Failed to write performance report or update dataset config: {e}", "ERROR")    
+
         log_message(f"Training for '{task.name}' complete. Model '{model_name}' and reports saved.", "INFO")
         eel.refreshAllDatasets()()
     
@@ -907,7 +915,7 @@ class TrainingThread(threading.Thread):
 
 class TrainingTask():
     """A simple data class to hold all parameters for a single training job."""
-    def __init__(self, name, dataset, behaviors, batch_size, learning_rate, epochs, sequence_length, training_method, patience, num_runs, num_trials, optimization_target, seed, custom_weights=None):
+    def __init__(self, name, dataset, behaviors, batch_size, learning_rate, epochs, sequence_length, training_method, patience, num_runs, num_trials, optimization_target, custom_weights=None):
         self.name, self.dataset, self.behaviors = name, dataset, behaviors
         self.batch_size, self.learning_rate = batch_size, learning_rate
         self.epochs, self.sequence_length = epochs, sequence_length
@@ -916,7 +924,6 @@ class TrainingTask():
         self.num_runs = num_runs
         self.num_trials = num_trials
         self.optimization_target = optimization_target
-        self.seed = seed # Store the seed
         self.custom_weights = custom_weights
 
 def cancel_training_task(dataset_name: str):

@@ -1684,8 +1684,6 @@ def train_model(name: str, batch_size: str, learning_rate: str, epochs: str, seq
     if not gui_state.training_thread: return
 
     try:
-        # Generate a master seed for this entire training job
-        master_seed = int(time.time()) # A simple time-based seed is sufficient
     
         task = workthreads.TrainingTask(
             name=name, dataset=gui_state.proj.datasets[name],
@@ -1697,7 +1695,6 @@ def train_model(name: str, batch_size: str, learning_rate: str, epochs: str, seq
             num_runs=int(num_runs),
             num_trials=int(num_trials),
             optimization_target=optimization_target,
-            seed=master_seed, # Pass the new seed
             custom_weights=custom_weights
         )
         gui_state.training_thread.queue_task(task)
