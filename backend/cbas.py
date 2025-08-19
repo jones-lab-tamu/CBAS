@@ -765,7 +765,11 @@ class Project:
                 print(f"Warning: Could not read H5 file {cls_path}: {e}")
                 continue
             if cls_arr.ndim < 2 or cls_arr.shape[0] < seq_len: continue
-            cls_centered = cls_arr - np.mean(cls_arr, axis=0)
+            
+            # The new ClassifierLSTMDeltas model does not require mean-centering the input.
+            # This line is removed to match the model's expectation.
+            # cls_centered = cls_arr - np.mean(cls_arr, axis=0)
+            
             for inst in video_instances:
                 start = int(inst.get("start", -1))
                 end = int(inst.get("end", -1))
@@ -779,9 +783,9 @@ class Project:
                     window_end = frame_idx + half_seqlen + 1
                     
                     if window_start < 0: continue
-                    if window_end > cls_centered.shape[0]: continue
+                    if window_end > cls_arr.shape[0]: continue
                                         
-                    window = cls_centered[window_start:window_end]
+                    window = cls_arr[window_start:window_end]
                     if window.shape[0] != seq_len: continue
                     
                     try:
@@ -904,8 +908,8 @@ class Project:
         for ds_dir in [d for d in os.scandir(self.datasets_dir) if d.is_dir()]:
             try: self.datasets[ds_dir.name] = Dataset(ds_dir.path)
             except Exception as e: print(f"Error loading dataset {ds_dir.path}: {e}")
-    @staticmethod
     
+    @staticmethod
     def create_project(parent_directory: str, project_name: str) -> "Project | None":
         project_path = os.path.join(parent_directory, project_name)
         if os.path.exists(project_path):
@@ -942,14 +946,11 @@ class Project:
         config_path = os.path.join(directory, "config.yaml")
         labels_path = os.path.join(directory, "labels.yaml")
         
-        # A new dataset should have a minimal config. 
-        # The 'metrics' dictionary should not exist yet.
         dconfig = {
             "name": name, 
             "behaviors": behaviors, 
             "whitelist": recordings_whitelist, 
             "model": None
-            # The 'metrics' key is intentionally omitted.
         }
 
         lconfig = {"behaviors": behaviors, "labels": {b: [] for b in behaviors}}
@@ -960,10 +961,6 @@ class Project:
         return ds
     
     def delete_dataset(self, name: str) -> bool:
-        """
-        Deletes a dataset's folder, its corresponding model folder, and removes
-        them from the in-memory project state.
-        """
         if name not in self.datasets:
             print(f"Attempted to delete non-existent dataset: {name}")
             return False
@@ -977,18 +974,15 @@ class Project:
         ]
 
         try:
-            # Delete the dataset folder
             if os.path.isdir(dataset_path):
                 shutil.rmtree(dataset_path)
                 print(f"  - Successfully removed dataset folder: {dataset_path}")
 
-            # Delete the model folder if it exists
             for mp in model_paths:
                 if os.path.isdir(mp):
                     shutil.rmtree(mp)
                     print(f"  - Successfully removed model folder: {mp}")
 
-            # Remove from the in-memory dictionaries
             self.datasets.pop(name, None)
             self.models.pop(name, None)
             
@@ -996,14 +990,10 @@ class Project:
             return True
         except Exception as e:
             print(f"An error occurred during deletion of '{name}': {e}")
-            # As a safety measure, reload the project state from disk to ensure consistency
             self.reload()
             return False
            
     def _load_dataset_common(self, name, split, seed):
-        """
-        Internal method to load and split datasets with heavy debugging.
-        """
         rng = np.random.default_rng(seed)
 
         dataset_path = os.path.join(self.datasets_dir, name)
@@ -1021,9 +1011,6 @@ class Project:
         group_to_behaviors, group_to_instances = {}, {}
         for inst in all_insts:
             if 'video' in inst and inst['video']:
-
-                # The unique key for a subject/group must be its full relative path
-                # to distinguish between subjects with the same name in different sessions.
                 group_key = os.path.dirname(inst['video']).replace('\\', '/')
                 group_to_instances.setdefault(group_key, []).append(inst)
                 group_to_behaviors.setdefault(group_key, set()).add(inst['label'])
@@ -1091,28 +1078,6 @@ class Project:
             return all_insts[:split_idx], all_insts[split_idx:], behaviors
 
         return train_insts, test_insts, behaviors
-        
-    def load_dataset(self, name: str, seed: int = 42, split: float = 0.2, seq_len: int = 31, progress_callback=None) -> tuple:
-        train_insts, test_insts, behaviors = self._load_dataset_common(name, split, seed)
-        if train_insts is None: return None, None, None, None
-        
-        # Pass raw instances directly to the lazy dataset
-        train_dataset = WindowDataset(train_insts, seq_len, self.path, behaviors)
-        test_dataset = WindowDataset(test_insts, seq_len, self.path, behaviors)
-        
-        return train_dataset, test_dataset, train_insts, test_insts
-        
-    def load_dataset_for_weighted_loss(self, name, seed=42, split=0.2, seq_len=31, progress_callback=None):
-        train_insts, test_insts, behaviors = self._load_dataset_common(name, split, seed)
-        if train_insts is None:
-            return None, None, None, None, None
-
-        train_dataset = WindowDataset(train_insts, seq_len, self.path, behaviors)
-        test_dataset = WindowDataset(test_insts, seq_len, self.path, behaviors)
-
-        weights = compute_class_weights_from_instances(train_insts, behaviors)
-
-        return train_dataset, test_dataset, weights, train_insts, test_insts
 
 def collate_fn(batch):
     dcls, lbls = zip(*batch)

@@ -567,7 +567,6 @@ class TrainingThread(threading.Thread):
             master_rng = np.random.default_rng(task.seed)
         
             for run_num in range(task.num_runs):
-                run_seed = int(master_rng.integers(2**32 - 1))
                 if self.cancel_event.is_set():
                     log_message(f"Skipping run {run_num + 1} for '{task.name}' due to cancellation.", "WARN")
                     break
@@ -622,7 +621,7 @@ class TrainingThread(threading.Thread):
 
                     trial_model, trial_reports, trial_best_epoch = cbas.train_lstm_model(
                         train_ds, test_ds, task.sequence_length, task.behaviors, self.cancel_event,
-                        seed=run_seed, lr=task.learning_rate, batch_size=task.batch_size,
+                        lr=task.learning_rate, batch_size=task.batch_size,
                         epochs=task.epochs, device=self.device, class_weights=weights,
                         patience=task.patience, progress_callback=training_progress_updater,
                         optimization_target=task.optimization_target
