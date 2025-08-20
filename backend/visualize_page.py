@@ -24,6 +24,45 @@ import cbas
 import gui_state
 import workthreads
 
+def get_predictions_for_video(video_path: str) -> dict | None:
+    """
+    Finds the latest classification CSV for a video and returns its data
+    along with the model name and behavior list.
+    """
+    if not os.path.exists(video_path):
+        return None
+    try:
+        recording_dir = os.path.dirname(video_path)
+        video_basename = os.path.splitext(os.path.basename(video_path))[0]
+        
+        possible_csvs = [
+            os.path.join(recording_dir, f) 
+            for f in os.listdir(recording_dir) 
+            if f.startswith(video_basename) and f.endswith("_outputs.csv")
+        ]
+        
+        if not possible_csvs:
+            return {"error": "No classification files found for this video."}
+
+        latest_csv = max(possible_csvs, key=os.path.getmtime)
+        model_name = os.path.basename(latest_csv).replace(f"{video_basename}_", "").replace("_outputs.csv", "")
+        
+        model_obj = gui_state.proj.models.get(model_name)
+        if not model_obj:
+            return {"error": f"Could not find the model '{model_name}' associated with the classification."}
+
+        df = pd.read_csv(latest_csv)
+        
+        return {
+            "model_name": model_name,
+            "behaviors": model_obj.config.get("behaviors", []),
+            "predictions": df.to_dict(orient='split') # Efficiently serialize DataFrame
+        }
+    except Exception as e:
+        workthreads.log_message(f"Error getting predictions for {video_path}: {e}", "ERROR")
+        traceback.print_exc()
+        return {"error": str(e)}
+
 # =================================================================
 # ACTOGRAM: EXISTING FUNCTIONS
 # =================================================================

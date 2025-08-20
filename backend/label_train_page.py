@@ -948,11 +948,10 @@ def start_labeling_with_preload(dataset_name: str, model_name: str, video_path_t
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
-        # Smart Loader Logic for Guided Labeling
-        arch_type = model_obj.config.get('architecture', 'lstm_legacy')
+        arch_type = model_obj.config.get('architecture', 'ClassifierLegacyLSTM')
         log_message(f"Guided Labeling using model with architecture: '{arch_type}'", "INFO")
 
-        if arch_type == 'lstm_with_deltas':
+        if arch_type == 'ClassifierLSTMDeltas':
             torch_model = classifier_head.ClassifierLSTMDeltas(
                 in_features=768,
                 out_features=len(model_obj.config["behaviors"]),
@@ -965,7 +964,6 @@ def start_labeling_with_preload(dataset_name: str, model_name: str, video_path_t
                 seq_len=model_obj.config["seq_len"],
             ).to(device)
            
-        # Portable weight loading
         try:
             state = torch.load(model_obj.weights_path, map_location=device, weights_only=True)
         except TypeError:
@@ -983,11 +981,13 @@ def start_labeling_with_preload(dataset_name: str, model_name: str, video_path_t
         if not csv_path or not os.path.exists(csv_path):
             raise RuntimeError("Inference failed to produce a CSV output file.")
 
+
         preloaded_instances, probability_df = dataset.predictions_to_instances_with_confidence(
             csv_path,
             model_obj.name,
-            smoothing_window=smoothing_window # Pass it to the modified cbas.py function
+            smoothing_window=smoothing_window
         )
+
         
         eel.spawn(_start_labeling_worker, dataset_name, video_path_to_label, preloaded_instances, probability_df)
         
@@ -996,6 +996,7 @@ def start_labeling_with_preload(dataset_name: str, model_name: str, video_path_t
 
     except Exception as e:
         print(f"ERROR in start_labeling_with_preload: {e}")
+        traceback.print_exc()
         eel.showErrorOnLabelTrainPage(f"Failed to start pre-labeling: {e}")()
         return False
 
@@ -1767,13 +1768,54 @@ def start_classification(model_name: str, recordings_whitelist_paths: list[str])
 # RENDERING & INTERNAL LOGIC (Not Exposed)
 # =================================================================
 
+def start_playback_session(video_path: str, behaviors: list, colors: list, predictions: dict):
+    """
+    Initializes the backend state for a read-only playback session.
+    """
+    if gui_state.label_capture and gui_state.label_capture.isOpened():
+        gui_state.label_capture.release()
+    
+    # Reset most of the labeling state
+    gui_state.label_capture, gui_state.label_index = None, -1
+    gui_state.label_videos, gui_state.label_vid_index = [video_path], 0
+    gui_state.label_type, gui_state.label_start = -1, -1
+    gui_state.label_session_buffer = [] # No editable instances
+    gui_state.label_session_behaviors = behaviors
+    gui_state.label_session_colors = colors
+
+    # This is the key step: load the prediction data into the state
+    gui_state.label_probability_df = pd.DataFrame(predictions['data'], columns=predictions['columns'])
+    
+    capture = cv2.VideoCapture(video_path)
+    if not capture.isOpened():
+        workthreads.log_message(f"Error: Could not open video for playback: {video_path}", "ERROR")
+        return
+
+    gui_state.label_capture = capture
+    gui_state.label_index = 0
+    
+    # Trigger the first render
+    render_image()
+
+def _find_contiguous_blocks(frame_list):
+    if not frame_list:
+        return
+    
+    start = frame_list[0]
+    for i in range(1, len(frame_list)):
+        if frame_list[i] != frame_list[i-1] + 1:
+            yield start, frame_list[i-1]
+            start = frame_list[i]
+    yield start, frame_list[-1]
+
 def render_image():
     """
     Renders the current video frame and timelines.
     Implements a FIXED-WIDTH zoom for consistent visual representation.
     """
     if not gui_state.label_capture or not gui_state.label_capture.isOpened():
-        eel.updateLabelImageSrc(None, None, None)(); return
+        eel.updateLabelImageSrc(None, None, None, None)()
+        return
 
     total_frames = int(gui_state.label_capture.get(cv2.CAP_PROP_FRAME_COUNT))
     if total_frames == 0: return
@@ -1785,72 +1827,64 @@ def render_image():
 
     main_frame_blob = base64.b64encode(cv2.imencode(".jpg", cv2.resize(frame, (500, 500)))[1].tobytes()).decode("utf-8")
 
-    # --- 1. Draw Full Timeline ---
     full_timeline_canvas = np.full((50, 500, 3), 100, dtype=np.uint8)
     fill_colors(full_timeline_canvas, total_frames)
     
-    # --- 2. Define Zoom Window (NEW FIXED-WIDTH LOGIC) ---
     zoom_center_frame = float(current_frame_idx)
     
-    # If an instance is selected, center the view on it. Otherwise, center on the playhead.
     if gui_state.selected_instance_index != -1 and gui_state.selected_instance_index < len(gui_state.label_session_buffer):
         instance = gui_state.label_session_buffer[gui_state.selected_instance_index]
         zoom_center_frame = instance.get('start', 0) + (instance.get('end', 0) - instance.get('start', 0)) / 2.0
     
-    # The zoom width is now a FIXED percentage of the total video length.
     zoom_width_frames = total_frames * 0.10 
     
     zoom_start_frame = max(0, zoom_center_frame - zoom_width_frames / 2.0)
     zoom_end_frame = min(total_frames, zoom_center_frame + zoom_width_frames / 2.0)
     zoom_duration = zoom_end_frame - zoom_start_frame
 
-    # --- 3. Draw Zoom Timeline ---
     zoom_canvas = np.full((50, 500, 3), 100, dtype=np.uint8)
     if zoom_duration > 0:
         fill_colors(zoom_canvas, total_frames, zoom_start_frame, zoom_end_frame)
 
-    # --- 4. Draw Highlights and Markers ---
     if gui_state.selected_instance_index != -1 and gui_state.selected_instance_index < len(gui_state.label_session_buffer):
         instance = gui_state.label_session_buffer[gui_state.selected_instance_index]
-        # Highlight on Full Timeline
         start_px_full = int(500 * instance.get('start', 0) / total_frames)
         end_px_full = int(500 * (instance.get('end', 0) + 1) / total_frames)
         if start_px_full < end_px_full:
             cv2.rectangle(full_timeline_canvas, (start_px_full, 0), (end_px_full, 49), (255, 255, 255), 2)
         
-        # Highlight on Zoom Timeline
         if zoom_duration > 0:
             start_x_zoom = int(500 * (instance.get('start', 0) - zoom_start_frame) / zoom_duration)
             end_x_zoom = int(500 * (instance.get('end', 0) + 1 - zoom_start_frame) / zoom_duration)
             cv2.rectangle(zoom_canvas, (start_x_zoom, 0), (end_x_zoom, 49), (255, 255, 255), 2)
             
-    # Marker on Full Timeline
     marker_pos_full = int(500 * current_frame_idx / total_frames)
     cv2.line(full_timeline_canvas, (marker_pos_full, 0), (marker_pos_full, 49), (0, 0, 0), 2)
     
-    # Marker on Zoom Timeline
     if zoom_duration > 0:
         marker_pos_zoom = int(500 * (current_frame_idx - zoom_start_frame) / zoom_duration)
         if 0 <= marker_pos_zoom < 500:
             cv2.line(zoom_canvas, (marker_pos_zoom, 0), (marker_pos_zoom, 49), (0, 0, 0), 2)
 
-    # --- 5. Encode and Send ---
     _, encoded_timeline = cv2.imencode(".jpg", full_timeline_canvas)
     timeline_blob = base64.b64encode(encoded_timeline.tobytes()).decode("utf-8")
     
     _, encoded_zoom = cv2.imencode(".jpg", zoom_canvas)
     zoom_blob = base64.b64encode(encoded_zoom.tobytes()).decode("utf-8")
 
-    eel.updateLabelImageSrc(main_frame_blob, timeline_blob, zoom_blob)()
+    active_behavior_name = None
+    if gui_state.label_probability_df is not None and not gui_state.label_probability_df.empty:
+        try:
+            behavior_columns = gui_state.label_session_behaviors
+            predicted_label = gui_state.label_probability_df.iloc[current_frame_idx][behavior_columns].idxmax()
+            active_behavior_name = predicted_label
+        except (IndexError, KeyError):
+            pass
+    
+    eel.updateLabelImageSrc(main_frame_blob, timeline_blob, zoom_blob, active_behavior_name)()
 
 
 def fill_colors(canvas_img: np.ndarray, total_frames: int, view_start_frame: int = 0, view_end_frame: int = -1):
-    """
-    Draws colored bars on a timeline. It now handles three states:
-    1. Solid: Human-verified labels or confirmed model predictions.
-    2. Semi-Transparent: Unconfirmed model predictions in Guided Mode.
-    3. Ghosted/Inactive: Labels not being reviewed in Review by Behavior mode.
-    """
     if view_end_frame == -1:
         view_end_frame = total_frames
     
@@ -1860,7 +1894,27 @@ def fill_colors(canvas_img: np.ndarray, total_frames: int, view_start_frame: int
     behaviors = gui_state.label_session_behaviors
     colors = gui_state.label_session_colors
     timeline_w = canvas_img.shape[1]
-    
+
+    if gui_state.label_probability_df is not None and not gui_state.label_probability_df.empty:
+        df = gui_state.label_probability_df
+        if 'predicted_label' not in df.columns:
+             df['predicted_label'] = df[behaviors].idxmax(axis=1)
+        
+        for i in range(len(behaviors)):
+            b_name = behaviors[i]
+            color_hex = colors[i].lstrip("#")
+            bgr_color = tuple(int(color_hex[i:i+2], 16) for i in (4, 2, 0))
+            
+            frames_for_b = df.index[df['predicted_label'] == b_name].tolist()
+            
+            for start, end in _find_contiguous_blocks(frames_for_b):
+                start_px = int(timeline_w * (start - view_start_frame) / view_duration)
+                end_px = int(timeline_w * (end + 1 - view_start_frame) / view_duration)
+                if start_px < end_px:
+                    cv2.rectangle(canvas_img, (start_px, 0), (end_px, 49), bgr_color, -1)
+        
+        return
+
     is_review_mode = gui_state.label_filter_for_behavior is not None
 
     for inst in gui_state.label_session_buffer:
@@ -1871,7 +1925,6 @@ def fill_colors(canvas_img: np.ndarray, total_frames: int, view_start_frame: int
             b_idx = behaviors.index(inst['label'])
             color_hex = colors[b_idx].lstrip("#")
             bgr_color = tuple(int(color_hex[i:i+2], 16) for i in (4, 2, 0))
-            bgr_outline = tuple(max(0, min(255, int(c * 0.7))) for c in bgr_color)
             
             start_px = int(timeline_w * (inst.get("start", 0) - view_start_frame) / view_duration)
             end_px = int(timeline_w * (inst.get("end", 0) + 1 - view_start_frame) / view_duration)
@@ -1883,33 +1936,24 @@ def fill_colors(canvas_img: np.ndarray, total_frames: int, view_start_frame: int
 
                 if is_active_behavior:
                     if is_model_prediction and not is_confirmed:
-                        # State 1: Unconfirmed Model Prediction (draw semi-transparent)
                         overlay = canvas_img.copy()
-                        # draw the FILLED area on overlay (not on canvas_img)
                         cv2.rectangle(overlay, (start_px, 0), (end_px, 49), bgr_color, -1)
-                        alpha = 0.4 # transparent
+                        alpha = 0.4 
                         cv2.addWeighted(overlay, alpha, canvas_img, 1 - alpha, 0, canvas_img)
-                        # optional thin outline on canvas_img afterwards:
-                        cv2.rectangle(canvas_img, (start_px, 0), (end_px, 49), bgr_outline, 1)
                     else:
-                        # State 2: Human Label or Confirmed Prediction (draw solid)
                         cv2.rectangle(canvas_img, (start_px, 0), (end_px, 49), bgr_color, -1)
                         if is_confirmed:
                            cv2.rectangle(canvas_img, (start_px, 0), (end_px, 49), (255, 255, 255), 1)
                 else:
-                    # State 3: Inactive/Ghosted Behavior in Review Mode (draw very transparent)
                     overlay = canvas_img.copy()
-                    # draw the FILLED area on overlay (not on canvas_img)
                     cv2.rectangle(overlay, (start_px, 0), (end_px, 49), bgr_color, -1)
-                    alpha = 0.2  # even more transparent
+                    alpha = 0.2
                     cv2.addWeighted(overlay, alpha, canvas_img, 1 - alpha, 0, canvas_img)
-                    # optional thin outline on canvas_img afterwards:
-                    cv2.rectangle(canvas_img, (start_px, 0), (end_px, 49), bgr_outline, 1)
+                    cv2.rectangle(canvas_img, (start_px, 0), (end_px, 49), tuple(c*0.7 for c in bgr_color), 1)
 
         except (ValueError, IndexError):
-            # If the behavior label is not found, draw it in a bright, obvious "error" color.
             print(f"Warning: Could not find a valid color for behavior '{inst.get('label', 'N/A')}'. Drawing in magenta.")
-            bgr_color = (255, 0, 255) # Bright Magenta (BGR)
+            bgr_color = (255, 0, 255)
             start_px = int(timeline_w * (inst.get("start", 0) - view_start_frame) / view_duration)
             end_px = int(timeline_w * (inst.get("end", 0) + 1 - view_start_frame) / view_duration)
             if start_px < end_px:
@@ -1917,7 +1961,6 @@ def fill_colors(canvas_img: np.ndarray, total_frames: int, view_start_frame: int
                 cv2.rectangle(canvas_img, (start_px, 0), (end_px, 49), (255, 255, 255), 2)
             continue
 
-    # Logic for drawing a new, in-progress label remains the same.
     if gui_state.label_type != -1 and gui_state.label_start != -1:
         color_hex = gui_state.label_session_colors[gui_state.label_type].lstrip("#")
         bgr_color = tuple(int(color_hex[i:i+2], 16) for i in (4, 2, 0))
@@ -1929,7 +1972,7 @@ def fill_colors(canvas_img: np.ndarray, total_frames: int, view_start_frame: int
         if start_px < end_px:
             cv2.rectangle(canvas_img, (start_px, 0), (end_px, 49), bgr_color, -1)
             cv2.rectangle(canvas_img, (start_px, 0), (end_px, 49), (255, 255, 255), 1)
-
+            
 def update_counts():
     """Updates instance/frame counts in the UI based on the current session buffer."""
     if not gui_state.label_dataset: return

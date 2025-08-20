@@ -381,16 +381,48 @@ async function initializeEthogramUI() {
                 htmlBuilder += `<div id='${subjectId}' class='ms-3' style="display:none;">`;
 
                 videos.forEach(video => {
-                    htmlBuilder += `<div class="small hand-cursor text-light py-1" onclick="generateEthogram('${video.path}')"><i class="bi bi-film me-2"></i>${video.name}</div>`;
+                    htmlBuilder += `
+                        <div class="d-flex justify-content-between align-items-center py-1">
+                            <div class="small hand-cursor text-light" onclick="generateEthogram('${video.path}')">
+                                <i class="bi bi-film me-2"></i>${video.name}
+                            </div>
+                            <button class="btn btn-sm btn-outline-info py-0" onclick="launchInteractivePlayback('${video.path}')" data-bs-toggle="tooltip" title="Interactive Playback">
+                                <i class="bi bi-play-circle-fill"></i>
+                            </button>
+                        </div>
+                    `;
                 });
                 htmlBuilder += `</div>`;
             });
             htmlBuilder += `</div>`;
         });
         container.innerHTML = htmlBuilder;
+
     } catch (error) {
         console.error("Error initializing ethogram UI:", error);
         container.innerHTML = "<p class='text-danger text-center p-3'>Error loading video data.</p>";
+    }
+}
+
+async function launchInteractivePlayback(videoPath) {
+    const spinner = document.getElementById('cover-spin');
+    if(spinner) spinner.style.visibility = 'visible';
+    try {
+        const result = await eel.get_predictions_for_video(videoPath)();
+        if (result.error) {
+            showErrorOnVisualizePage(result.error);
+            return;
+        }
+
+        sessionStorage.setItem('playback_video_path', videoPath);
+        sessionStorage.setItem('playback_data', JSON.stringify(result));
+        
+        window.location.href = 'label-train.html?mode=playback';
+
+    } catch (e) {
+        showErrorOnVisualizePage(`Failed to launch playback: ${e.message}`);
+    } finally {
+        if(spinner) spinner.style.visibility = 'hidden';
     }
 }
 

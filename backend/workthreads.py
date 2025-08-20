@@ -785,11 +785,14 @@ class TrainingThread(threading.Thread):
 
         torch.save(best_model.state_dict(), os.path.join(model_dir, "model.pth"))
 
+        # The model's architecture name is saved to its config file.
         model_config = {
             "name": model_name,
             "behaviors": task.behaviors,
-            "seq_len": task.sequence_length
+            "seq_len": task.sequence_length,
+            "architecture": type(best_model).__name__ # e.g., "ClassifierLSTMDeltas"
         }
+
         with open(os.path.join(model_dir, "config.yaml"), "w") as f:
             yaml.dump(model_config, f, allow_unicode=True)
 

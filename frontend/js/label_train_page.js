@@ -864,7 +864,7 @@ function showErrorOnLabelTrainPage(message) {
 }
 
 eel.expose(updateLabelImageSrc);
-function updateLabelImageSrc(mainFrameBlob, timelineBlob, zoomBlob) {
+function updateLabelImageSrc(mainFrameBlob, timelineBlob, zoomBlob, activeBehaviorName = null) {
     const mainFrameImg = document.getElementById('label-image');
     const fullTimelineImg = document.getElementById('full-timeline-image');
     const zoomImg = document.getElementById('zoom-bar-image');
@@ -873,6 +873,21 @@ function updateLabelImageSrc(mainFrameBlob, timelineBlob, zoomBlob) {
     if (mainFrameImg) mainFrameImg.src = mainFrameBlob ? "data:image/jpeg;base64," + mainFrameBlob : "assets/noVideo.png";
     if (fullTimelineImg) fullTimelineImg.src = timelineBlob ? "data:image/jpeg;base64," + timelineBlob : blankGif;
     if (zoomImg) zoomImg.src = zoomBlob ? "data:image/jpeg;base64," + zoomBlob : blankGif;
+
+    if (document.querySelector('#controls .card-header')?.innerText.startsWith('Playback')) {
+        document.querySelectorAll('#controls .list-group-item').forEach(item => {
+            item.classList.remove('highlight-selected');
+        });
+
+        if (activeBehaviorName) {
+            const legendItemId = `playback-legend-${activeBehaviorName.replace(/[\W_]+/g, '-')}`;
+            const legendItem = document.getElementById(legendItemId);
+            if (legendItem) {
+                legendItem.classList.add('highlight-selected');
+            }
+        }
+    }
+
     return true;	
 }
 
@@ -1258,6 +1273,48 @@ function setConfirmationModeUI(isConfirming) {
 // UI INTERACTION & EVENT HANDLERS
 // =================================================================
 
+async function initializePlaybackUI(videoPath, playbackData) {
+    labelingInterfaceActive = true;
+    document.getElementById('datasets').style.display = 'none';
+    document.getElementById('label').style.display = 'flex';
+    
+    document.getElementById('save-labels-btn').style.display = 'none';
+    const controlsContainer = document.getElementById('controls');
+    const cheatSheet = document.getElementById('labeling-cheat-sheet');
+    if (cheatSheet) cheatSheet.style.display = 'none';
+
+    const { model_name, behaviors, predictions } = playbackData;
+    const colors = [];
+    for (let i = 0; i < behaviors.length; i++) {
+        colors.push(getColorForIndex(i)); 
+    }
+
+    let legendHTML = `<div class="card bg-dark text-light h-100">
+        <div class="card-header"><h5>Playback: ${model_name}</h5></div>
+        <ul class="list-group list-group-flush">`;
+    behaviors.forEach((b, i) => {
+        const bgColor = colors[i];
+        const textColor = getTextColorForBg(bgColor);
+        const behaviorId = `playback-legend-${b.replace(/[\W_]+/g, '-')}`;
+		legendHTML += `<li class="list-group-item bg-dark text-light" id="${behaviorId}">
+            <span class="badge rounded-pill me-2" style="background-color: ${bgColor}; color: ${textColor};">&nbsp;</span>
+            ${b}
+        </li>`;
+    });
+    legendHTML += `</ul></div>`;
+    controlsContainer.innerHTML = legendHTML;
+
+    const spinner = document.getElementById('cover-spin');
+    if(spinner) spinner.style.visibility = 'visible';
+    try {
+        await eel.start_playback_session(videoPath, behaviors, colors, predictions)();
+    } catch(e) {
+        showErrorOnLabelTrainPage(`Failed to start playback session: ${e.message}`);
+    } finally {
+        if(spinner) spinner.style.visibility = 'hidden';
+    }
+}
+
 async function handleMarkAsReviewed() {
     // This function is for when no changes were made, but the user wants to mark the video as done.
     
@@ -1283,6 +1340,15 @@ async function handleMarkAsReviewed() {
     }
 }
 
+function getColorForIndex(index) {
+    const tab20_map = (val) => {
+        const remap = { 7: 6, 14: 2, 15: 4 };
+        if (val in remap) return remap[val];
+        return (val < 10) ? (val * 2) : ((val - 10) * 2 + 1);
+    };
+    const colors = ['#1f77b4', '#aec7e8', '#ff7f0e', '#ffbb78', '#2ca02c', '#98df8a', '#d62728', '#ff9896', '#9467bd', '#c5b0d5', '#8c564b', '#c49c94', '#e377c2', '#f7b6d2', '#7f7f7f', '#c7c7c7', '#bcbd22', '#dbdb8d', '#17becf', '#9edae5'];
+    return colors[tab20_map(index) % colors.length];
+}
 
 function jumpToFrame() {
     const input = document.getElementById('frame-jump-input');
@@ -2122,8 +2188,24 @@ function waitForEelConnection() {
 
 document.addEventListener('DOMContentLoaded', async () => {
     await waitForEelConnection();
-    loadInitialDatasetCards();
 
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get('mode') === 'playback') {
+        const videoPath = sessionStorage.getItem('playback_video_path');
+        const playbackData = JSON.parse(sessionStorage.getItem('playback_data'));
+
+        if (videoPath && playbackData) {
+            sessionStorage.removeItem('playback_video_path');
+            sessionStorage.removeItem('playback_data');
+            initializePlaybackUI(videoPath, playbackData);
+        }
+        // Return here to prevent loading the normal dashboard and attaching its listeners
+        return; 
+    } else {
+        // This is the normal flow for the page
+        loadInitialDatasetCards();
+    }
+    
     // --- Listeners for various modal/page buttons ---
     document.getElementById('createDatasetButton')?.addEventListener('click', submitCreateDataset);
     document.getElementById('modal-import-button-final')?.addEventListener('click', handleImportSubmit);
@@ -2242,11 +2324,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
             guidedOptionsPanel.style.display = 'block';
             
-            // Get references to the elements we need to manage
             const smoothingInput = document.getElementById('pl-smoothing-window');
             const prelabelBtn = document.getElementById('start-preload-btn');
 
-            // 1. Immediately disable the controls to prevent interaction during loading
             modelSelectModal.innerHTML = '<option>Loading compatible models...</option>';
             modelSelectModal.disabled = true;
             if (smoothingInput) smoothingInput.disabled = true;
@@ -2264,41 +2344,34 @@ document.addEventListener('DOMContentLoaded', async () => {
                     return modelConfig?.behaviors && [...targetBehaviors].some(b => new Set(modelConfig.behaviors).has(b));
                 });
 
-                // 2. Populate the dropdown and re-enable controls based on the result
                 if (compatibleModels.length > 0) {
                     modelSelectModal.innerHTML = '<option selected disabled>Choose a model...</option>' + compatibleModels.map(name => `<option value="${name}">${name}</option>`).join('');
                     modelSelectModal.disabled = false;
                     if (smoothingInput) smoothingInput.disabled = false;
-                    if (prelabelBtn) prelabelBtn.disabled = false; // The button is now useful
+                    if (prelabelBtn) prelabelBtn.disabled = false;
                 } else {
                     modelSelectModal.innerHTML = '<option selected disabled>No compatible models found</option>';
-                    // Keep other controls disabled as there's nothing to do
                 }
 
             } catch (e) {
                 modelSelectModal.innerHTML = '<option selected disabled>Error loading models</option>';
-                // Keep controls disabled on error
             }
         };
     }
 
     if (startPreloadBtn) {
-        // This is the corrected line.
         startPreloadBtn.onclick = startPreLabeling;
     }
     
-    // MODIFICATION: Add the onchange event listener to the model selector
     if (modelSelectModal) {
         modelSelectModal.addEventListener('change', onModelSelectChange);
     }
 
-    // Reset the modal when it's closed
     preLabelModalElement?.addEventListener('hidden.bs.modal', () => {
         if(guidedOptionsPanel) guidedOptionsPanel.style.display = 'none';
         if(videoSelectModal) videoSelectModal.selectedIndex = 0;
         if(modelSelectModal) {
             modelSelectModal.innerHTML = '';
-            // Clear the info div as well
             const infoDiv = document.getElementById('pl-behavior-match-info');
             if (infoDiv) infoDiv.innerHTML = '';
         }

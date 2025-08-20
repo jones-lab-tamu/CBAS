@@ -121,6 +121,10 @@ def stop_live_preview():
 # --- Label/Train Page Functions ---
 
 @eel.expose
+def start_playback_session(video_path: str, behaviors: list, colors: list, predictions: dict):
+    return label_train_page.start_playback_session(video_path, behaviors, colors, predictions)
+
+@eel.expose
 def get_label_coverage_report(name):
     return label_train_page.get_label_coverage_report(name)
 
@@ -319,6 +323,11 @@ def delete_dataset(name: str) -> bool:
     return label_train_page.delete_dataset(name)
 
 # --- Visualize Page Functions ---
+
+@eel.expose
+def get_predictions_for_video(video_path: str):
+    return visualize_page.get_predictions_for_video(video_path)
+
 @eel.expose
 def get_recording_tree():
     return visualize_page.get_recording_tree()
