@@ -397,7 +397,7 @@ def get_classified_video_tree():
             tree.append((session_name, subjects_in_session))
             
     return tree
-
+    
 def generate_ethogram(video_path: str):
     """
     Generates an ethogram plot for a single video file.

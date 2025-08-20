@@ -64,14 +64,22 @@
                 <div class="card bg-dark text-light">
                   <div class="card-header d-flex justify-content-between align-items-center">
                     <!-- Title on the left -->
-                    <h5 id="visualization-title">Actogram Analysis</h5>
+                    <h5 id="visualization-title">Session Analysis: Actograms</h5>
                     <!-- Mode Switcher on the right -->
-                    <div class="btn-group btn-group-sm" role="group" aria-label="Visualization Mode">
+                    <div class="btn-group btn-group-sm" role="group" aria-label="Analysis Mode">
                       <input type="radio" class="btn-check" name="viz-mode" id="mode-actogram" autocomplete="off" checked onclick="setVisualizationMode('actogram')">
-                      <label class="btn btn-outline-primary" for="mode-actogram">Actogram</label>
-                    
+                      <label class="btn btn-outline-primary" for="mode-actogram" 
+                             data-bs-toggle="tooltip" data-bs-placement="bottom" 
+                             title="Analyze entire recording sessions. Ideal for generating actograms to see long-term behavioral patterns.">
+                        Session Analysis
+                      </label>
+
                       <input type="radio" class="btn-check" name="viz-mode" id="mode-ethogram" autocomplete="off" onclick="setVisualizationMode('ethogram')">
-                      <label class="btn btn-outline-primary" for="mode-ethogram">Ethogram</label>
+                      <label class="btn btn-outline-primary" for="mode-ethogram"
+                             data-bs-toggle="tooltip" data-bs-placement="bottom"
+                             title="Inspect a single video file. Use this to generate a detailed ethogram plot or to start an interactive playback session to visually verify model predictions.">
+                        Single Video
+                      </label>
                     </div>
                   </div>
                   <div class="card-body">

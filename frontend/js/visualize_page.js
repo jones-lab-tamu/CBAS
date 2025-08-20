@@ -41,13 +41,13 @@ function setVisualizationMode(mode) {
     const titleElement = document.getElementById('visualization-title');
 
     if (mode === 'actogram') {
-        titleElement.textContent = 'Actogram Analysis';
+        titleElement.textContent = 'Session Analysis: Actograms';
         actogramUI.style.display = 'block';
         ethogramUI.style.display = 'none';
         initializeActogramUI();
         document.getElementById('generate-actograms-btn').disabled = true;
     } else if (mode === 'ethogram') {
-        titleElement.textContent = 'Ethogram Analysis (Single Video)';
+        titleElement.textContent = 'Single Video Analysis';
         actogramUI.style.display = 'none';
         ethogramUI.style.display = 'block';
         document.getElementById('ethogram-container').innerHTML = '';
@@ -464,16 +464,20 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (elem) {
             const eventType = (elem.type === 'checkbox' || elem.tagName.toLowerCase() === 'select') ? 'change' : 'input';
             
-            // When a control changes, simply enable the "Generate" button.
             elem.addEventListener(eventType, () => {
                 const generateBtn = document.getElementById('generate-actograms-btn');
                 const checkedCount = document.querySelectorAll('.behavior-checkbox:checked').length;
                 
-                // Enable the button ONLY if at least one behavior is also selected.
                 if (generateBtn && checkedCount > 0) {
                     generateBtn.disabled = false;
                 }
             });
         }
+    });
+
+    // Initialize tooltips after the page is set up
+    var tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'))
+    var tooltipList = tooltipTriggerList.map(function (tooltipTriggerEl) {
+      return new bootstrap.Tooltip(tooltipTriggerEl)
     });
 });

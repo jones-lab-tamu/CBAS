@@ -71,6 +71,10 @@ def log_message(message: str, level: str = "INFO"):
 
 def fit_temperature(model, val_loader, device):
     """Finds the optimal temperature for calibrating model confidence."""
+    
+    # Ensure the model is on the correct device before any operations.
+    model.to(device)
+
     model.eval()
     T = torch.nn.Parameter(torch.ones(1, device=device))
     optimizer = torch.optim.LBFGS([T], lr=0.01, max_iter=50)
@@ -79,7 +83,7 @@ def fit_temperature(model, val_loader, device):
     all_logits, all_labels = [], []
     with torch.no_grad():
         for d, l in val_loader:
-            # No need to mask here, in-RAM loader provides clean data
+            # The in-RAM loader provides clean data, so no need to mask for l != -1
             logits, _ = model(d.to(device))
             all_logits.append(logits)
             all_labels.append(l)
@@ -91,6 +95,7 @@ def fit_temperature(model, val_loader, device):
 
     def eval_loss():
         optimizer.zero_grad()
+        # Use softplus for stability
         temp = torch.clamp(torch.nn.functional.softplus(T) + 1e-3, max=10.0)
         loss = criterion(all_logits / temp, all_labels)
         loss.backward()
@@ -785,14 +790,12 @@ class TrainingThread(threading.Thread):
 
         torch.save(best_model.state_dict(), os.path.join(model_dir, "model.pth"))
 
-        # The model's architecture name is saved to its config file.
         model_config = {
             "name": model_name,
             "behaviors": task.behaviors,
             "seq_len": task.sequence_length,
-            "architecture": type(best_model).__name__ # e.g., "ClassifierLSTMDeltas"
+            "architecture": type(best_model).__name__
         }
-
         with open(os.path.join(model_dir, "config.yaml"), "w") as f:
             yaml.dump(model_config, f, allow_unicode=True)
 
@@ -851,6 +854,7 @@ class TrainingThread(threading.Thread):
                 )
             log_message(f"Epoch plots for the best run saved to '{plot_dir}'.", "INFO")
 
+        # --- 4. WRITE performance_report.yaml AND UPDATE DATASET CONFIG METRICS ---
         try:
             opt_key = task.optimization_target
             def _f1_of(rep):
@@ -870,17 +874,32 @@ class TrainingThread(threading.Thread):
             config = dict(ds.config)
             metrics_block = {}
 
-            train_counts = getattr(ds, "instance_counts", {}).get("train", {}) if hasattr(ds, "instance_counts") else {}
-            test_counts  = getattr(ds, "instance_counts", {}).get("test",  {}) if hasattr(ds, "instance_counts") else {}
+            best_run_seed = -1
+            if all_reports:
+                best_run_seed = int(np.argmax([_f1_of(r) for r in all_reports]))
+            
+            final_train_insts, final_test_insts, _ = gui_state.proj._load_dataset_common(task.name, 0.2, seed=best_run_seed)
 
+            from collections import Counter
+            train_instance_counts = Counter(inst['label'] for inst in final_train_insts)
+            test_instance_counts = Counter(inst['label'] for inst in final_test_insts)
+            
             for b in task.behaviors:
                 br = best_report_dict.get(b, {})
+                train_inst_count = train_instance_counts.get(b, 0)
+                train_frm_count = sum(inst['end'] - inst['start'] + 1 for inst in final_train_insts if inst['label'] == b)
+                test_inst_count = test_instance_counts.get(b, 0)
+                test_frm_count = sum(inst['end'] - inst['start'] + 1 for inst in final_test_insts if inst['label'] == b)
+
                 metrics_block[b] = {
                     "Precision": round(float(br.get("precision", 0.0)), 2),
                     "Recall":    round(float(br.get("recall", 0.0)), 2),
                     "F1 Score":  round(float(br.get("f1-score", 0.0)), 2),
-                    "Train #":   train_counts.get(b, "N/A"),
-                    "Test #":    test_counts.get(b, "N/A"),
+                    # --- START OF THE FIX ---
+                    # The dictionary keys now exactly match the strings expected by the frontend JavaScript.
+                    "Train Inst<br><small>(Frames)</small>":   f"{train_inst_count} ({train_frm_count})",
+                    "Test Inst<br><small>(Frames)</small>":    f"{test_inst_count} ({test_frm_count})",
+                    # --- END OF THE FIX ---
                 }
 
             config["metrics"] = metrics_block
