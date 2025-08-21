@@ -568,7 +568,7 @@ class Dataset:
             
     def update_instance_counts_in_config(self, project: 'Project'):
         from collections import Counter
-        train_insts, test_insts, _ = project._load_dataset_common(self.name, 0.2, seed=42) # Provide a default seed
+        train_insts, test_insts, _ = project._load_dataset_common(self.name, 0.2, seed=42)
         if train_insts is None or test_insts is None: return
         train_instance_counts = Counter(inst['label'] for inst in train_insts)
         test_instance_counts = Counter(inst['label'] for inst in test_insts)
@@ -583,11 +583,10 @@ class Dataset:
             train_n_frame = train_frame_counts.get(behavior_name, 0)
             test_n_inst = test_instance_counts.get(behavior_name, 0)
             test_n_frame = test_frame_counts.get(behavior_name, 0)
-            self.update_metric(behavior_name, "Train #", f"{train_n_inst} ({int(train_n_frame)})")
-            self.update_metric(behavior_name, "Test #", f"{test_n_inst} ({int(test_n_frame)})")
-            self.update_metric(behavior_name, "F1 Score", "N/A")
-            self.update_metric(behavior_name, "Recall", "N/A")
-            self.update_metric(behavior_name, "Precision", "N/A")
+            
+            # Use simple, machine-readable keys.
+            self.update_metric(behavior_name, "train_inst_frames", f"{train_n_inst} ({int(train_n_frame)})")
+            self.update_metric(behavior_name, "test_inst_frames", f"{test_n_inst} ({int(test_n_frame)})")
             
     def predictions_to_instances(self, csv_path: str, model_name: str, threshold: float = 0.7) -> list:
         try: df = pd.read_csv(csv_path)
@@ -800,6 +799,97 @@ class Project:
         random.shuffle(shuffled_pairs)
         seqs, labels = zip(*shuffled_pairs)
         return list(seqs), list(labels)
+
+    def load_dataset_3way(self, name: str, seed: int = 42, val_split: float = 0.2, test_split: float = 0.0,
+                          fixed_test_groups: set | None = None, seq_len: int = 15):
+        """
+        Performs a stable, group-aware 3-way split. Can accept a fixed set of test groups
+        to ensure the test set is not re-sampled, while re-shuffling train/val.
+        """
+        dataset = self.datasets.get(name)
+        if not dataset:
+            print(f"ERROR: Dataset '{name}' not found.")
+            return (None,) * 10
+
+        with open(dataset.labels_path, "r") as f: 
+            label_config = yaml.load(f, Loader=yaml.FullLoader)
+            
+        behaviors = label_config.get("behaviors", [])
+        if not behaviors: return (None,) * 10
+        
+        all_insts = [inst for b in behaviors for inst in label_config.get("labels", {}).get(b, [])]
+        if not all_insts: return (None,) * 10
+
+        group_to_instances = defaultdict(list)
+        for inst in all_insts:
+            group_key = os.path.dirname(inst['video']).replace('\\', '/')
+            group_to_instances[group_key].append(inst)
+        
+        all_groups = sorted(list(group_to_instances.keys()))
+        rng = np.random.default_rng(seed)
+
+        train_groups, val_groups, test_groups = set(), set(), set()
+
+        if fixed_test_groups is not None:
+            test_groups = fixed_test_groups
+            remaining_groups = [g for g in all_groups if g not in test_groups]
+            rng.shuffle(remaining_groups)
+        else:
+            rng.shuffle(all_groups)
+            if test_split > 0:
+                test_inst_count = 0
+                total_instances = len(all_insts)
+                for group in all_groups:
+                    if test_inst_count / total_instances < test_split:
+                        test_groups.add(group)
+                        test_inst_count += len(group_to_instances[group])
+            remaining_groups = [g for g in all_groups if g not in test_groups]
+        
+        # Correctly partition the remaining groups into validation and training sets.
+        remaining_instances = sum(len(group_to_instances[g]) for g in remaining_groups)
+        if val_split > 0 and remaining_instances > 0:
+            val_inst_count = 0
+            # Find the index at which to split the list
+            split_index = 0
+            for i, group in enumerate(remaining_groups):
+                val_inst_count += len(group_to_instances[group])
+                if val_inst_count / remaining_instances >= val_split:
+                    split_index = i + 1
+                    break
+            
+            # If the loop finishes without breaking (e.g., val_split is 1.0),
+            # the split_index should be the full length of the list.
+            if split_index == 0 and remaining_groups:
+                split_index = len(remaining_groups)
+
+            val_groups = set(remaining_groups[:split_index])
+            train_groups = set(remaining_groups[split_index:])
+        else:
+            # If no validation split, all remaining groups go to training
+            train_groups = set(remaining_groups)
+
+        train_insts = [inst for group in train_groups for inst in group_to_instances.get(group, [])]
+        val_insts = [inst for group in val_groups for inst in group_to_instances.get(group, [])]
+        test_insts = [inst for group in test_groups for inst in group_to_instances.get(group, [])]
+        
+        rng.shuffle(train_insts)
+        rng.shuffle(val_insts)
+        rng.shuffle(test_insts)
+
+        print(f"Data Split (Seed: {seed}):")
+        print(f"  - Train: {len(train_insts)} instances in {len(train_groups)} groups")
+        print(f"  - Val:   {len(val_insts)} instances in {len(val_groups)} groups")
+        print(f"  - Test:  {len(test_insts)} instances in {len(test_groups)} groups")
+
+        train_seqs, train_labels = self.convert_instances(self.path, train_insts, seq_len, behaviors)
+        val_seqs, val_labels = self.convert_instances(self.path, val_insts, seq_len, behaviors)
+        test_seqs, test_labels = self.convert_instances(self.path, test_insts, seq_len, behaviors)
+
+        train_ds = BalancedDataset(train_seqs, train_labels, behaviors) if train_seqs else None
+        val_ds = StandardDataset(val_seqs, val_labels) if val_seqs else None
+        test_ds = StandardDataset(test_seqs, test_labels) if test_seqs else None
+
+        return train_ds, val_ds, test_ds, train_insts, val_insts, test_insts, behaviors, train_groups, val_groups, test_groups
 
     def load_dataset(self, name: str, seed: int = 42, split: float = 0.2, seq_len: int = 15, progress_callback=None) -> tuple:
         train_insts, test_insts, behaviors = self._load_dataset_common(name, split, seed)
@@ -1078,6 +1168,49 @@ class Project:
             return all_insts[:split_idx], all_insts[split_idx:], behaviors
 
         return train_insts, test_insts, behaviors
+
+def evaluate_on_split(model, dataset, behaviors, device=None):
+    """
+    Performs a one-time evaluation of a trained model on a given dataset split.
+
+    Args:
+        model (torch.nn.Module): The trained model to evaluate.
+        dataset (torch.utils.data.Dataset): The dataset split (e.g., validation or test) to evaluate on.
+        behaviors (list[str]): The list of behavior names.
+        device (torch.device, optional): The device to run evaluation on. Defaults to CUDA if available.
+
+    Returns:
+        dict: A dictionary containing the classification report and confusion matrix.
+    """
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    # Use a simple, non-shuffled DataLoader for evaluation.
+    # num_workers can be > 0 here as this is a separate, self-contained process.
+    loader = torch.utils.data.DataLoader(dataset, batch_size=512, shuffle=False,
+                                         num_workers=4, pin_memory=(device.type=='cuda'),
+                                         collate_fn=collate_fn)
+    y_true, y_pred = [], []
+    model.to(device).eval() # Ensure model is on the correct device and in eval mode
+    
+    with torch.no_grad():
+        for x, y in loader:
+            # The in-RAM loader provides clean data, but this check is good practice.
+            valid = (y != -1)
+            if not valid.any(): continue
+            
+            logits, _ = model(x[valid].to(device))
+            y_true.extend(y[valid].cpu().numpy())
+            y_pred.extend(logits.argmax(1).cpu().numpy())
+
+    if not y_true:
+        return {"report": {}, "cm": np.array([])}
+
+    rep = classification_report(y_true, y_pred, target_names=behaviors,
+                                output_dict=True, zero_division=0,
+                                labels=range(len(behaviors)))
+    cm  = confusion_matrix(y_true, y_pred, labels=range(len(behaviors)))
+    return {"report": rep, "cm": cm}
 
 def collate_fn(batch):
     dcls, lbls = zip(*batch)

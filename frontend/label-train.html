@@ -600,7 +600,41 @@
 				</div>
 				<div class="col">
 				</div>
-			</div>	
+			</div>
+
+            <div class="accordion mt-3" id="advancedOptionsAccordion">
+              <div class="accordion-item">
+                <h2 class="accordion-header" id="headingOne">
+                  <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapseAdvanced" aria-expanded="false" aria-controls="collapseAdvanced">
+                    🔽 Advanced Options
+                  </button>
+                </h2>
+                <div id="collapseAdvanced" class="accordion-collapse collapse" aria-labelledby="headingOne" data-bs-parent="#advancedOptionsAccordion">
+                  <div class="accordion-body">
+                    <div class="form-check form-switch mb-2">
+                      <input class="form-check-input" type="checkbox" role="switch" id="tm-use-test-set">
+                      <label class="form-check-label" for="tm-use-test-set">Enable Held-Out Test Set</label>
+                    </div>
+                    
+                    <div id="test-set-controls" class="mt-2" style="display: none;">
+                      <label for="tm-test-split" class="form-label">Test Split Percentage:</label>
+                      <input type="range" class="form-range" min="10" max="50" step="1" value="20" id="tm-test-split">
+                      <span class="badge bg-secondary float-end" id="tm-test-split-value">20%</span>
+                      <div id="tm-preflight-status" class="form-text mt-1">
+                        <span class="text-muted">Requires a sufficient number of labeled subjects.</span>
+                      </div>
+                    </div>
+                    
+                    <div class="alert alert-info small mt-3" role="alert">
+                      <i class="bi bi-info-circle-fill me-2"></i><strong>Note:</strong> The model is selected based on its performance on the validation set. The held-out test set is used only for a final, unbiased evaluation of the winning model.
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+
+			
 		</div>
         </div>
         <div class="modal-footer">

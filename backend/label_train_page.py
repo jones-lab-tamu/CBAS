@@ -39,6 +39,86 @@ import time
 # HELPER FUNCTIONS
 # =================================================================
 
+def run_preflight_check(dataset_name: str, test_split: float) -> dict:
+    """
+    Simulates a 3-way split to validate if it's possible and meets constraints.
+    This is a fast, file-only operation that does not load any tensor data.
+    """
+    try:
+        if not gui_state.proj or dataset_name not in gui_state.proj.datasets:
+            return {"is_valid": False, "message": "Dataset not found."}
+
+        # 1. Load all instances and group by subject (same as the real splitter)
+        dataset = gui_state.proj.datasets[dataset_name]
+        all_insts = [inst for b_labels in dataset.labels.get("labels", {}).values() for inst in b_labels]
+        behaviors = set(dataset.config.get("behaviors", []))
+        
+        if len(behaviors) == 0:
+            return {"is_valid": False, "message": "Dataset has no defined behaviors."}
+
+        group_to_instances = defaultdict(list)
+        group_to_behaviors = defaultdict(set)
+        for inst in all_insts:
+            group_key = os.path.dirname(inst['video']).replace('\\', '/')
+            group_to_instances[group_key].append(inst)
+            group_to_behaviors[group_key].add(inst['label'])
+        
+        all_groups = sorted(list(group_to_instances.keys()))
+        
+        if len(all_groups) < 3:
+            return {"is_valid": False, "message": f"Not enough subjects/groups ({len(all_groups)}) to form a 3-way split."}
+
+        # 2. Simulate the split allocation
+        total_instances = len(all_insts)
+        test_groups, val_groups, train_groups = set(), set(), set()
+        
+        # Allocate test set
+        test_inst_count = 0
+        temp_groups = list(all_groups) # Use a copy for allocation
+        for group in temp_groups:
+            if test_inst_count / total_instances < test_split:
+                test_groups.add(group)
+                test_inst_count += len(group_to_instances[group])
+        
+        remaining_groups = [g for g in all_groups if g not in test_groups]
+        remaining_instances = sum(len(group_to_instances[g]) for g in remaining_groups)
+
+        # Allocate validation set (fixed at 20% of the remainder)
+        val_inst_count = 0
+        if remaining_instances > 0:
+            for group in remaining_groups:
+                if val_inst_count / remaining_instances < 0.2:
+                    val_groups.add(group)
+                    val_inst_count += len(group_to_instances[group])
+                else:
+                    train_groups.add(group)
+        else:
+             train_groups = set(remaining_groups)
+
+        # 3. Validate the splits
+        if not train_groups or not val_groups:
+            return {"is_valid": False, "message": "Split resulted in an empty train or validation set."}
+
+        train_behaviors = {b for g in train_groups for b in group_to_behaviors[g]}
+        if train_behaviors != behaviors:
+            missing = behaviors - train_behaviors
+            return {"is_valid": False, "message": f"Train set would be missing behaviors: {', '.join(missing)}"}
+
+        val_behaviors = {b for g in val_groups for b in group_to_behaviors[g]}
+        if val_behaviors != behaviors:
+            missing = behaviors - val_behaviors
+            return {"is_valid": False, "message": f"Validation set would be missing behaviors: {', '.join(missing)}"}
+
+        test_behaviors = {b for g in test_groups for b in group_to_behaviors[g]}
+        if test_behaviors != behaviors:
+            missing = behaviors - test_behaviors
+            return {"is_valid": True, "message": f"Warning: Test set will be missing behaviors: {', '.join(missing)}. Proceed with caution."}
+
+        return {"is_valid": True, "message": "Split is valid. Ready to train."}
+
+    except Exception as e:
+        return {"is_valid": False, "message": f"An unexpected error occurred: {e}"}
+
 def _video_import_worker(session_name: str, subject_name: str, video_paths: list[str], standardize: bool, crop_data: dict):
     """
     (WORKER) Runs in a separate thread. Copies or standardizes/crops imported videos
@@ -1679,13 +1759,12 @@ def create_dataset(name: str, behaviors: list[str], recordings_whitelist: list[s
         return True
     return False
 
-def train_model(name: str, batch_size: str, learning_rate: str, epochs: str, sequence_length: str, training_method: str, patience: str, num_runs: str, num_trials: str, optimization_target: str, custom_weights: dict = None):
+def train_model(name: str, batch_size: str, learning_rate: str, epochs: str, sequence_length: str, training_method: str, patience: str, num_runs: str, num_trials: str, optimization_target: str, use_test: bool, test_split: float, custom_weights: dict = None):
     """Queues a training task for the specified dataset."""
     if not gui_state.proj or name not in gui_state.proj.datasets: return
     if not gui_state.training_thread: return
 
     try:
-    
         task = workthreads.TrainingTask(
             name=name, dataset=gui_state.proj.datasets[name],
             behaviors=gui_state.proj.datasets[name].config.get('behaviors', []),
@@ -1696,6 +1775,8 @@ def train_model(name: str, batch_size: str, learning_rate: str, epochs: str, seq
             num_runs=int(num_runs),
             num_trials=int(num_trials),
             optimization_target=optimization_target,
+            use_test=use_test,
+            test_split=test_split,
             custom_weights=custom_weights
         )
         gui_state.training_thread.queue_task(task)

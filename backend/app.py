@@ -121,6 +121,10 @@ def stop_live_preview():
 # --- Label/Train Page Functions ---
 
 @eel.expose
+def run_preflight_check(dataset_name: str, test_split: float):
+    return label_train_page.run_preflight_check(dataset_name, test_split)
+
+@eel.expose
 def start_playback_session(video_path: str, behaviors: list, colors: list, predictions: dict):
     return label_train_page.start_playback_session(video_path, behaviors, colors, predictions)
 
@@ -303,8 +307,8 @@ def create_dataset(name, behaviors, whitelist):
     return label_train_page.create_dataset(name, behaviors, whitelist)
 
 @eel.expose
-def train_model(name, b_size, lr, epochs, seq_len, method, patience, num_runs, num_trials, optimization_target, custom_weights):
-    return label_train_page.train_model(name, b_size, lr, epochs, seq_len, method, patience, num_runs, num_trials, optimization_target, custom_weights)
+def train_model(name, b_size, lr, epochs, seq_len, method, patience, num_runs, num_trials, optimization_target, use_test, test_split, custom_weights):
+    return label_train_page.train_model(name, b_size, lr, epochs, seq_len, method, patience, num_runs, num_trials, optimization_target, use_test, test_split, custom_weights)
     
 @eel.expose
 def start_classification(model_name, whitelist):

@@ -1847,70 +1847,64 @@ async function submitCreateDataset() {
     }
 }
 
-function showTrainModal(datasetName) {
+async function showTrainModal(datasetName) {
     const tmDatasetElement = document.getElementById('tm-dataset');
     if (tmDatasetElement) tmDatasetElement.innerText = datasetName;
 
-    const methodSelect = document.getElementById('tm-method');
-    const weightsPanel = document.getElementById('custom-weights-panel');
-    const weightsContainer = document.getElementById('custom-weights-container');
+    const useTestSetToggle = document.getElementById('tm-use-test-set');
+    const testSetControls = document.getElementById('test-set-controls');
+    const testSplitSlider = document.getElementById('tm-test-split');
+    const testSplitValue = document.getElementById('tm-test-split-value');
+    const preflightStatus = document.getElementById('tm-preflight-status');
+    const trainButton = document.getElementById('trainModelButton');
 
-    // Function to toggle the visibility of the custom weights panel
-    const toggleWeightsPanel = () => {
-        if (methodSelect.value === 'custom_weights') {
-            populateCustomWeights(datasetName);
-            weightsPanel.style.display = 'block';
-        } else {
-            weightsPanel.style.display = 'none';
-        }
-    };
+    // --- Reset UI to default state ---
+    useTestSetToggle.checked = false;
+    testSetControls.style.display = 'none';
+    testSplitSlider.value = 20;
+    testSplitValue.textContent = '20%';
+    trainButton.disabled = false;
+    preflightStatus.innerHTML = '<span class="text-muted">Requires a sufficient number of labeled subjects.</span>';
 
-    // Function to calculate and display the smart default weights
-    const populateCustomWeights = async (dsName) => {
-        weightsContainer.innerHTML = '<em>Loading suggested weights...</em>';
-        const datasets = await eel.load_dataset_configs()();
-        const dataset = datasets[dsName];
-        if (!dataset || !dataset.behaviors) {
-            weightsContainer.innerHTML = '<em class="text-danger">Could not load behaviors.</em>';
+    // --- Preflight Check Logic ---
+    async function runPreflight() {
+        const useTest = useTestSetToggle.checked;
+        const testSplit = parseInt(testSplitSlider.value) / 100.0;
+
+        if (!useTest) {
+            trainButton.disabled = false;
+            preflightStatus.innerHTML = '<span class="text-muted">Training will use a standard Train/Validation split.</span>';
             return;
         }
 
-        let html = '<div class="row g-2">';
-        const scalingFactor = 4.0; // This can be tuned
+        trainButton.disabled = true; // Disable while checking
+        preflightStatus.innerHTML = '<em>Validating split...</em>';
 
-        dataset.behaviors.forEach(behavior => {
-            const metrics = dataset.metrics ? dataset.metrics[behavior] : null;
-            let f1Score = 0.5; // Default F1 if none is available
-            if (metrics && metrics['F1 Score'] && !isNaN(parseFloat(metrics['F1 Score']))) {
-                f1Score = parseFloat(metrics['F1 Score']);
-            }
+        // We will create this new backend function next
+        const { is_valid, message } = await eel.run_preflight_check(datasetName, testSplit)();
 
-            // Calculate the suggested weight
-            const difficulty = 1.0 - f1Score;
-            let suggestedWeight = 1.0 + (difficulty * scalingFactor);
-            // Clamp the values to a reasonable range, e.g., [0.5, 5.0]
-            suggestedWeight = Math.max(0.5, Math.min(5.0, suggestedWeight));
-
-            html += `
-                <div class="col-6 d-flex align-items-center">
-                    <label for="cw-${behavior}" class="form-label me-2 mb-0 text-nowrap">${behavior}:</label>
-                    <input type="number" class="form-control form-control-sm custom-weight-input" id="cw-${behavior}" 
-                           data-behavior="${behavior}" value="${suggestedWeight.toFixed(2)}" step="0.1" min="0.1">
-                </div>
-            `;
-        });
-        html += '</div>';
-        weightsContainer.innerHTML = html;
-    };
-
-    // Add event listener to the dropdown
-    if (methodSelect) {
-        methodSelect.addEventListener('change', toggleWeightsPanel);
+        if (is_valid) {
+            trainButton.disabled = false;
+            preflightStatus.innerHTML = `<span class="text-success">${message}</span>`;
+        } else {
+            trainButton.disabled = true; // Keep it disabled
+            preflightStatus.innerHTML = `<span class="text-danger">${message}</span>`;
+        }
     }
 
-    // Initial check when the modal is opened
-    toggleWeightsPanel();
+    // --- Attach Event Listeners ---
+    useTestSetToggle.onchange = () => {
+        testSetControls.style.display = useTestSetToggle.checked ? 'block' : 'none';
+        runPreflight();
+    };
+    testSplitSlider.oninput = () => {
+        testSplitValue.textContent = `${testSplitSlider.value}%`;
+    };
+    testSplitSlider.onchange = runPreflight; // Re-run check when user finishes sliding
 
+    // Run the preflight once on modal open to set the initial state
+    runPreflight();
+    
     trainBsModal?.show();
 }
 
@@ -1925,7 +1919,10 @@ async function submitTrainModel() {
     const numRuns = document.getElementById('tm-runs').value;
 	const numTrials = document.getElementById('tm-trials').value;
     const optimizationTarget = document.getElementById('tm-optimization-target').value;
-
+    
+    // Get the new values from the advanced options
+    const useTest = document.getElementById('tm-use-test-set').checked;
+    const testSplit = parseInt(document.getElementById('tm-test-split').value) / 100.0;
 
     let customWeights = null;
     if (trainMethod === 'custom_weights') {
@@ -1944,7 +1941,6 @@ async function submitTrainModel() {
         });
     }
 
-
     if (!batchSize || !seqLen || !learningRate || !epochsCount || !patience || !numRuns || !numTrials) {
         showErrorOnLabelTrainPage("All training parameters must be filled.");
         return;
@@ -1959,7 +1955,8 @@ async function submitTrainModel() {
 
     updateTrainingStatusOnUI(datasetName, "Training task queued...");
     
-    eel.train_model(datasetName, batchSize, learningRate, epochsCount, seqLen, trainMethod, patience, numRuns, numTrials, optimizationTarget, customWeights)();
+    // Call the updated eel function with the new parameters
+    eel.train_model(datasetName, batchSize, learningRate, epochsCount, seqLen, trainMethod, patience, numRuns, numTrials, optimizationTarget, useTest, testSplit, customWeights)();
 }
 
 async function showInferenceModal(datasetName) {
@@ -2033,6 +2030,8 @@ async function loadInitialDatasetCards(datasets = null) {
                 const behaviors = config.behaviors || [];
                 const metrics = config.metrics || {};
 
+                const hasTestF1 = behaviors.some(b => (metrics[b] && metrics[b]['Test F1'] && metrics[b]['Test F1'] !== 'N/A'));
+
                 const collapseId = `collapse-${datasetName.replace(/[\W_]+/g, '-')}`;
 
                 htmlContent += `
@@ -2050,24 +2049,58 @@ async function loadInitialDatasetCards(datasets = null) {
                             <div class="collapse show" id="${collapseId}">
                                 <div class="card-body d-flex flex-column">`;
 
-                // --- STATE VIEWS ---
-                // This part for 'new' and 'labeled' states is unchanged and correct.
+                // --- START OF DEFENSIVE UI LOGIC ---
+                // Helper functions to read from metrics object, trying both old and new keys.
+                const getTrainCount = m => m['Train Inst (Frames)'] ?? m['Train Inst<br><small>(Frames)</small>'] ?? '0 (0)';
+                const getTestCount = m => m['Test Inst (Frames)'] ?? m['Test Inst<br><small>(Frames)</small>'] ?? '0 (0)';
+                // --- END OF DEFENSIVE UI LOGIC ---
+
                 htmlContent += `
-                    <div class="card-state-view" id="state-view-new-${datasetName}" style="display: ${state === 'new' ? 'flex' : 'none'};"><div class="text-center my-auto"><p class="text-muted">Your dataset is empty.</p><button class="btn btn-primary" onclick="showPreLabelOptions('${datasetName}')"><i class="bi bi-pen-fill me-2"></i>Label First Video</button></div></div>
-                    <div class="card-state-view" id="state-view-labeled-${datasetName}" style="display: ${state === 'labeled' ? 'flex' : 'none'}; flex-direction: column;"><div><p class="small text-muted mb-2">You have labeled examples. You can add more, or train your first model.</p><div class="table-responsive" style="max-height: 150px;"><table class="table table-sm table-hover small"><tbody>${behaviors.map(b => `<tr><td>${b}</td><td class="text-end">${(metrics[b] || {})['Train Inst<br><small>(Frames)</small>'] || '0 (0)'}</td><td class="text-end">${(metrics[b] || {})['Test Inst<br><small>(Frames)</small>'] || '0 (0)'}</td></tr>`).join('')}</tbody></table></div></div></div>
+                    <div class="card-state-view" id="state-view-new-${datasetName}" style="display: ${state === 'new' ? 'flex' : 'none'}; flex-direction: column; justify-content: center; align-items: center; min-height: 150px;">
+                        <p class="text-muted">Your dataset is empty.</p>
+                        <button class="btn btn-primary" onclick="showPreLabelOptions('${datasetName}')"><i class="bi bi-pen-fill me-2"></i>Label First Video</button>
+                    </div>
+
+                    <div class="card-state-view" id="state-view-labeled-${datasetName}" style="display: ${state === 'labeled' ? 'flex' : 'none'}; flex-direction: column; font-size: 0.8rem;">
+                        <p class="small text-muted mb-2">You have labeled examples. You can add more, or train your first model.</p>
+                        <div class="table-responsive" style="max-height: 150px;">
+                            <table class="table table-sm table-hover small">
+                                <thead><tr><th>Behavior</th><th class="text-end">Train Inst (Frames)</th><th class="text-end">Test Inst (Frames)</th></tr></thead>
+                                <tbody>${behaviors.map(b => `<tr><td>${b}</td><td class="text-end">${getTrainCount(metrics[b] || {})}</td><td class="text-end">${getTestCount(metrics[b] || {})}</td></tr>`).join('')}</tbody>
+                            </table>
+                        </div>
+                    </div>
                     
-                    <!-- This is the section with the fix -->
-                    <div class="card-state-view" id="state-view-trained-${datasetName}" style="display: ${state === 'trained' ? 'flex' : 'none'}; flex-direction: column; font-size: 0.85rem;"><p class="small text-muted mb-2">Your model is trained. Use it to infer on new videos, or improve it by adding more labels.</p><div class="table-responsive"><table class="table table-sm table-hover small"><thead><tr><th>Behavior</th>${['Train Inst<br><small>(Frames)</small>', 'Test Inst<br><small>(Frames)</small>', 'Precision', 'Recall', 'F1 Score'].map(h => `<th class="text-center">${h}</th>`).join('')}</tr></thead><tbody>${behaviors.map(b => {
-                        const bMetrics = metrics[b] || {};
-                        return `<tr>
-                                    <td>${b}</td>
-                                    <td class="text-center">${bMetrics['Train Inst<br><small>(Frames)</small>'] || 'N/A'}</td>
-                                    <td class="text-center">${bMetrics['Test Inst<br><small>(Frames)</small>'] || 'N/A'}</td>
-                                    <td class="text-center">${bMetrics['Precision'] || 'N/A'}</td>
-                                    <td class="text-center">${bMetrics['Recall'] || 'N/A'}</td>
-                                    <td class="text-center">${bMetrics['F1 Score'] || 'N/A'}</td>
-                                </tr>`;
-                    }).join('')}</tbody></table></div></div>`;
+                    <div class="card-state-view" id="state-view-trained-${datasetName}" style="display: ${state === 'trained' ? 'flex' : 'none'}; flex-direction: column; font-size: 0.8rem;">
+                        <p class="small text-muted mb-2">Your model is trained. Use it to infer on new videos, or improve it by adding more labels.</p>
+                        <div class="table-responsive">
+                            <table class="table table-sm table-hover small">
+                                <thead>
+                                    <tr>
+                                        <th>Behavior</th>
+                                        <th class="text-center">Train Inst (Frames)</th>
+                                        <th class="text-center">Test Inst (Frames)</th>
+                                        <th class="text-center">Precision</th>
+                                        <th class="text-center">Recall</th>
+                                        <th class="text-center" title="Validation F1 Score (used for model selection)">F1 Score</th>
+                                        ${hasTestF1 ? '<th class="text-center text-info" title="Held-out Test F1 Score (final, unbiased evaluation)">Test F1</th>' : ''}
+                                    </tr>
+                                </thead>
+                                <tbody>${behaviors.map(b => {
+                                    const bMetrics = metrics[b] || {};
+                                    return `<tr>
+                                                <td>${b}</td>
+                                                <td class="text-center">${getTrainCount(bMetrics)}</td>
+                                                <td class="text-center">${getTestCount(bMetrics)}</td>
+                                                <td class="text-center">${bMetrics['Precision'] || 'N/A'}</td>
+                                                <td class="text-center">${bMetrics['Recall'] || 'N/A'}</td>
+                                                <td class="text-center">${bMetrics['F1 Score'] || 'N/A'}</td>
+                                                ${hasTestF1 ? `<td class="text-center text-info">${bMetrics['Test F1'] || 'N/A'}</td>` : ''}
+                                            </tr>`;
+                                }).join('')}</tbody>
+                            </table>
+                        </div>
+                    </div>`;
 
                 htmlContent += `
                                     <div class="mt-auto">
@@ -2112,7 +2145,7 @@ async function loadInitialDatasetCards(datasets = null) {
         container.innerHTML = htmlContent || "<p class='text-light'>No datasets found. Click '+' to create one.</p>";
 
         var tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
-        tooltipTriggerList.map(function (tooltipTriggerEl) {
+        var tooltipList = tooltipTriggerList.map(function (tooltipTriggerEl) {
             return new bootstrap.Tooltip(tooltipTriggerEl);
         });
 
