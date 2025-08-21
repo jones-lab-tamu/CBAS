@@ -169,4 +169,4 @@ Inside this folder, you will find several new `.png` image files:
 
 After training is complete, you are now ready to use your model to analyze your video data.
 
-➡️ [**Click here for the guide on Visualizing and Analyzing Data**](Analysis.md)
+➡️ [**Click here for the guide on Visualizing and Analyzing Data**](Visualization_and_Analysis.md)

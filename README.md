@@ -156,7 +156,7 @@ The documentation is organized to follow the logical workflow of a typical proje
 *   **2. Core Workflows**
     *   [**Recording Video:** For a guide on adding cameras and managing recording sessions in CBAS.](Recording.md)
     *   [**Training a Custom Model:** For a detailed guide on creating a new dataset and training a model.](Training.md)
-    *   [**Visualizing & Analyzing Data:** For a guide on using your trained model to analyze videos and interpret the results.](Analysis.md)
+    *   [**Visualizing & Analyzing Data:** For a guide on using your trained model to analyze videos and interpret the results.](Visualization_and_Analysis.md)
 	
 ### Optional: Using the Default `JonesLabModel`
 
