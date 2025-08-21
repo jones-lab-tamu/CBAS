@@ -1,63 +1,65 @@
-# Installing CBAS from Source (Windows)
+# Installing CBAS from Source
 
-This guide provides step-by-step instructions for installing the CBAS v3 (Beta) desktop application.
+This guide provides step-by-step instructions for installing the CBAS v3 (Beta) desktop application. These instructions are tailored for users with limited programming experience.
 
 ## Step 1: Install Primary Dependencies
 
-1.  **Git:** Download from [https://git-scm.com/download/win](https://git-scm.com/download/win) and install using the default settings.
+1.  **Git:** Download from [https://git-scm.com/](https://git-scm.com/) and install using the default settings. This is required to download the CBAS source code.
 
 2.  **Python (64-bit, version 3.11 or 3.12):**
 
     > [!IMPORTANT]
     > **You must use a 64-bit version of either Python 3.11 or Python 3.12.**
-    > Due to strict dependencies for the GPU-accelerated libraries, using an unsupported Python version (like 3.10 or 3.13+) or a 32-bit installation will cause the installation to fail with a `No matching distribution found for torch` error.
+    > Due to strict dependencies for the GPU-accelerated libraries, using an unsupported Python version (like 3.10 or 3.13+) or a 32-bit installation will cause the installation to fail.
 
-    *   **Uninstall any other Python versions** from your system via "Add or remove programs" to avoid conflicts.
-    *   Download the **"Windows installer (64-bit)"** for your chosen version from the official site:
+    *   **Uninstall any other Python versions** from your system via "Add or remove programs" (Windows) or your system's package manager to avoid conflicts.
+    *   Download the **"Windows installer (64-bit)"** or **"macOS 64-bit universal installer"** for your chosen version from the official site:
         *   [**Python 3.11.9** (Recommended for maximum compatibility)](https://www.python.org/downloads/release/python-3119/)
         *   [**Python 3.12.6** (Known to be working)](https://www.python.org/downloads/release/python-3126/)
-    *   Run the installer. On the first screen, **check the box that says "Add python.exe to PATH"**.
+    *   Run the installer. On the first screen, **check the box that says "Add python.exe to PATH"** (Windows) or ensure you install it for your user.
 
 3.  **Node.js (LTS version):** Download the LTS version from [https://nodejs.org/](https://nodejs.org/) and install with default settings.
 
-4.  **FFmpeg:** Required for video recording.
-    *   Download the "essentials" build from: [https://gyan.dev/ffmpeg/builds/](https://gyan.dev/ffmpeg/builds/).
-    *   Unzip the file and move the `ffmpeg-essentials_build` folder to a permanent location like `C:\`.
-    *   Add the `bin` subfolder to your Windows PATH environment variable (e.g., `C:\ffmpeg-essentials_build\bin`).
+4.  **FFmpeg:** Required for video recording and processing.
+    *   **Windows:** Download the "essentials" build from: [https://gyan.dev/ffmpeg/builds/](https://gyan.dev/ffmpeg/builds/). Unzip the file and move the `ffmpeg-essentials_build` folder to a permanent location like `C:\`. Add the `bin` subfolder to your Windows PATH environment variable (e.g., `C:\ffmpeg-essentials_build\bin`).
+    *   **macOS (using Homebrew):** Open Terminal and run: `brew install ffmpeg`
+    *   **Linux (using apt):** Open a terminal and run: `sudo apt update && sudo apt install ffmpeg`
 
 ## Step 2: Install and Run CBAS v3
 
-1.  **Open a NEW Command Prompt** to ensure it recognizes the newly installed Python 3.11.
+1.  **Open a NEW Command Prompt (Windows) or Terminal (macOS/Linux)** to ensure it recognizes the newly installed software.
 
-2.  **Verify Python Version:** Run the following command. The output must say `Python 3.11.9`.
-    ```
-    python --version
-    ```
-    > If it shows a different version, the PATH is incorrect. Please uninstall other Python versions and reinstall 3.11, ensuring the "Add to PATH" box is checked.
-
-3.  **Clone the Repository and Checkout the `main` Branch:**
-    ```
-    cd C:\Users\YourName\Documents
+2.  **Clone the Repository:** This downloads the CBAS source code to your computer.
+    ```bash
+    # We recommend cloning into your Documents folder
+    cd Documents
     git clone https://github.com/jones-lab-tamu/CBAS.git
     cd CBAS
-    git checkout main
     ```
 
-4.  **Create and Activate a Python Virtual Environment:**
-    ```
+3.  **Create and Activate a Python Virtual Environment:** This creates a self-contained space for CBAS's Python packages.
+
+    **On Windows (Command Prompt):**
+    ```bash
     python -m venv venv
     .\venv\Scripts\activate
     ```
+    **On macOS / Linux (Terminal):**
+    ```bash
+    python3 -m venv venv
+    source venv/bin/activate
+    ```
 
-5.  **Install All Python Dependencies:**
+4.  **Install All Python Dependencies:**
 
     *   First, upgrade `pip` within the virtual environment:
         ```bash
-        python.exe -m pip install --upgrade pip
+        python -m pip install --upgrade pip
         ```
 
     *   Next, install the specific PyTorch version required for GPU acceleration.
-        The following command is tailored for systems with an NVIDIA GPU and CUDA 12.1 drivers:
+        > [!NOTE]
+        > The following command is tailored for systems with an NVIDIA GPU and CUDA 12.1 drivers. A modern NVIDIA driver is required.
         ```bash
         pip install torch==2.5.1+cu121 torchvision==0.20.1+cu121 torchaudio==2.5.1+cu121 --extra-index-url https://download.pytorch.org/whl/cu121
         ```
@@ -67,51 +69,29 @@ This guide provides step-by-step instructions for installing the CBAS v3 (Beta) 
         pip install -r requirements.txt
         ```
 
-    > **Note for Non-GPU Systems:**
+    > **For Non-GPU or AMD/Apple Silicon Systems:**
 	> If you do not have an NVIDIA GPU, or if the command above fails, you can install the CPU-only version of PyTorch. **Please be aware that all AI-related tasks will be significantly slower.**
 	> ```bash
 	> pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1
 	> ```
 
-6.  **Install Node.js Dependencies:**
-    ```
+5.  **Install Node.js Dependencies:**
+    ```bash
     npm install
     ```
 
-7.  **Run the Application:**
-    ```
+6.  **Run the Application:**
+    ```bash
     npm start
     ```
+    The CBAS application window should now open.
 
 ---
-## Legacy v2 Installation
+## Troubleshooting
 
-**Note:** The legacy v2 version is a browser-based application with different dependencies. It is recommended to install v2 in a completely separate folder and virtual environment to avoid conflicts with the modern v3 application. These instructions require installing the older CUDA Toolkit 11.8.
-
-<details>
-<summary>Click to expand v2 Installation Instructions</summary>
-
-1.  **Install NVIDIA CUDA Toolkit 11.8:** Download and install from [NVIDIA's archive](https://developer.nvidia.com/cuda-11-8-0-download-archive). Use the "Express" installation.
-2.  **Install Visual Studio Build Tools:** Download from [here](https://visualstudio.microsoft.com/visual-cpp-build-tools/) and select the "Desktop development with C++" workload.
-3.  **Clone and Checkout `v2-stable` Branch:**
-    ```
-    git clone https://github.com/jones-lab-tamu/CBAS.git cbas-v2
-    cd cbas-v2
-    git checkout v2-stable
-    ```
-4.  **Create and Activate a Separate Virtual Environment:**
-    ```
-    python -m venv venv-v2
-    .\venv-v2\Scripts\activate
-    ```
-5.  **Install Python Dependencies for v2:**
-    ```
-    pip install -r requirements.txt
-    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-    ```
-6.  **Run the Application:**
-    ```
-    python backend/app.py
-    ```
-
-</details>
+> **Error: `No matching distribution found for torch`**
+> This is the most common installation error. It almost always means you are using an unsupported version of Python.
+> *   **Solution:** Ensure you have completely uninstalled all other versions of Python and have installed the **64-bit** version of Python 3.11 or 3.12. In your terminal, run `python --version` (Windows) or `python3 --version` (macOS/Linux). The output *must* be one of the supported versions.
+>
+> **Error: `git is not recognized as an internal or external command`**
+> *   **Solution:** Git was not installed correctly or was not added to your system's PATH. Re-install Git from [https://git-scm.com/](https://git-scm.com/) and ensure you use the default installation settings, which include adding it to the PATH.

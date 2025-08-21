@@ -109,6 +109,41 @@ We have tested the installation instructions to be as straightforward and user-f
 
 ------
 
+## Updating to the Latest Version
+
+As CBAS v3 is in active development, we recommend updating frequently to get the latest features and bug fixes. Because you installed CBAS from source using Git, updating is simple.
+
+1.  **Open a Command Prompt** (Windows) or **Terminal** (macOS/Linux).
+2.  **Navigate to your CBAS directory.** This is the folder where you originally ran the `git clone` command.
+    ```bash
+    # Example for Windows
+    cd C:\Users\YourName\Documents\CBAS
+    ```
+3.  **Pull the latest changes** from the main branch on GitHub. This is the core update command:
+    ```bash
+    git pull origin main
+    ```
+4.  **Update dependencies.** Occasionally, we may add or update the required Python or Node.js packages. It's good practice to run these commands after updating:
+    
+    > [!NOTE]
+    > Remember to activate your virtual environment before running the `pip` command.
+
+    ```bash
+    # Activate your virtual environment first
+    # On Windows: .\venv\Scripts\activate
+    # On macOS/Linux: source venv/bin/activate
+
+    # Update Python packages
+    pip install -r requirements.txt
+
+    # Update Node.js packages
+    npm install
+    ```
+
+After these steps, you can launch the application as usual with `npm start`, and you will be running the latest version.
+
+------
+
 ## Setup & Use
 
 The documentation is organized to follow the logical workflow of a typical project.
@@ -121,7 +156,7 @@ The documentation is organized to follow the logical workflow of a typical proje
 *   **2. Core Workflows**
     *   [**Recording Video:** For a guide on adding cameras and managing recording sessions in CBAS.](Recording.md)
     *   [**Training a Custom Model:** For a detailed guide on creating a new dataset and training a model.](Training.md)
-    *   [**Classifying & Visualizing Data:** For a guide on using your trained model to analyze videos and interpret the results.](Analysis.md)
+    *   [**Visualizing & Analyzing Data:** For a guide on using your trained model to analyze videos and interpret the results.](Analysis.md)
 	
 ### Optional: Using the Default `JonesLabModel`
 
@@ -137,7 +172,10 @@ The next time you open the "Label/Train" page or click the "Refresh Datasets" bu
 
 ### Advanced: Using Experimental Encoder Models
 
-CBAS allows power users to experiment with different feature encoder models on a per-project basis. To do this, find the cbas_config.yaml.example file in the application's root directory. Copy this file into the root of your specific CBAS project folder (i.e., the folder that contains the `cameras/`, `data_sets/`, `models/`, and `recordings/` sbufolders) and rename it to cbas_config.yaml. Edit the file to select the desired model. Note that using experimental models like DINOv3 may require additional installation steps.
+CBAS allows power users to experiment with different feature encoder models on a per-project basis. To do this, find the `cbas_config.yaml.example` file in the application's root directory. Copy this file into the root of your specific CBAS project folder (i.e., the folder that contains the `cameras/`, `data_sets/`, `models/`, and `recordings/` subfolders) and rename it to `cbas_config.yaml`. Edit the file to select the desired model. 
+
+> [!WARNING]
+> Using experimental models like DINOv3 may require additional installation steps, such as authenticating with Hugging Face Hub. This will also require re-encoding all videos in that project.
 
 --------------
 ## Hardware Requirements
@@ -166,4 +204,4 @@ As this is a beta, feedback and bug reports are highly encouraged! Please open a
 
 ###### The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
 
-###### THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+###### THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
