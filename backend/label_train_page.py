@@ -623,7 +623,13 @@ def _start_labeling_worker(name: str, video_to_open: str = None, preloaded_insta
         gui_state.label_history, gui_state.label_behavior_colors = [], []
         gui_state.label_dirty_instances.clear()
         gui_state.label_session_buffer, gui_state.selected_instance_index = [], -1
-        gui_state.label_probability_df = probability_df
+        
+        # For any editable session (Manual or Guided),
+        # we MUST clear the probability_df. It is only used for read-only playback.
+        # The 'probability_df' passed into this function from a guided session is used
+        # to create the initial instances, but should not persist to be used by the renderer.
+        gui_state.label_probability_df = None
+
         gui_state.label_confirmation_mode = False
         gui_state.label_confidence_threshold = 100
         
@@ -1146,33 +1152,30 @@ def save_session_labels():
     
 def refilter_instances(new_threshold: int, mode: str = 'below'):
     """
-    Re-filters the session buffer based on a confidence threshold and mode ('above' or 'below'),
-    ensuring no overlaps with existing human labels.
+    (REWRITTEN) Non-destructively re-filters the session buffer, now
+    correctly handling edited instances to prevent ghosts and preserve edits.
     """
-    print(f"Refiltering instances with mode '{mode}' and threshold {new_threshold}%")
+    log_message(f"Refiltering instances with mode '{mode}' and threshold {new_threshold}%", "INFO")
     gui_state.label_confidence_threshold = new_threshold
     
-    # =========================================================================
-    # ROBUST RE-FILTERING LOGIC
-    # =========================================================================
+    unfiltered_predictions = getattr(gui_state, "label_unfiltered_instances", [])
+    if not unfiltered_predictions:
+        render_image()
+        return
 
-    # Step 1: Get the two master lists: all raw predictions and all human labels.
-    unfiltered_predictions = getattr(gui_state, "label_unfiltered_instances", None) or []
-    # If it’s empty, we’ll just rebuild buffer from human labels (already handled later)
-    
-    # It's crucial to get the human labels from the original dataset object,
-    # not the potentially modified session buffer, to ensure a clean slate.
-    human_labels = []
-    if gui_state.label_dataset and gui_state.label_videos:
-        relative_video_path = os.path.relpath(gui_state.label_videos[0], start=gui_state.proj.path).replace('\\', '/')
-        for b_name, b_insts in gui_state.label_dataset.labels["labels"].items():
-            for inst in b_insts:
-                if inst.get("video") == relative_video_path:
-                    human_labels.append(inst)
+    # 1. Preserve human-verified instances AND identify which predictions have been edited.
+    preserved_instances = []
+    edited_prediction_ids = set()
 
-    # Step 2: Apply the new confidence filter to the raw predictions.
+    for inst in gui_state.label_session_buffer:
+        if 'confidence' not in inst:
+            preserved_instances.append(inst)
+            if '_original_start' in inst:
+                original_id = (inst['_original_start'], inst['_original_end'])
+                edited_prediction_ids.add(original_id)
+
+    # 2. Apply the confidence filter to the raw predictions.
     threshold_float = new_threshold / 100.0
-    newly_filtered_candidates = []
     if mode == 'above':
         newly_filtered_candidates = [
             p for p in unfiltered_predictions if p.get('confidence', 0.0) >= threshold_float
@@ -1182,14 +1185,15 @@ def refilter_instances(new_threshold: int, mode: str = 'below'):
             p for p in unfiltered_predictions if p.get('confidence', 1.0) < threshold_float
         ]
     
-    # Step 3: Run these new candidates through the same robust "Time Map" logic.
-    
-    # Step 3a: Build the "Time Map" of occupied zones from human labels.
-    human_intervals = sorted([(h['start'], h['end']) for h in human_labels])
+    # 3. Run candidates through the Time Map logic, but with an extra check to ignore already-edited predictions.
+    human_intervals = sorted([(h['start'], h['end']) for h in preserved_instances])
     
     final_guided_labels = []
-    # Step 3b: Process each candidate prediction against the time map.
     for pred_inst in newly_filtered_candidates:
+        prediction_id = (pred_inst['start'], pred_inst['end'])
+        if prediction_id in edited_prediction_ids:
+            continue
+
         pred_intervals_to_add = [(pred_inst['start'], pred_inst['end'])]
         for h_start, h_end in human_intervals:
             surviving_pieces = []
@@ -1212,10 +1216,9 @@ def refilter_instances(new_threshold: int, mode: str = 'below'):
                 new_inst['end'] = end
                 final_guided_labels.append(new_inst)
 
-    # Step 4: Rebuild the session buffer from the clean lists.
-    gui_state.label_session_buffer = human_labels + final_guided_labels
+    # 4. Rebuild the session buffer and update the UI.
+    gui_state.label_session_buffer = preserved_instances + final_guided_labels
     
-    # Reset selection and re-render the UI with the new, clean data.
     gui_state.selected_instance_index = -1
     eel.highlightBehaviorRow(None)()
     eel.updateConfidenceBadge(None, None)()
@@ -1419,10 +1422,18 @@ def update_instance_boundary(boundary_type: str):
     gui_state.label_dirty_instances.add(id(active_instance))
     new_boundary_frame = gui_state.label_index
 
+    # When a predicted instance is edited for the FIRST time, we must save its
+    # original boundaries so we can identify and ignore it later during filtering.
     if 'confidence' in active_instance and '_original_start' not in active_instance:
         active_instance['_original_start'] = active_instance['start']
         active_instance['_original_end'] = active_instance['end']
-        active_instance['_confirmed'] = False
+    
+    # Now, promote it to a human-verified label by removing its confidence score.
+    # This makes it immune to the confidence filter.
+    if 'confidence' in active_instance:
+        active_instance['_confirmed'] = True
+        active_instance.pop('confidence', None)
+        log_message(f"Promoted instance {gui_state.selected_instance_index} to human-verified after edit.", "INFO")
 
     if boundary_type == 'start':
         if new_boundary_frame >= active_instance['end']: return
