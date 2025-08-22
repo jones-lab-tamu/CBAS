@@ -1419,8 +1419,16 @@ def update_instance_boundary(boundary_type: str):
         return
 
     active_instance = gui_state.label_session_buffer[gui_state.selected_instance_index]
+    
+    # Add a guard clause to block edits in "Review by Behavior" mode.
+    if gui_state.label_filter_for_behavior is not None:
+        if active_instance.get('label') != gui_state.label_filter_for_behavior:
+            log_message("Edit blocked: Cannot adjust boundaries of a non-target behavior in this mode.", "WARN")
+            return
+    
     gui_state.label_dirty_instances.add(id(active_instance))
     new_boundary_frame = gui_state.label_index
+
 
     # When a predicted instance is edited for the FIRST time, we must save its
     # original boundaries so we can identify and ignore it later during filtering.
@@ -1521,6 +1529,20 @@ def add_instance_to_buffer():
 
 def label_frame(value: int):
     """Handles user keypresses to start, end, or change labels."""
+    
+    # Add a guard clause to block edits in "Review by Behavior" mode.
+    if gui_state.label_filter_for_behavior is not None:
+        instance_under_playhead = None
+        for inst in gui_state.label_session_buffer:
+            if inst.get("start", -1) <= gui_state.label_index <= inst.get("end", -1):
+                instance_under_playhead = inst
+                break
+        
+        # Block the action if the user is trying to change the label of a ghosted instance.
+        if instance_under_playhead and instance_under_playhead.get('label') != gui_state.label_filter_for_behavior:
+            log_message("Edit blocked: Cannot change the label of a non-target behavior in this mode.", "WARN")
+            return
+    
     if gui_state.label_dataset is None or not gui_state.label_videos: return
     behaviors = gui_state.label_dataset.labels.get("behaviors", [])
     if not 0 <= value < len(behaviors): return
@@ -1559,10 +1581,19 @@ def delete_instance_from_buffer():
     if not gui_state.label_session_buffer: return
     current_frame = gui_state.label_index
     idx_to_remove = -1
+    inst_to_remove = None
     for i, inst in enumerate(gui_state.label_session_buffer):
         if inst.get("start", -1) <= current_frame <= inst.get("end", -1):
             idx_to_remove = i
+            inst_to_remove = inst
             break
+            
+    # Add a guard clause to block edits in "Review by Behavior" mode.
+    if gui_state.label_filter_for_behavior is not None:
+        if inst_to_remove and inst_to_remove.get('label') != gui_state.label_filter_for_behavior:
+            log_message("Edit blocked: Cannot delete a non-target behavior in this mode.", "WARN")
+            return
+
     if idx_to_remove != -1:
         removed_inst = gui_state.label_session_buffer.pop(idx_to_remove)
         gui_state.label_dirty_instances.add(f"deleted_{removed_inst['label']}")
@@ -1571,7 +1602,6 @@ def delete_instance_from_buffer():
         gui_state.selected_instance_index = -1
         eel.updateConfidenceBadge(None, None)()
         render_image(); update_counts()
-
 
 
 def pop_instance_from_buffer():

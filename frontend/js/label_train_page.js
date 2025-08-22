@@ -1088,7 +1088,6 @@ function setLabelingModeUI(mode, modelName = '') {
         controlsHeader.classList.add('bg-success');
         controlsHeader.querySelector('h5').innerHTML = `Reviewing: <span class="badge bg-light text-dark">${modelName}</span>`;
         
-        // The innerHTML now matches the HTML file we just changed
         cheatSheet.innerHTML = `
             <div class="card bg-dark">
               <div class="card-header d-flex justify-content-between align-items-center">
@@ -1122,7 +1121,6 @@ function setLabelingModeUI(mode, modelName = '') {
                         <li><kbd>Delete</kbd> : Delete instance at current frame</li>
                         <li><kbd>Backspace</kbd> : Undo last added label</li>
                         <li><kbd>Ctrl</kbd> + <kbd>S</kbd> : Commit Corrections</li>
-                        <li><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>←</kbd>/<kbd>→</kbd> : Prev/Next video</li>
                     </ul>
                   </div>
                 </div>
@@ -1141,10 +1139,10 @@ function setLabelingModeUI(mode, modelName = '') {
                 <div class="row">
                   <div class="col-md-6">
                     <ul class="list-unstyled">
+                      <li><kbd>Tab</kbd> / <kbd>Shift+Tab</kbd> : Next/Prev Instance</li>
                       <li><kbd>←</kbd> / <kbd>→</kbd> : Step one frame</li>
                       <li><kbd>↑</kbd> / <kbd>↓</kbd> : Double / Halve scrub speed</li>
                       <li><kbd>Click Timeline</kbd> : Jump to frame</li>
-                      <li><kbd>Ctrl</kbd> + <kbd>S</kbd> : Save Labels</li>
                     </ul>
                   </div>
                   <div class="col-md-6">
@@ -1152,7 +1150,7 @@ function setLabelingModeUI(mode, modelName = '') {
                       <li><kbd>1</kbd> - <kbd>9</kbd> : Start / End a new label</li>
                       <li><kbd>Delete</kbd> : Delete instance at current frame</li>
                       <li><kbd>Backspace</kbd> : Undo last added label</li>
-                      <li><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>←</kbd>/<kbd>→</kbd> : Prev/Next video</li>
+                      <li><kbd>Ctrl</kbd> + <kbd>S</kbd> : Save Labels</li>
                     </ul>
                   </div>
                 </div>
@@ -1160,7 +1158,7 @@ function setLabelingModeUI(mode, modelName = '') {
             </div>`;
         saveBtn.innerHTML = '<i class="bi bi-save-fill me-2"></i>Save New Labels';       
     }
-
+	
     // --- ROBUST EVENT LISTENER ATTACHMENT ---
     const filterModeBelow = document.getElementById('filter-mode-below');
     const filterModeAbove = document.getElementById('filter-mode-above');
@@ -1689,12 +1687,14 @@ async function prepareAndShowLabelModal(datasetName, videoToOpen, filterForBehav
 
         setLabelingModeUI('scratch'); 
         if (filterForBehavior) {
+            setLabelingModeUI('review'); // Use the review cheat sheet
             const controlsHeader = document.querySelector('#controls .card-header h5');
             if (controlsHeader) {
                 controlsHeader.innerHTML = `Reviewing: <span class="badge bg-primary">${filterForBehavior}</span>`;
             }
             if (markReviewedBtn) markReviewedBtn.style.display = 'inline-block';
         } else {
+            setLabelingModeUI('scratch'); // Use the manual/scratch cheat sheet
             if (markReviewedBtn) markReviewedBtn.style.display = 'none';
         }
                 
