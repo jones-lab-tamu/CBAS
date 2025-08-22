@@ -837,41 +837,25 @@ class Project:
         else:
             rng.shuffle(all_groups)
             if test_split > 0:
-                test_inst_count = 0
-                total_instances = len(all_insts)
-                for group in all_groups:
-                    if test_inst_count / total_instances < test_split:
-                        test_groups.add(group)
-                        test_inst_count += len(group_to_instances[group])
+                num_test_groups = max(1, int(len(all_groups) * test_split))
+                test_groups = set(all_groups[:num_test_groups])
             remaining_groups = [g for g in all_groups if g not in test_groups]
         
-        # Correctly partition the remaining groups into validation and training sets.
-        remaining_instances = sum(len(group_to_instances[g]) for g in remaining_groups)
-        if val_split > 0 and remaining_instances > 0:
-            val_inst_count = 0
-            # Find the index at which to split the list
-            split_index = 0
-            for i, group in enumerate(remaining_groups):
-                val_inst_count += len(group_to_instances[group])
-                if val_inst_count / remaining_instances >= val_split:
-                    split_index = i + 1
-                    break
-            
-            # If the loop finishes without breaking (e.g., val_split is 1.0),
-            # the split_index should be the full length of the list.
-            if split_index == 0 and remaining_groups:
-                split_index = len(remaining_groups)
-
-            val_groups = set(remaining_groups[:split_index])
-            train_groups = set(remaining_groups[split_index:])
+        # --- START OF THE FIX ---
+        # Use simple, direct partitioning of the group list. This is robust.
+        if val_split > 0 and remaining_groups:
+            num_val_groups = max(1, int(len(remaining_groups) * val_split))
+            val_groups = set(remaining_groups[:num_val_groups])
+            train_groups = set(remaining_groups[num_val_groups:])
         else:
-            # If no validation split, all remaining groups go to training
             train_groups = set(remaining_groups)
+        # --- END OF THE FIX ---
 
         train_insts = [inst for group in train_groups for inst in group_to_instances.get(group, [])]
         val_insts = [inst for group in val_groups for inst in group_to_instances.get(group, [])]
         test_insts = [inst for group in test_groups for inst in group_to_instances.get(group, [])]
         
+        # Shuffle instances within each split for randomness during training
         rng.shuffle(train_insts)
         rng.shuffle(val_insts)
         rng.shuffle(test_insts)
@@ -1228,7 +1212,12 @@ class PerformanceReport:
         self.val_report = val_report
         self.val_cm = val_cm
         
-def train_lstm_model(train_set, test_set, seq_len: int, behaviors: list, cancel_event: threading.Event, batch_size=512, lr=1e-4, epochs=10, device=None, class_weights=None, patience=3, progress_callback=None, optimization_target="weighted avg") -> tuple:
+def train_lstm_model(train_set, test_set, seq_len: int, behaviors: list, cancel_event: threading.Event, 
+                     batch_size=512, lr=1e-4, epochs=10, device=None, class_weights=None, patience=3, 
+                     progress_callback=None, optimization_target="weighted avg",
+                     weight_decay=0.0, label_smoothing=0.0, lstm_hidden_size=64, lstm_layers=1
+                     ) -> tuple:    
+                     
     from workthreads import log_message
 
     if len(train_set) == 0: return None, None, -1
@@ -1240,17 +1229,31 @@ def train_lstm_model(train_set, test_set, seq_len: int, behaviors: list, cancel_
     model = classifier_head.ClassifierLSTMDeltas(
         in_features=768,
         out_features=len(behaviors),
-        seq_len=seq_len
+        seq_len=seq_len,
+        lstm_hidden_size=lstm_hidden_size,
+        lstm_layers=lstm_layers
     ).to(device)
     
     log_message(f"Successfully instantiated model architecture: {type(model).__name__}", "INFO")
     
+    log_message("--- Training Trial Hyperparameters ---", "INFO")
+    log_message(f"  Learning Rate: {lr}", "INFO")
+    log_message(f"  Weight Decay: {weight_decay}", "INFO")
+    log_message(f"  Label Smoothing: {label_smoothing}", "INFO")
+    log_message(f"  LSTM Hidden Size: {lstm_hidden_size}", "INFO")
+    log_message(f"  LSTM Layers: {lstm_layers}", "INFO")
+    log_message("------------------------------------", "INFO")
+    
+    # Pass the new weight_decay parameter to the Adam optimizer.
     optimizer = optim.Adam([
         {'params': [p for name, p in model.named_parameters() if name != 'gate']},
         {'params': model.gate, 'weight_decay': 1e-3}
-    ], lr=lr)
+    ], lr=lr, weight_decay=weight_decay)
+    
     loss_weights = torch.tensor(class_weights, dtype=torch.float).to(device) if class_weights else None
-    criterion = nn.CrossEntropyLoss(weight=loss_weights)
+    
+    # Pass the new label_smoothing parameter to the loss function.
+    criterion = nn.CrossEntropyLoss(weight=loss_weights, label_smoothing=label_smoothing)
     
     best_f1, best_model_state, best_epoch = -1.0, None, -1
     epoch_reports, epochs_no_improve = [], 0
@@ -1338,7 +1341,9 @@ def train_lstm_model(train_set, test_set, seq_len: int, behaviors: list, cancel_
         final_model = classifier_head.ClassifierLSTMDeltas(
             in_features=768,
             out_features=len(behaviors),
-            seq_len=seq_len
+            seq_len=seq_len,
+            lstm_hidden_size=lstm_hidden_size, 
+            lstm_layers=lstm_layers            
         )
         final_model.load_state_dict(best_model_state)
         return final_model.eval(), epoch_reports, best_epoch

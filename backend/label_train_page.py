@@ -1759,7 +1759,11 @@ def create_dataset(name: str, behaviors: list[str], recordings_whitelist: list[s
         return True
     return False
 
-def train_model(name: str, batch_size: str, learning_rate: str, epochs: str, sequence_length: str, training_method: str, patience: str, num_runs: str, num_trials: str, optimization_target: str, use_test: bool, test_split: float, custom_weights: dict = None):
+def train_model(name: str, batch_size: str, learning_rate: str, epochs: str, sequence_length: str, 
+                training_method: str, patience: str, num_runs: str, num_trials: str, optimization_target: str, 
+                use_test: bool, test_split: float, custom_weights: dict = None,
+                weight_decay: float = 0.0, label_smoothing: float = 0.0, 
+                lstm_hidden_size: int = 64, lstm_layers: int = 1):
     """Queues a training task for the specified dataset."""
     if not gui_state.proj or name not in gui_state.proj.datasets: return
     if not gui_state.training_thread: return
@@ -1777,7 +1781,11 @@ def train_model(name: str, batch_size: str, learning_rate: str, epochs: str, seq
             optimization_target=optimization_target,
             use_test=use_test,
             test_split=test_split,
-            custom_weights=custom_weights
+            custom_weights=custom_weights,
+            weight_decay=float(weight_decay),
+            label_smoothing=float(label_smoothing),
+            lstm_hidden_size=int(lstm_hidden_size),
+            lstm_layers=int(lstm_layers)
         )
         gui_state.training_thread.queue_task(task)
         eel.updateTrainingStatusOnUI(name, "Training task queued...")()

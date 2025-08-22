@@ -1920,9 +1920,15 @@ async function submitTrainModel() {
 	const numTrials = document.getElementById('tm-trials').value;
     const optimizationTarget = document.getElementById('tm-optimization-target').value;
     
-    // Get the new values from the advanced options
+    // Get the existing advanced values
     const useTest = document.getElementById('tm-use-test-set').checked;
     const testSplit = parseInt(document.getElementById('tm-test-split').value) / 100.0;
+
+    // Get the new advanced hyperparameter values from the modal inputs.
+    const weightDecay = document.getElementById('tm-weight-decay').value;
+    const labelSmoothing = document.getElementById('tm-label-smoothing').value;
+    const lstmHiddenSize = document.getElementById('tm-lstm-hidden-size').value;
+    const lstmLayers = document.getElementById('tm-lstm-layers').value;
 
     let customWeights = null;
     if (trainMethod === 'custom_weights') {
@@ -1955,8 +1961,10 @@ async function submitTrainModel() {
 
     updateTrainingStatusOnUI(datasetName, "Training task queued...");
     
-    // Call the updated eel function with the new parameters
-    eel.train_model(datasetName, batchSize, learningRate, epochsCount, seqLen, trainMethod, patience, numRuns, numTrials, optimizationTarget, useTest, testSplit, customWeights)();
+    // Call the updated eel function with the new parameters added at the end.
+    eel.train_model(datasetName, batchSize, learningRate, epochsCount, seqLen, trainMethod, 
+                    patience, numRuns, numTrials, optimizationTarget, useTest, testSplit, customWeights,
+                    weightDecay, labelSmoothing, lstmHiddenSize, lstmLayers)();
 }
 
 async function showInferenceModal(datasetName) {

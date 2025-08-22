@@ -611,11 +611,12 @@
                 </h2>
                 <div id="collapseAdvanced" class="accordion-collapse collapse" aria-labelledby="headingOne" data-bs-parent="#advancedOptionsAccordion">
                   <div class="accordion-body">
+                    
+                    <!-- Existing Test Set Controls -->
                     <div class="form-check form-switch mb-2">
                       <input class="form-check-input" type="checkbox" role="switch" id="tm-use-test-set">
                       <label class="form-check-label" for="tm-use-test-set">Enable Held-Out Test Set</label>
                     </div>
-                    
                     <div id="test-set-controls" class="mt-2" style="display: none;">
                       <label for="tm-test-split" class="form-label">Test Split Percentage:</label>
                       <input type="range" class="form-range" min="10" max="50" step="1" value="20" id="tm-test-split">
@@ -624,10 +625,35 @@
                         <span class="text-muted">Requires a sufficient number of labeled subjects.</span>
                       </div>
                     </div>
-                    
-                    <div class="alert alert-info small mt-3" role="alert">
-                      <i class="bi bi-info-circle-fill me-2"></i><strong>Note:</strong> The model is selected based on its performance on the validation set. The held-out test set is used only for a final, unbiased evaluation of the winning model.
+                    <hr>
+
+                    <!-- --- MODIFICATION START --- -->
+                    <!-- NEW: Model Architecture & Regularization Controls -->
+                    <h6 class="mt-3">Model Architecture</h6>
+                    <div class="row g-3 mb-3">
+                      <div class="col">
+                        <label for="tm-lstm-hidden-size" class="form-label" data-bs-toggle="tooltip" data-bs-placement="top" title="Controls the memory/capacity of the temporal model. Larger values (e.g., 128) can capture more complex patterns but risk overfitting.">LSTM Hidden Size</label>
+                        <input type="number" class="form-control" id="tm-lstm-hidden-size" value="64" step="32" min="32">
+                      </div>
+                      <div class="col">
+                        <label for="tm-lstm-layers" class="form-label" data-bs-toggle="tooltip" data-bs-placement="top" title="Stacks LSTMs for deeper temporal processing. 1 or 2 is usually sufficient.">LSTM Layers</label>
+                        <input type="number" class="form-control" id="tm-lstm-layers" value="1" step="1" min="1" max="4">
+                      </div>
                     </div>
+
+                    <h6 class="mt-3">Regularization</h6>
+                    <div class="row g-3">
+                      <div class="col">
+                        <label for="tm-weight-decay" class="form-label" data-bs-toggle="tooltip" data-bs-placement="top" title="Prevents the model from relying too heavily on any single feature. Helps combat overfitting. A good starting value is 0.001.">Weight Decay</label>
+                        <input type="number" class="form-control" id="tm-weight-decay" value="0.0" step="0.0001" min="0">
+                      </div>
+                      <div class="col">
+                        <label for="tm-label-smoothing" class="form-label" data-bs-toggle="tooltip" data-bs-placement="top" title="Helps the model generalize by making it less overconfident. Use a small value like 0.1 for subjective labels.">Label Smoothing</label>
+                        <input type="number" class="form-control" id="tm-label-smoothing" value="0.0" step="0.01" min="0" max="0.5">
+                      </div>
+                    </div>
+                    <!-- --- MODIFICATION END --- -->
+                    
                   </div>
                 </div>
               </div>

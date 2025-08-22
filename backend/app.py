@@ -307,9 +307,10 @@ def create_dataset(name, behaviors, whitelist):
     return label_train_page.create_dataset(name, behaviors, whitelist)
 
 @eel.expose
-def train_model(name, b_size, lr, epochs, seq_len, method, patience, num_runs, num_trials, optimization_target, use_test, test_split, custom_weights):
-    return label_train_page.train_model(name, b_size, lr, epochs, seq_len, method, patience, num_runs, num_trials, optimization_target, use_test, test_split, custom_weights)
-    
+def train_model(name, b_size, lr, epochs, seq_len, method, patience, num_runs, num_trials, optimization_target, use_test, test_split, custom_weights,
+                weight_decay, label_smoothing, lstm_hidden_size, lstm_layers):
+    return label_train_page.train_model(name, b_size, lr, epochs, seq_len, method, patience, num_runs, num_trials, optimization_target, use_test, test_split, custom_weights,
+                                        weight_decay, label_smoothing, lstm_hidden_size, lstm_layers)    
 @eel.expose
 def start_classification(model_name, whitelist):
     return label_train_page.start_classification(model_name, whitelist)

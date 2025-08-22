@@ -60,7 +60,8 @@ class ClassifierLSTMDeltas(nn.Module):
     Incorporates all colleague feedback for robustness, stability, and performance.
     """
     def __init__(self, in_features, out_features, seq_len=31, bottleneck_dim=128,
-                 dropout_p=0.15, use_acceleration=True, ema_alpha=0.3, center_window_size=5):
+                 dropout_p=0.15, use_acceleration=True, ema_alpha=0.3, center_window_size=5,
+                 lstm_hidden_size=64, lstm_layers=1):
         super().__init__()
         self.in_features, self.out_features = in_features, out_features
         self.seq_len, self.sw = seq_len, center_window_size
@@ -87,12 +88,16 @@ class ClassifierLSTMDeltas(nn.Module):
         
         self.gate = nn.Parameter(torch.tensor(0.2))
 
-        self.attention_head = nn.Linear(128, 1)
+        # The input dimension for the attention head and final linear layer must be lstm_hidden_size * 2
+        # because the LSTM is bidirectional.
+        self.attention_head = nn.Linear(lstm_hidden_size * 2, 1)
         self.attention_temp = nn.Parameter(torch.tensor(1.0))
 
         self.lin1 = nn.Linear(in_features, out_features)
-        self.lin2 = nn.Linear(128, out_features)
-        self.lstm = nn.LSTM(256, 64, num_layers=1, batch_first=True, bidirectional=True)
+        self.lin2 = nn.Linear(lstm_hidden_size * 2, out_features)
+        
+        # Use the new parameters to define the LSTM layer.
+        self.lstm = nn.LSTM(256, lstm_hidden_size, num_layers=lstm_layers, batch_first=True, bidirectional=True)
 
     def _calculate_robust_deltas(self, x_seq):
         """Helper to compute smoothed, reflection-padded temporal deltas."""

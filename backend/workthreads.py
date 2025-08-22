@@ -608,7 +608,11 @@ class TrainingThread(threading.Thread):
                         lr=task.learning_rate, batch_size=task.batch_size,
                         epochs=task.epochs, device=self.device, class_weights=weights,
                         patience=task.patience, progress_callback=training_progress_updater,
-                        optimization_target=task.optimization_target
+                        optimization_target=task.optimization_target,
+                        weight_decay=task.weight_decay,
+                        label_smoothing=task.label_smoothing,
+                        lstm_hidden_size=task.lstm_hidden_size,
+                        lstm_layers=task.lstm_layers
                     )
 
                     if trial_model and trial_reports and trial_best_epoch != -1:
@@ -818,7 +822,11 @@ class TrainingThread(threading.Thread):
                 "learning_rate": task.learning_rate,
                 "sequence_length": task.sequence_length,
                 "optimization_target": task.optimization_target,
-                "temperature": temperature
+                "temperature": temperature,
+                "weight_decay": task.weight_decay,
+                "label_smoothing": task.label_smoothing,
+                "lstm_hidden_size": task.lstm_hidden_size,
+                "lstm_layers": task.lstm_layers
             },
             "split_information": split_assignments,
             "run_results": all_run_reports 
@@ -911,7 +919,9 @@ class TrainingThread(threading.Thread):
 
 class TrainingTask():
     """A simple data class to hold all parameters for a single training job."""
-    def __init__(self, name, dataset, behaviors, batch_size, learning_rate, epochs, sequence_length, training_method, patience, num_runs, num_trials, optimization_target, use_test, test_split, custom_weights=None):
+    def __init__(self, name, dataset, behaviors, batch_size, learning_rate, epochs, sequence_length, 
+                 training_method, patience, num_runs, num_trials, optimization_target, use_test, test_split, 
+                 custom_weights=None, weight_decay=0.0, label_smoothing=0.0, lstm_hidden_size=64, lstm_layers=1):
         self.name = name
         self.dataset = dataset
         self.behaviors = behaviors
@@ -927,6 +937,10 @@ class TrainingTask():
         self.use_test = bool(use_test)
         self.test_split = float(test_split)
         self.custom_weights = custom_weights
+        self.weight_decay = weight_decay
+        self.label_smoothing = label_smoothing
+        self.lstm_hidden_size = lstm_hidden_size
+        self.lstm_layers = lstm_layers
 
 def cancel_training_task(dataset_name: str):
     """Finds the running training task and signals it to cancel."""
