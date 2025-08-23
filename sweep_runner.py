@@ -91,7 +91,7 @@ FIXED_PARAMETERS = {
     # --- Number of Runs ---
     # For a sweep, n=2 or n=3 is usually sufficient to get a directional signal.
     # Increase this for a final, rigorous evaluation of your single best model.
-    'num_runs': 2 # This is the "inner" loop, finding the best model within one replicate.
+    'num_runs': 2, # This is the "inner" loop, finding the best model within one replicate.
     'num_trials': 2 
 }
 
