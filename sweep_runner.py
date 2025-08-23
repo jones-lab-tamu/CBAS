@@ -79,7 +79,7 @@ FIXED_PARAMETERS = {
     'training_method': 'oversampling',
     'optimization_target': 'macro avg',
     'learning_rate': 0.0001,
-    'epochs': 10
+    'epochs': 10,
     'patience': 3,
     'batch_size': 1024,
     'sequence_length': 31,
