@@ -52,18 +52,30 @@ def log_message(message: str, level: str = "INFO"):
     """
     Puts a formatted message into the global log queue for the UI and
     also prints it to the console for developer debugging.
+    Now safe to run in headless mode.
     """
     timestamp = datetime.now().strftime('%H:%M:%S')
     formatted_message = f"[{timestamp}] [{level}] {message}"
     
+    # Always print to the console for headless script compatibility.
+    # Use the lock if it exists to prevent interleaved messages during GUI runs.
     if gui_state.print_lock:
         with gui_state.print_lock:
             print(formatted_message)
     else:
         print(formatted_message)
     
+    # Only attempt to send a message to the GUI if the log queue exists
+    # and, crucially, if an active Eel websocket connection is detected.
     if gui_state.log_queue:
-        gui_state.log_queue.put(formatted_message)
+        try:
+            # Check for the existence of the private _websocket attribute.
+            # This is a reliable way to know if the GUI is connected.
+            if hasattr(eel, '_websocket') and eel._websocket is not None:
+                gui_state.log_queue.put(formatted_message)
+        except Exception:
+            # Fail silently if anything goes wrong with the GUI communication.
+            pass
 
 
 # =================================================================
@@ -536,12 +548,12 @@ class TrainingThread(threading.Thread):
         """Orchestrates the training process with an optional held-out test set."""
         try:
             log_message(f"--- Starting Training Job for Dataset: {task.name} ---", "INFO")
-            eel.updateTrainingStatusOnUI(task.name, "Preparing data splits...")()
+            # A more robust check to see if the function is registered with Eel before calling.
+            if 'updateTrainingStatusOnUI' in eel._exposed_functions:
+                eel.updateTrainingStatusOnUI(task.name, "Preparing data splits...")()
 
             master_seed = int(time.time())
             
-            # Determine the stable, held-out test set ONCE.
-            # This is a clean, self-contained way to get the test group list.
             all_insts = [inst for b in task.dataset.config.get("behaviors", []) for inst in task.dataset.labels.get("labels", {}).get(b, [])]
             group_to_instances = defaultdict(list)
             for inst in all_insts:
@@ -568,7 +580,6 @@ class TrainingThread(threading.Thread):
                 
                 run_seed = int(master_rng.integers(2**32 - 1))
 
-                # For each run, create a NEW train/val/test split, but pass the STABLE test groups.
                 train_ds, val_ds, test_ds, train_insts, val_insts, test_insts, behaviors, train_groups, val_groups, _ = \
                     gui_state.proj.load_dataset_3way(
                         name=task.name, 
@@ -589,13 +600,15 @@ class TrainingThread(threading.Thread):
                     log_message(f"Run {run_num + 1}, Trial {i + 1}/{task.num_trials} for '{task.name}'.", "INFO")
                     
                     def training_progress_updater(message: str):
-                        f1_match = re.search(r"Val F1: ([\d\.]+)", message)
-                        current_best = run_best_f1_for_trials
-                        if f1_match:
-                            current_best = max(run_best_f1_for_trials, float(f1_match.group(1)))
-                        f1_text = f"{current_best:.4f}" if current_best >= 0 else "N/A"
-                        display_message = f"Run {run_num + 1}/{task.num_runs}, Trial {i + 1}/{task.num_trials}... Best Val F1: {f1_text}"
-                        eel.updateTrainingStatusOnUI(task.name, display_message, message)()
+                        # Use the same robust check here.
+                        if 'updateTrainingStatusOnUI' in eel._exposed_functions:
+                            f1_match = re.search(r"Val F1: ([\d\.]+)", message)
+                            current_best = run_best_f1_for_trials
+                            if f1_match:
+                                current_best = max(run_best_f1_for_trials, float(f1_match.group(1)))
+                            f1_text = f"{current_best:.4f}" if current_best >= 0 else "N/A"
+                            display_message = f"Run {run_num + 1}/{task.num_runs}, Trial {i + 1}/{task.num_trials}... Best Val F1: {f1_text}"
+                            eel.updateTrainingStatusOnUI(task.name, display_message, message)()
 
                     weights = None
                     if task.training_method == "weighted_loss":
@@ -636,7 +649,8 @@ class TrainingThread(threading.Thread):
 
                     if task.use_test and test_ds and len(test_ds) > 0:
                         log_message(f"Run {run_num + 1}: Evaluating best model on held-out test set...", "INFO")
-                        eel.updateTrainingStatusOnUI(task.name, f"Run {run_num + 1}/{task.num_runs}: Evaluating on test set...")()
+                        if 'updateTrainingStatusOnUI' in eel._exposed_functions:
+                            eel.updateTrainingStatusOnUI(task.name, f"Run {run_num + 1}/{task.num_runs}: Evaluating on test set...")()
                         test_results = cbas.evaluate_on_split(run_best_model_for_trials, test_ds, behaviors, device=self.device)
                         run_winner_report["test_report"] = test_results["report"]
                         run_winner_report["test_cm"] = test_results["cm"]
@@ -650,7 +664,8 @@ class TrainingThread(threading.Thread):
 
             if self.cancel_event.is_set():
                 log_message(f"Training for '{task.name}' was cancelled by user.", "WARN")
-                eel.updateTrainingStatusOnUI(task.name, "Training cancelled.")()
+                if 'updateTrainingStatusOnUI' in eel._exposed_functions:
+                    eel.updateTrainingStatusOnUI(task.name, "Training cancelled.")()
                 return
 
             if overall_best_model and all_run_reports:
@@ -672,12 +687,14 @@ class TrainingThread(threading.Thread):
                 )
             else:
                 log_message(f"Training failed for '{task.name}'. No valid model could be trained.", "ERROR")
-                eel.updateTrainingStatusOnUI(task.name, "Training failed.")()
+                if 'updateTrainingStatusOnUI' in eel._exposed_functions:
+                    eel.updateTrainingStatusOnUI(task.name, "Training failed.")()
 
         except Exception as e:
             log_message(f"Critical error during training task for {task.name}: {e}", "ERROR")
             traceback.print_exc()
-            eel.updateTrainingStatusOnUI(task.name, f"Training Error: {e}")()
+            if 'updateTrainingStatusOnUI' in eel._exposed_functions:
+                eel.updateTrainingStatusOnUI(task.name, f"Training Error: {e}")()
             
     def _generate_disagreement_report(self, task, model, train_insts):
         """
@@ -897,8 +914,9 @@ class TrainingThread(threading.Thread):
         ds.config = config
         log_message(f"Updated dataset metrics in '{ds.config_path}'.", "INFO")
 
-        log_message(f"Training for '{task.name}' complete. Model, reports, and plots saved.", "INFO")
-        eel.refreshAllDatasets()()
+        # Add the same robust safety check to this final Eel call.
+        if 'refreshAllDatasets' in eel._exposed_functions:
+            eel.refreshAllDatasets()()
     
     def get_id(self):
         if hasattr(self, "_thread_id"): return self._thread_id
