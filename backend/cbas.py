@@ -1172,7 +1172,7 @@ def evaluate_on_split(model, dataset, behaviors, device=None):
     # Use a simple, non-shuffled DataLoader for evaluation.
     # num_workers can be > 0 here as this is a separate, self-contained process.
     loader = torch.utils.data.DataLoader(dataset, batch_size=512, shuffle=False,
-                                         num_workers=4, pin_memory=(device.type=='cuda'),
+                                         num_workers=0, pin_memory=(device.type=='cuda'),
                                          collate_fn=collate_fn)
     y_true, y_pred = [], []
     model.to(device).eval() # Ensure model is on the correct device and in eval mode

@@ -548,8 +548,8 @@ class TrainingThread(threading.Thread):
         """Orchestrates the training process with an optional held-out test set."""
         try:
             log_message(f"--- Starting Training Job for Dataset: {task.name} ---", "INFO")
-            # A more robust check to see if the function is registered with Eel before calling.
-            if 'updateTrainingStatusOnUI' in eel._exposed_functions:
+            # Revert to the correct safety check for an active GUI connection.
+            if hasattr(eel, '_websocket') and eel._websocket is not None:
                 eel.updateTrainingStatusOnUI(task.name, "Preparing data splits...")()
 
             master_seed = int(time.time())
@@ -601,7 +601,7 @@ class TrainingThread(threading.Thread):
                     
                     def training_progress_updater(message: str):
                         # Use the same robust check here.
-                        if 'updateTrainingStatusOnUI' in eel._exposed_functions:
+                        if hasattr(eel, '_websocket') and eel._websocket is not None:
                             f1_match = re.search(r"Val F1: ([\d\.]+)", message)
                             current_best = run_best_f1_for_trials
                             if f1_match:
