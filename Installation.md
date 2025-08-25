@@ -21,9 +21,34 @@ This guide provides step-by-step instructions for installing the CBAS v3 (Beta) 
 3.  **Node.js (LTS version):** Download the LTS version from [https://nodejs.org/](https://nodejs.org/) and install with default settings.
 
 4.  **FFmpeg:** Required for video recording and processing.
-    *   **Windows:** Download the "essentials" build from: [https://gyan.dev/ffmpeg/builds/](https://gyan.dev/ffmpeg/builds/). Unzip the file and move the `ffmpeg-essentials_build` folder to a permanent location like `C:\`. Add the `bin` subfolder to your Windows PATH environment variable (e.g., `C:\ffmpeg-essentials_build\bin`).
+
     *   **macOS (using Homebrew):** Open Terminal and run: `brew install ffmpeg`
     *   **Linux (using apt):** Open a terminal and run: `sudo apt update && sudo apt install ffmpeg`
+    *   **Windows:** This requires a few manual steps. Please follow the detailed instructions below.
+
+    > [!NOTE]
+    > **Detailed Windows Instructions for FFmpeg**
+    >
+    > 1.  **Download:** Go to [https://gyan.dev/ffmpeg/builds/](https://gyan.dev/ffmpeg/builds/) and download the latest "essentials" release `.zip` file.
+    > 2.  **Unzip and Place:** Unzip the downloaded file. You will have a folder like `ffmpeg-7.0-essentials_build`. For simplicity, rename this folder to just `ffmpeg` and move it to a permanent location, like the root of your `C:\` drive. The final path should be `C:\ffmpeg`.
+    > 3.  **Find the `bin` Folder:** Inside `C:\ffmpeg`, you will see a folder named `bin`. The full path to this folder is `C:\ffmpeg\bin`. This is the path we need to add to the Windows PATH.
+    > 4.  **Open Environment Variables:**
+    >     *   Click the **Start Menu** (or press the Windows key) and type `env`.
+    >     *   Click on **"Edit the system environment variables"**. A "System Properties" window will open.
+    >     *   Click the **"Environment Variables..."** button at the bottom.
+    > 5.  **Edit the Path Variable:**
+    >     *   In the new window, look in the top box titled "User variables for [YourUsername]".
+    >     *   Find the variable named **`Path`** in the list and click on it to select it.
+    >     *   Click the **"Edit..."** button.
+    > 6.  **Add the New Path:**
+    >     *   A new window will open showing a list of paths. Click the **"New"** button.
+    >     *   A new, empty line will appear. Type or paste the full path to the `bin` folder: `C:\ffmpeg\bin`
+    >     *   Click **OK** to close the path editor.
+    > 7.  **Confirm Changes:** Click **OK** on the "Environment Variables" window, and then **OK** on the "System Properties" window to save all your changes.
+    > 8.  **Verify the Installation:**
+    >     *   **Close all open Command Prompt windows.** You must open a new one for the changes to take effect.
+    >     *   Open a **new** Command Prompt and type: `ffmpeg -version`
+    >     *   If it was successful, you will see version information printed. If you see an error like `'ffmpeg' is not recognized...`, please carefully repeat the steps above.
 
 ## Step 2: Install and Run CBAS v3
 
@@ -36,8 +61,13 @@ This guide provides step-by-step instructions for installing the CBAS v3 (Beta) 
     git clone https://github.com/jones-lab-tamu/CBAS.git
     cd CBAS
     ```
+    > [!NOTE]
+    > The `git clone` command will print several lines of progress to your terminal as it downloads the project. This is normal. As long as you do not see a specific message that says "ERROR" or "FATAL", the command was successful.
 
-3.  **Create and Activate a Python Virtual Environment:** This creates a self-contained space for CBAS's Python packages.
+3.  **Create and Activate a Python Virtual Environment:**
+
+    > [!NOTE]
+    > This step creates a self-contained "bubble" for all of CBAS's specific Python packages. This is a best practice that prevents CBAS from interfering with any other Python software on your system. After you run the `activate` command, you will see `(venv)` appear at the beginning of your command prompt line. This is normal and indicates that the virtual environment is active.
 
     **On Windows (Command Prompt):**
     ```bash
@@ -95,3 +125,9 @@ This guide provides step-by-step instructions for installing the CBAS v3 (Beta) 
 >
 > **Error: `git is not recognized as an internal or external command`**
 > *   **Solution:** Git was not installed correctly or was not added to your system's PATH. Re-install Git from [https://git-scm.com/](https://git-scm.com/) and ensure you use the default installation settings, which include adding it to the PATH.
+>
+> **Error: `pip install` fails with a network error (e.g., "Timeout" or "Could not connect")**
+> *   **Solution:** The `pip` command needs to download files from the internet. Ensure your computer has an active internet connection. If you are on a university or corporate network, you may be behind a firewall that is blocking access. You may need to consult your IT department or try the installation on a different network.
+>
+> **Error: `pip` is not recognized... (or similar)**
+> *   **Solution:** This almost always means your virtual environment is not active. Look for the `(venv)` at the beginning of your command prompt line. If it's not there, re-run the activation command (`.\venv\Scripts\activate` on Windows or `source venv/bin/activate` on macOS/Linux).
