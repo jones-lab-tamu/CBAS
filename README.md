@@ -175,8 +175,50 @@ The next time you open the "Label/Train" page or click the "Refresh Datasets" bu
 CBAS allows power users to experiment with different feature encoder models on a per-project basis. To do this, find the `cbas_config.yaml.example` file in the application's root directory. Copy this file into the root of your specific CBAS project folder (i.e., the folder that contains the `cameras/`, `data_sets/`, `models/`, and `recordings/` subfolders) and rename it to `cbas_config.yaml`. Edit the file to select the desired model. 
 
 > [!WARNING]
-> Using experimental models like DINOv3 may require additional installation steps, such as authenticating with Hugging Face Hub. This will also require re-encoding all videos in that project.
+> Using experimental models like DINOv3 may require additional installation steps, such as authenticating with Huging Face Hub. This will also require re-encoding all videos in that project.
 
+#### Instructions for Using Gated Models (like DINOv3)
+
+Some state-of-the-art models require you to agree to their terms of use and authenticate with Hugging Face before you can download them. This is a one-time setup per computer.
+
+**Step 1: Get Your Hugging Face Access Token**
+
+1.  Log into your account on [huggingface.co](https://huggingface.co).
+2.  Go to your **Settings** page by clicking your profile picture in the top-right.
+3.  Navigate to the **Access Tokens** tab on the left.
+4.  Create a **New token**. Give it a name (e.g., `cbas-access`) and assign it the **`read`** role.
+5.  Copy the generated token (`hf_...`) to your clipboard.
+
+**Step 2: Log In from the Command Line**
+
+You must log in from the same terminal environment you use to run CBAS.
+
+1.  Open a Command Prompt (Windows) or Terminal (macOS/Linux).
+2.  Navigate to your main CBAS source code directory (e.g., `cd C:\Users\YourName\Documents\CBAS`).
+3.  **Activate your Python virtual environment:**
+    *   On Windows: `.\venv\Scripts\activate`
+    *   On macOS/Linux: `source venv/bin/activate`
+4.  Run the login command:
+    ```bash
+    huggingface-cli login
+    ```
+5.  Paste your access token when prompted and press Enter. Your terminal is now authenticated.
+
+**Step 3: Agree to the Model's Terms**
+
+Before you can download the model, you must accept its terms on the model's page.
+1.  Go to the model's page on Hugging Face, for example: [facebook/dinov3-vitb16-pretrain-lvd1689m](https://huggingface.co/facebook/dinov3-vitb16-pretrain-lvd1689m).
+2.  If prompted, click the button to review and accept the terms of use.
+
+**Step 4: Configure Your Project and Run CBAS**
+
+1.  In your specific CBAS project folder, edit your `cbas_config.yaml` file to uncomment the line for the DINOv3 model.
+    ```yaml
+    encoder_model_identifier: "facebook/dinov3-vitb16-pretrain-lvd1689m"
+    ```
+2.  Save the file and run CBAS normally (`npm start`).
+
+The first time you launch a project with the new model, the backend will download the model files, which may take several minutes. All subsequent launches will be fast. Because this is a new encoder, all videos in this project will be automatically re-queued for encoding.
 --------------
 ## Hardware Requirements
 

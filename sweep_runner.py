@@ -54,22 +54,22 @@ from workthreads import TrainingTask
 # --- A. Define the number of times to REPLICATE each experiment ---
 # This is the number of times the entire training process will be run for each
 # unique combination of hyperparameters. Use a value >= 2 to measure variance.
-REPLICATES_PER_SETTING = 3
+REPLICATES_PER_SETTING = 6
 
 # --- B. Define the parameters you want to VARY ---
 # The script will test every possible combination of these values.
 PARAMETER_GRID = {
     # Recommended sweep: [0.0, 0.0001, 0.001, 0.005]
-    'weight_decay': [0.0, 0.0001, 0.001, 0.005],
+    'weight_decay': [0.0001],
 
     # Recommended sweep: [64, 128, 256]
-    'lstm_hidden_size': [64, 128, 256],
+    'lstm_hidden_size': [128],
 
     # Recommended sweep: [0.0, 0.1]
-    'label_smoothing': [0.0, 0.1],
+    'label_smoothing': [0.1],
 
     # Recommended sweep: [1, 2]
-    'lstm_layers': [1,2]
+    'lstm_layers': [2]
 }
 
 # --- C. Define the parameters you want to KEEP CONSTANT ---
