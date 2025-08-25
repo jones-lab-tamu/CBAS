@@ -548,7 +548,6 @@ class TrainingThread(threading.Thread):
         """Orchestrates the training process with an optional held-out test set."""
         try:
             log_message(f"--- Starting Training Job for Dataset: {task.name} ---", "INFO")
-            # Revert to the correct safety check for an active GUI connection.
             if hasattr(eel, '_websocket') and eel._websocket is not None:
                 eel.updateTrainingStatusOnUI(task.name, "Preparing data splits...")()
 
@@ -571,6 +570,8 @@ class TrainingThread(threading.Thread):
             overall_best_model = None
             overall_best_f1 = -1.0
             all_run_reports = []
+
+            overall_best_run_history = None
             
             master_rng = np.random.default_rng(master_seed)
 
@@ -600,7 +601,6 @@ class TrainingThread(threading.Thread):
                     log_message(f"Run {run_num + 1}, Trial {i + 1}/{task.num_trials} for '{task.name}'.", "INFO")
                     
                     def training_progress_updater(message: str):
-                        # Use the same robust check here.
                         if hasattr(eel, '_websocket') and eel._websocket is not None:
                             f1_match = re.search(r"Val F1: ([\d\.]+)", message)
                             current_best = run_best_f1_for_trials
@@ -649,7 +649,7 @@ class TrainingThread(threading.Thread):
 
                     if task.use_test and test_ds and len(test_ds) > 0:
                         log_message(f"Run {run_num + 1}: Evaluating best model on held-out test set...", "INFO")
-                        if 'updateTrainingStatusOnUI' in eel._exposed_functions:
+                        if hasattr(eel, '_websocket') and eel._websocket is not None:
                             eel.updateTrainingStatusOnUI(task.name, f"Run {run_num + 1}/{task.num_runs}: Evaluating on test set...")()
                         test_results = cbas.evaluate_on_split(run_best_model_for_trials, test_ds, behaviors, device=self.device)
                         run_winner_report["test_report"] = test_results["report"]
@@ -661,10 +661,12 @@ class TrainingThread(threading.Thread):
                         log_message(f"New overall best model found in Run {run_num + 1} with Validation F1: {run_best_f1_for_trials:.4f}", "INFO")
                         overall_best_f1 = run_best_f1_for_trials
                         overall_best_model = run_best_model_for_trials
+                        # When we find a new best model, we also save its history.
+                        overall_best_run_history = run_best_reports_history
 
             if self.cancel_event.is_set():
                 log_message(f"Training for '{task.name}' was cancelled by user.", "WARN")
-                if 'updateTrainingStatusOnUI' in eel._exposed_functions:
+                if hasattr(eel, '_websocket') and eel._websocket is not None:
                     eel.updateTrainingStatusOnUI(task.name, "Training cancelled.")()
                 return
 
@@ -673,7 +675,8 @@ class TrainingThread(threading.Thread):
                     task=task,
                     best_model=overall_best_model,
                     all_run_reports=all_run_reports,
-                    best_run_history=run_best_reports_history,
+                    # Pass the correctly saved history to the save function.
+                    best_run_history=overall_best_run_history,
                     best_run_cm=None,
                     split_assignments={
                         "master_seed": master_seed,
@@ -687,13 +690,13 @@ class TrainingThread(threading.Thread):
                 )
             else:
                 log_message(f"Training failed for '{task.name}'. No valid model could be trained.", "ERROR")
-                if 'updateTrainingStatusOnUI' in eel._exposed_functions:
+                if hasattr(eel, '_websocket') and eel._websocket is not None:
                     eel.updateTrainingStatusOnUI(task.name, "Training failed.")()
 
         except Exception as e:
             log_message(f"Critical error during training task for {task.name}: {e}", "ERROR")
             traceback.print_exc()
-            if 'updateTrainingStatusOnUI' in eel._exposed_functions:
+            if hasattr(eel, '_websocket') and eel._websocket is not None:
                 eel.updateTrainingStatusOnUI(task.name, f"Training Error: {e}")()
             
     def _generate_disagreement_report(self, task, model, train_insts):
@@ -795,14 +798,11 @@ class TrainingThread(threading.Thread):
         os.makedirs(model_dir, exist_ok=True)
 
         # --- 2. CALIBRATION ---
-        # --- START OF THE FIX ---
-        # The line now correctly unpacks all 10 return values.
         _, val_ds, _, _, _, _, behaviors, _, _, _ = gui_state.proj.load_dataset_3way(
             name=task.name, seed=split_assignments['master_seed'],
             val_split=0.2, test_split=(task.test_split if task.use_test else 0.0),
             seq_len=task.sequence_length
         )
-        # --- END OF THE FIX ---
 
         temperature = 1.0
         if val_ds and len(val_ds) > 0:
@@ -875,6 +875,16 @@ class TrainingThread(threading.Thread):
                 )
             log_message(f"Epoch plots for the best run saved to '{plot_dir}'.", "INFO")
 
+        if all_run_reports:
+            # Extract just the test_report dictionary from each run's results.
+            test_reports = [r.get("test_report", {}) for r in all_run_reports]
+            plot_averaged_run_metrics(
+                reports=test_reports,
+                behaviors=task.behaviors,
+                out_dir=plot_dir
+            )
+            log_message(f"Per-run performance plots saved to '{plot_dir}'.", "INFO")
+
         # --- 6. UPDATE THE DATASET CONFIG FOR THE UI CARD ---
         ds = task.dataset
         config = dict(ds.config)
@@ -914,8 +924,7 @@ class TrainingThread(threading.Thread):
         ds.config = config
         log_message(f"Updated dataset metrics in '{ds.config_path}'.", "INFO")
 
-        # Add the same robust safety check to this final Eel call.
-        if 'refreshAllDatasets' in eel._exposed_functions:
+        if hasattr(eel, '_websocket') and eel._websocket is not None:
             eel.refreshAllDatasets()()
     
     def get_id(self):
