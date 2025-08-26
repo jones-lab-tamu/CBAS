@@ -33,6 +33,10 @@ proj: Union['cbas.Project', None] = None
 
 dino_encoder: Union['cbas.DinoEncoder', None] = None
 
+# This global flag will determine if the backend is running with a GUI or not.
+# It will be set by the entry point script (app.py or sweep_runner.py).
+HEADLESS_MODE = False
+
 # =================================================================
 # LABELING INTERFACE STATE
 # =================================================================
