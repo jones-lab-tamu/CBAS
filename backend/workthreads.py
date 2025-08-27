@@ -22,6 +22,12 @@ import re
 import traceback
 import json
 from collections import defaultdict
+import git
+try:
+    import importlib.metadata as pkg_resources
+except ImportError:
+    import pkg_resources # Fallback for Python < 3.8
+from backend.splits import RandomSplitProvider # Import the new class
 
 # Third-party imports
 import torch
@@ -539,60 +545,75 @@ class TrainingThread(threading.Thread):
             else:
                 time.sleep(1)
 
-    def _execute_training_task(self, task: TrainingTask):
-        """Orchestrates the training process with an optional held-out test set."""
+    def _execute_training_task(self, task: TrainingTask, split_provider: cbas.SplitProvider = None):
+        """
+        Orchestrates the training process using a provided SplitProvider.
+        This version is correctly refactored to handle all training methods.
+        """
         try:
             log_message(f"--- Starting Training Job for Dataset: {task.name} ---", "INFO")
             if not gui_state.HEADLESS_MODE:
                 eel.updateTrainingStatusOnUI(task.name, "Preparing data splits...")()
 
-            master_seed = int(time.time())
-            
-            all_insts = [inst for b in task.dataset.config.get("behaviors", []) for inst in task.dataset.labels.get("labels", {}).get(b, [])]
-            group_to_instances = defaultdict(list)
-            for inst in all_insts:
-                group_key = os.path.dirname(inst['video']).replace('\\', '/')
-                group_to_instances[group_key].append(inst)
-            all_groups = sorted(list(group_to_instances.keys()))
-            rng = np.random.default_rng(master_seed)
-            rng.shuffle(all_groups)
-            
-            stable_test_groups = set()
-            if task.use_test and task.test_split > 0:
-                num_test_groups = max(1, int(len(all_groups) * task.test_split))
-                stable_test_groups = set(all_groups[:num_test_groups])
+            if split_provider is None:
+                split_provider = RandomSplitProvider(split_ratios=(1.0 - task.test_split - 0.15, 0.15, task.test_split if task.use_test else 0.0))
 
+            all_instances = [inst for b in task.behaviors for inst in task.dataset.labels.get("labels", {}).get(b, [])]
+            all_subjects = list(set(os.path.dirname(inst['video']) for inst in all_instances))
+            
             overall_best_model = None
             overall_best_f1 = -1.0
             all_run_reports = []
             overall_best_run_history = None
-            
-            master_rng = np.random.default_rng(master_seed)
+            final_split_assignments = {}
 
             for run_num in range(task.num_runs):
                 if self.cancel_event.is_set(): break
-                log_message(f"--- Starting Run {run_num + 1}/{task.num_runs} (New Train/Val Split) ---", "INFO")
-                
-                run_seed = int(master_rng.integers(2**32 - 1))
+                log_message(f"--- Starting Run {run_num + 1}/{task.num_runs} ---", "INFO")
 
-                train_ds, val_ds, test_ds, train_insts, val_insts, test_insts, behaviors, train_groups, val_groups, _ = \
-                    gui_state.proj.load_dataset_3way(
-                        name=task.name, 
-                        seed=run_seed,
-                        val_split=0.2,
-                        fixed_test_groups=stable_test_groups,
-                        seq_len=task.sequence_length
-                    )
+                train_subjects, val_subjects, test_subjects = split_provider.get_split(run_num, all_subjects, all_instances, task.behaviors)
+                
+                # This function call remains the same. It gets us the raw data.
+                _, _, _, train_insts, val_insts, test_insts, behaviors = cbas.create_datasets_from_splits(
+                    gui_state.proj, task.name, train_subjects, val_subjects, test_subjects, task.sequence_length
+                )
+
+                # Now, we handle the dataset creation and weight calculation based on the training method.
+                
+                # First, convert all instances to tensors
+                train_seqs, train_labels = gui_state.proj.convert_instances(gui_state.proj.path, train_insts, task.sequence_length, behaviors)
+                val_seqs, val_labels = gui_state.proj.convert_instances(gui_state.proj.path, val_insts, task.sequence_length, behaviors)
+                test_seqs, test_labels = gui_state.proj.convert_instances(gui_state.proj.path, test_insts, task.sequence_length, behaviors)
+                
+                weights = None
+                if task.training_method == "weighted_loss":
+                    log_message("Using Weighted Loss. Creating standard dataset and calculating class weights.", "INFO")
+                    train_ds = cbas.StandardDataset(train_seqs, train_labels) if train_seqs else None
+                    weights = cbas.compute_class_weights_from_instances(train_insts, behaviors)
+                elif task.training_method == 'custom_weights':
+                    log_message("Using Custom Weights with standard dataset.", "INFO")
+                    train_ds = cbas.StandardDataset(train_seqs, train_labels) if train_seqs else None
+                    weights = [task.custom_weights.get(b, 1.0) for b in behaviors]
+                else: # Default to 'oversampling'
+                    log_message("Using Balanced Sampling (Oversampling).", "INFO")
+                    train_ds = cbas.BalancedDataset(train_seqs, train_labels, behaviors) if train_seqs else None
+
+                # Validation and Test sets are always standard datasets.
+                val_ds = cbas.StandardDataset(val_seqs, val_labels) if val_seqs else None
+                test_ds = cbas.StandardDataset(test_seqs, test_labels) if test_seqs else None
 
                 if train_ds is None or len(train_ds) == 0 or val_ds is None or len(val_ds) == 0:
-                    log_message(f"Data splitting for run {run_num + 1} failed. Skipping.", "WARN")
+                    log_message(f"Data preparation for run {run_num + 1} failed. Skipping.", "WARN")
                     continue
                 
-                run_best_model_for_trials, run_best_f1_for_trials, run_best_reports_history, run_best_epoch = None, -1.0, None, -1
+                run_best_model_for_trials = None
+                run_best_f1_for_trials = -1.0
+                run_best_reports_history = None
+                run_best_epoch = -1
 
-                for i in range(task.num_trials):
+                for trial_num in range(task.num_trials):
                     if self.cancel_event.is_set(): break
-                    log_message(f"Run {run_num + 1}, Trial {i + 1}/{task.num_trials} for '{task.name}'.", "INFO")
+                    log_message(f"Run {run_num + 1}, Trial {trial_num + 1}/{task.num_trials} for '{task.name}'.", "INFO")
                     
                     def training_progress_updater(message: str):
                         if not gui_state.HEADLESS_MODE:
@@ -601,7 +622,7 @@ class TrainingThread(threading.Thread):
                             if f1_match:
                                 current_best = max(run_best_f1_for_trials, float(f1_match.group(1)))
                             f1_text = f"{current_best:.4f}" if current_best >= 0 else "N/A"
-                            display_message = f"Run {run_num + 1}/{task.num_runs}, Trial {i + 1}/{task.num_trials}... Best Val F1: {f1_text}"
+                            display_message = f"Run {run_num + 1}/{task.num_runs}, Trial {trial_num + 1}/{task.num_trials}... Best Val F1: {f1_text}"
                             eel.updateTrainingStatusOnUI(task.name, display_message, message)()
 
                     weights = None
@@ -656,6 +677,12 @@ class TrainingThread(threading.Thread):
                         overall_best_f1 = run_best_f1_for_trials
                         overall_best_model = run_best_model_for_trials
                         overall_best_run_history = run_best_reports_history
+                        final_split_assignments = {
+                            "master_seed": split_provider.initial_seed if isinstance(split_provider, RandomSplitProvider) else "N/A",
+                            "train_groups": sorted(list(train_subjects)),
+                            "val_groups": sorted(list(val_subjects)),
+                            "test_groups": sorted(list(test_subjects))
+                        }
 
             if self.cancel_event.is_set():
                 log_message(f"Training for '{task.name}' was cancelled by user.", "WARN")
@@ -670,12 +697,7 @@ class TrainingThread(threading.Thread):
                     all_run_reports=all_run_reports,
                     best_run_history=overall_best_run_history,
                     best_run_cm=None,
-                    split_assignments={
-                        "master_seed": master_seed,
-                        "train_groups": sorted(list(train_groups)),
-                        "val_groups": sorted(list(val_groups)),
-                        "test_groups": sorted(list(stable_test_groups))
-                    },
+                    split_assignments=final_split_assignments,
                     train_insts=train_insts,
                     val_insts=val_insts,
                     test_insts=test_insts
@@ -778,8 +800,8 @@ class TrainingThread(threading.Thread):
 
     def _save_averaged_training_results(self, task: TrainingTask, best_model, all_run_reports: list, best_run_history, best_run_cm, split_assignments: dict, train_insts: list, val_insts: list, test_insts: list):
         """
-        Saves the final model bundle, auditable reports, performance plots,
-        and updates the dataset config for the UI.
+        Saves the final model bundle and enriched, auditable reports.
+        This version is correctly refactored to be a pure "saving" function.
         """
         log_message(f"Finalizing and saving model bundle for '{task.name}'...", "INFO")
         
@@ -789,12 +811,25 @@ class TrainingThread(threading.Thread):
         plot_dir = task.dataset.path
         os.makedirs(model_dir, exist_ok=True)
 
-        # --- 2. CALIBRATION ---
-        _, val_ds, _, _, _, _, behaviors, _, _, _ = gui_state.proj.load_dataset_3way(
-            name=task.name, seed=split_assignments['master_seed'],
-            val_split=0.2, test_split=(task.test_split if task.use_test else 0.0),
-            seq_len=task.sequence_length
-        )
+        # --- 2. GET REPRODUCIBILITY INFO ---
+        try:
+            repo = git.Repo(search_parent_directories=True, invalid_git_dir=True)
+            git_commit = repo.head.object.hexsha
+        except Exception:
+            git_commit = "N/A"
+
+        try:
+            lib_versions = {
+                "torch": pkg_resources.version("torch"),
+                "transformers": pkg_resources.version("transformers")
+            }
+        except Exception:
+            lib_versions = {"error": "Could not determine library versions."}
+
+        # --- 3. CALIBRATION ---
+        # Create a validation dataset from the val_insts to calibrate the model
+        val_seqs, val_labels = gui_state.proj.convert_instances(gui_state.proj.path, val_insts, task.sequence_length, task.behaviors)
+        val_ds = cbas.StandardDataset(val_seqs, val_labels) if val_seqs else None
 
         temperature = 1.0
         if val_ds and len(val_ds) > 0:
@@ -803,9 +838,9 @@ class TrainingThread(threading.Thread):
             temperature = fit_temperature(best_model, val_loader, self.device)
             log_message(f"Optimal temperature found: {temperature:.4f}", "INFO")
         else:
-            log_message("No validation set found, using default temperature of 1.0.", "WARN")
+            log_message("No validation set to calibrate on. Using default temperature of 1.0.", "WARN")
 
-        # --- 3. SAVE THE MODEL BUNDLE ---
+        # --- 4. SAVE THE MODEL BUNDLE ---
         torch.save(best_model.state_dict(), os.path.join(model_dir, "model.pth"))
 
         model_config = {
@@ -817,16 +852,13 @@ class TrainingThread(threading.Thread):
         with open(os.path.join(model_dir, "config.yaml"), "w") as f:
             yaml.dump(model_config, f, allow_unicode=True)
 
-        with open(os.path.join(model_dir, "split_assignments.json"), "w") as f:
-            json.dump(split_assignments, f, indent=4)
-
-        # --- 4. GENERATE AND SAVE THE COMPREHENSIVE YAML REPORT ---
+        # --- 5. GENERATE AND SAVE THE COMPREHENSIVE YAML REPORT ---
         full_report = {
             "dataset_name": task.name,
             "model_name": model_name,
             "training_parameters": {
                 "num_runs": task.num_runs,
-                "num_trials_per_run": task.num_trials,
+                "num_trials": task.num_trials,
                 "epochs": task.epochs,
                 "learning_rate": task.learning_rate,
                 "sequence_length": task.sequence_length,
@@ -837,51 +869,68 @@ class TrainingThread(threading.Thread):
                 "lstm_hidden_size": task.lstm_hidden_size,
                 "lstm_layers": task.lstm_layers
             },
-            "split_information": split_assignments,
+            "reproducibility_info": {
+                "cbas_git_commit": git_commit,
+                "library_versions": lib_versions,
+                "master_seed": split_assignments.get("master_seed")
+            },
+            "split_information": {
+                "train_subjects": split_assignments.get("train_groups", []),
+                "validation_subjects": split_assignments.get("val_groups", []),
+                "test_subjects": split_assignments.get("test_groups", [])
+            },
             "run_results": all_run_reports 
         }
         report_path = os.path.join(plot_dir, "performance_report.yaml")
         with open(report_path, "w") as f:
-            yaml.dump(json.loads(json.dumps(full_report, default=lambda x: x.tolist() if isinstance(x, np.ndarray) else x)), f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+            # Use a helper to handle numpy types for clean YAML output
+            def numpy_dumper(data):
+                if isinstance(data, np.integer): return int(data)
+                if isinstance(data, np.floating): return float(data)
+                if isinstance(data, np.ndarray): return data.tolist()
+                return data
+            yaml.dump(json.loads(json.dumps(full_report, default=numpy_dumper)), f, allow_unicode=True, default_flow_style=False, sort_keys=False)
         log_message(f"Wrote comprehensive performance report to '{report_path}'.", "INFO")
 
-        # --- 5. SAVE PLOTS ---
-        best_run_idx = int(np.argmax([r['validation_report'].get(task.optimization_target, {}).get('f1-score', 0) for r in all_run_reports]))
-        best_run_report = all_run_reports[best_run_idx]
-        
-        best_val_cm = best_run_report.get("validation_cm")
-        if best_val_cm is not None and np.array(best_val_cm).size > 0:
-            save_confusion_matrix_plot(np.array(best_val_cm), os.path.join(plot_dir, "confusion_matrix_validation_BEST.png"), labels=task.behaviors, title="Best Run: Validation Confusion Matrix")
+        # --- 6. SAVE PLOTS ---
+        if all_run_reports:
+            best_run_idx = int(np.argmax([r['validation_report'].get(task.optimization_target, {}).get('f1-score', 0) for r in all_run_reports]))
+            best_run_report = all_run_reports[best_run_idx]
+            
+            best_val_cm = best_run_report.get("validation_cm")
+            if best_val_cm is not None and np.array(best_val_cm).size > 0:
+                save_confusion_matrix_plot(np.array(best_val_cm), os.path.join(plot_dir, "confusion_matrix_validation_BEST.png"), labels=task.behaviors, title="Best Run: Validation Confusion Matrix")
 
-        best_test_cm = best_run_report.get("test_cm")
-        if best_test_cm is not None and np.array(best_test_cm).size > 0:
-            save_confusion_matrix_plot(np.array(best_test_cm), os.path.join(plot_dir, "confusion_matrix_test_FINAL.png"), labels=task.behaviors, title="Final Model: Held-Out Test Confusion Matrix")
+            best_test_cm = best_run_report.get("test_cm")
+            if best_test_cm is not None and np.array(best_test_cm).size > 0:
+                save_confusion_matrix_plot(np.array(best_test_cm), os.path.join(plot_dir, "confusion_matrix_test_FINAL.png"), labels=task.behaviors, title="Final Model: Held-Out Test Confusion Matrix")
 
-        if best_run_history:
-            for metric in ['f1-score', 'precision', 'recall']:
-                plot_report_list_metric(
-                    reports=best_run_history,
-                    metric=metric,
+            if best_run_history:
+                for metric in ['f1-score', 'precision', 'recall']:
+                    plot_report_list_metric(
+                        reports=best_run_history,
+                        metric=metric,
+                        behaviors=task.behaviors,
+                        out_dir=plot_dir
+                    )
+                log_message(f"Epoch plots for the best run saved to '{plot_dir}'.", "INFO")
+
+            test_reports = [r.get("test_report", {}) for r in all_run_reports]
+            if any(test_reports): # Only plot if there are test reports
+                plot_averaged_run_metrics(
+                    reports=test_reports,
                     behaviors=task.behaviors,
                     out_dir=plot_dir
                 )
-            log_message(f"Epoch plots for the best run saved to '{plot_dir}'.", "INFO")
+                log_message(f"Per-run performance plots saved to '{plot_dir}'.", "INFO")
 
-        if all_run_reports:
-            # Extract just the test_report dictionary from each run's results.
-            test_reports = [r.get("test_report", {}) for r in all_run_reports]
-            plot_averaged_run_metrics(
-                reports=test_reports,
-                behaviors=task.behaviors,
-                out_dir=plot_dir
-            )
-            log_message(f"Per-run performance plots saved to '{plot_dir}'.", "INFO")
-
-        # --- 6. UPDATE THE DATASET CONFIG FOR THE UI CARD ---
+        # --- 7. UPDATE THE DATASET CONFIG FOR THE UI CARD ---
         ds = task.dataset
         config = dict(ds.config)
         metrics_block = {}
         
+        # Ensure best_run_report is defined even if all_run_reports is empty
+        best_run_report = all_run_reports[best_run_idx] if all_run_reports else {}
         best_val_report_dict = best_run_report.get("validation_report", {})
         best_test_report_dict = best_run_report.get("test_report", {})
 
@@ -914,6 +963,8 @@ class TrainingThread(threading.Thread):
         with open(ds.config_path, "w", encoding="utf-8") as f:
             yaml.dump(config, f, allow_unicode=True)
         ds.config = config
+        log_message(f"Updated dataset metrics in '{ds.config_path}'.", "INFO")
+
         log_message(f"Training for '{task.name}' complete. Model, reports, and plots saved.", "INFO")
         
         if not gui_state.HEADLESS_MODE:

@@ -9,8 +9,18 @@ This script is responsible for:
 import warnings
 warnings.filterwarnings("ignore", message="pkg_resources is deprecated as an API")
 
+# This block ensures that the project's root directory is on the Python path,
+# which allows for consistent, absolute imports regardless of how the script is run.
 import os
 import sys
+# Get the directory of the current file (backend/app.py)
+current_dir = os.path.dirname(os.path.abspath(__file__))
+# Get the parent directory (the project's root)
+project_root = os.path.dirname(current_dir)
+# Add the project root to the system path if it's not already there
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
 import socket
 import torch
 import threading

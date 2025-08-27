@@ -10,15 +10,33 @@ The script will iterate through all combinations of parameters defined in the
 PARAMETER_GRID, train a model for each, and save the results to a single CSV file.
 
 --- USAGE ---
+The script is designed to be run in sequential phases.
+
 1. Activate your Python virtual environment:
    (Windows): .\venv\Scripts\activate
    (macOS/Linux): source venv/bin/activate
 
-2. Run the script from your main CBAS project directory, providing the required arguments:
-   python sweep_runner.py --project_path "C:/Path/To/Your/CBAS_Project" --dataset_name "your_dataset_name"
+2. Run the script from your main CBAS project directory, providing the required arguments for each phase:
 
-3. The script will print its progress to the console and, when finished, will create a
-   'sweep_results_[dataset_name]_[timestamp].csv' file in your project's root directory.
+   # PHASE 0: Pre-compute the data splits (Run this ONCE per experiment)
+   # This creates the sweep_splits.json and outer_splits.json files.
+   python sweep_runner.py --project_path "C:/Path/To/Your/CBAS_Project" --dataset_name "your_dataset_name" --phase precompute
+
+   # PHASE 1: Run the hyperparameter sweep (This is the long, overnight run)
+   # This uses sweep_splits.json to test all parameter combinations and outputs sweep_results.csv.
+   python sweep_runner.py --project_path "C:/Path/To/Your/CBAS_Project" --dataset_name "your_dataset_name" --phase sweep
+
+   # PHASE 2: Run the final, rigorous evaluation of the champion model
+   # After analyzing sweep_results.csv, you will update the CHAMPION_PARAMETERS in this script.
+   # This phase then uses outer_splits.json to generate the final, publishable performance numbers.
+   python sweep_runner.py --project_path "C:/Path/To/Your/CBAS_Project" --dataset_name "your_dataset_name" --phase evaluate
+
+   # PHASE 3: Train the single, deployable model for future use
+   # This trains one final model on a large portion of the data using the champion hyperparameters.
+   python sweep_runner.py --project_path "C:/Path/To/Your/CBAS_Project" --dataset_name "your_dataset_name" --phase train_final
+
+3. The script will print its progress to the console and create output files
+   (splits manifests, results CSVs) in your project's root directory.
 """
 
 import argparse
@@ -27,10 +45,15 @@ import os
 import sys
 import time
 from datetime import datetime
+import json
+import hashlib
+from collections import defaultdict
+import random
 
 import pandas as pd
 import torch
 import yaml
+import numpy as np
 
 # --- Add the backend directory to the Python path ---
 # This is crucial to allow this script to import the CBAS backend modules.
@@ -40,42 +63,26 @@ if backend_path not in sys.path:
     sys.path.append(backend_path)
 
 # --- Import CBAS backend modules ---
-# These imports will now work because of the path modification above.
 import cbas
 import gui_state
 import workthreads
 from workthreads import TrainingTask
+from backend.splits import RandomSplitProvider, ManifestSplitProvider, _generate_dataset_fingerprint
 
 # ==============================================================================
 # --- 1. EXPERIMENT DEFINITION (USER CONFIGURATION) ---
-# This is the main section for a power-user to configure their experiment.
 # ==============================================================================
 
-# --- A. Define the number of times to REPLICATE each experiment ---
-# This is the number of times the entire training process will be run for each
-# unique combination of hyperparameters. Use a value >= 2 to measure variance.
-REPLICATES_PER_SETTING = 3
-
-# --- B. Define the parameters you want to VARY ---
-# The script will test every possible combination of these values.
+# --- A. Define the parameters you want to VARY in the sweep ---
 PARAMETER_GRID = {
-    # Recommended sweep: [0.0, 0.0001, 0.001, 0.005]
-    'weight_decay': [0.0, 0.0001, 0.001],
-
-    # Recommended sweep: [64, 128, 256]
+    'weight_decay': [0.0001, 0.001],
     'lstm_hidden_size': [64, 128],
-
-    # Recommended sweep: [0.0, 0.1]
     'label_smoothing': [0.0, 0.1],
-
-    # Recommended sweep: [1, 2]
     'lstm_layers': [1, 2]
 }
 
-# --- C. Define the parameters you want to KEEP CONSTANT ---
-# These settings will be used for all experimental runs.
-FIXED_PARAMETERS = {
-    # --- Core Training Setup ---
+# --- B. Define the parameters you want to KEEP CONSTANT for the sweep ---
+SWEEP_FIXED_PARAMETERS = {
     'training_method': 'oversampling',
     'optimization_target': 'macro avg',
     'learning_rate': 0.0001,
@@ -83,30 +90,50 @@ FIXED_PARAMETERS = {
     'patience': 3,
     'batch_size': 1024,
     'sequence_length': 31,
+    'use_test': False, # Test set is NOT used in the sweep phase
+    'test_split': 0.0,
+    'num_runs': 5, # 5 replicates for the sweep
+    'num_trials': 2
+}
 
-    # --- Test Set Configuration ---
+# --- C. Define the CHAMPION parameters for final evaluation & training ---
+# After running the sweep, you will manually update these with the best combination.
+# This dictionary is now self-contained and defines all necessary parameters.
+CHAMPION_PARAMETERS = {
+    # --- Champion Hyperparameters (Update these after your sweep) ---
+    'weight_decay': 0.0001,
+    'lstm_hidden_size': 128,
+    'label_smoothing': 0.1,
+    'lstm_layers': 2,
+
+    # --- Fixed Experimental Conditions ---
+    'training_method': 'oversampling',
+    'optimization_target': 'macro avg',
+    'learning_rate': 0.0001,
+    'epochs': 10,
+    'patience': 3,
+    'batch_size': 1024,
+    'sequence_length': 31,
+    
+    # --- Final Evaluation Settings ---
     'use_test': True,
     'test_split': 0.15,
-
-    # --- Number of Runs ---
-    # For a sweep, n=2 or n=3 is usually sufficient to get a directional signal.
-    # Increase this for a final, rigorous evaluation of your single best model.
-    'num_runs': 2, # This is the "inner" loop, finding the best model within one replicate.
-    'num_trials': 2 
+    'num_runs': 20, # 20 replicates for the final evaluation
+    'num_trials': 2  # Trials per run can be kept low as we trust the params
 }
 
 # ==============================================================================
 # --- 2. HEADLESS CBAS INITIALIZATION ---
-# This section performs the essential startup tasks that the GUI app normally handles.
 # ==============================================================================
 
 def initialize_headless_cbas(project_path: str):
     """
     Loads a CBAS project and initializes necessary components like the encoder.
     """
-    # Set the global flag to indicate we are running without a GUI.
-    gui_state.HEADLESS_MODE = True
+    # Set the required environment variable for deterministic CuBLAS operations.
+    os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
     
+    gui_state.HEADLESS_MODE = True
     print("--- Initializing Headless CBAS Environment ---")
     try:
         gui_state.proj = cbas.Project(project_path)
@@ -115,7 +142,6 @@ def initialize_headless_cbas(project_path: str):
         print(f"FATAL ERROR: {e}. The provided path is not a valid CBAS project.")
         sys.exit(1)
 
-    # Initialize the DINOv2 encoder
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
     try:
@@ -128,90 +154,122 @@ def initialize_headless_cbas(project_path: str):
         print(f"FATAL ERROR: Could not initialize the DINOv2 encoder. {e}")
         sys.exit(1)
     
-    # We need a dummy TrainingThread object to call its methods, but we won't start it.
     gui_state.training_thread = workthreads.TrainingThread(device)
+    
+    # Set full determinism for reproducibility
+    torch.manual_seed(42)
+    np.random.seed(42)
+    random.seed(42)
+    if device == 'cuda':
+        torch.cuda.manual_seed_all(42)
+    torch.use_deterministic_algorithms(True)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    print("Set all random seeds and enabled deterministic algorithms.")
     print("-------------------------------------------\n")
 
-
 # ==============================================================================
-# --- 3. SWEEP EXECUTION AND REPORTING ---
-# This section contains the main logic for running the sweep and saving results.
+# --- 3. SWEEP PHASES ---
 # ==============================================================================
 
-def run_sweep(project_path: str, dataset_name: str):
+def precompute_splits(dataset_name: str):
     """
-    Main function to execute the hyperparameter sweep with replications.
+    Generates and saves two manifest files with stratified, group-aware splits.
     """
-    if dataset_name not in gui_state.proj.datasets:
-        print(f"FATAL ERROR: Dataset '{dataset_name}' not found in project '{project_path}'.")
-        sys.exit(1)
+    print("--- Phase: Pre-computing Splits ---")
+    dataset = gui_state.proj.datasets[dataset_name]
+    fingerprint = _generate_dataset_fingerprint(dataset)
+    print(f"Dataset Fingerprint: {fingerprint}")
+
+    all_instances = [inst for b in dataset.config.get("behaviors", []) for inst in dataset.labels.get("labels", {}).get(b, [])]
+    all_subjects = list(set(os.path.dirname(inst['video']) for inst in all_instances))
+
+    # Generate splits for the sweep (Phase 1)
+    sweep_manifest = {
+        "manifest_type": "hyperparameter_sweep",
+        "dataset_fingerprint": fingerprint,
+        "splits": []
+    }
+    provider = RandomSplitProvider(split_ratios=(0.85, 0.15, 0.0)) # 85% train, 15% val, 0% test
+    for i in range(10): # Generate 10 splits for the fine-grained sweep
+        train, val, test = provider.get_split(i, all_subjects, all_instances, dataset.config.get("behaviors", []))
+        sweep_manifest["splits"].append({"train": train, "validation": val, "test": test})
+    
+    sweep_path = os.path.join(gui_state.proj.path, "sweep_splits.json")
+    with open(sweep_path, 'w') as f:
+        json.dump(sweep_manifest, f, indent=4)
+    print(f"Successfully saved sweep splits to: {sweep_path}")
+
+    # Generate splits for the final evaluation (Phase 2)
+    outer_manifest = {
+        "manifest_type": "outer_evaluation",
+        "dataset_fingerprint": fingerprint,
+        "splits": []
+    }
+    provider = RandomSplitProvider(split_ratios=(0.70, 0.15, 0.15)) # 70/15/15 split
+    for i in range(20): # Generate 20 outer splits
+        train, val, test = provider.get_split(i, all_subjects, all_instances, dataset.config.get("behaviors", []))
+        outer_manifest["splits"].append({"train": train, "validation": val, "test": test})
+
+    outer_path = os.path.join(gui_state.proj.path, "outer_splits.json")
+    with open(outer_path, 'w') as f:
+        json.dump(outer_manifest, f, indent=4)
+    print(f"Successfully saved outer evaluation splits to: {outer_path}")
+    print("-------------------------------------\n")
+
+
+def run_sweep(dataset_name: str):
+    """
+    Main function to execute the hyperparameter sweep using a manifest.
+    """
+    dataset = gui_state.proj.datasets[dataset_name]
+    fingerprint = _generate_dataset_fingerprint(dataset)
+    manifest_path = os.path.join(gui_state.proj.path, "sweep_splits.json")
 
     keys, values = zip(*PARAMETER_GRID.items())
     param_combinations = [dict(zip(keys, v)) for v in itertools.product(*values)]
     
-    total_jobs = len(param_combinations) * REPLICATES_PER_SETTING
-
-    print(f"--- Starting Hyperparameter Sweep ---")
-    print(f"Dataset: {dataset_name}")
-    print(f"Found {len(param_combinations)} unique parameter combinations.")
-    print(f"Running {REPLICATES_PER_SETTING} replicate(s) for each combination.")
-    print(f"Total training jobs to execute: {total_jobs}")
+    total_jobs = len(param_combinations)
+    print(f"--- Phase: Hyperparameter Sweep ---")
+    print(f"Found {total_jobs} unique parameter combinations to test.")
+    print(f"Each combination will be run {SWEEP_FIXED_PARAMETERS['num_runs']} times using pre-computed splits.")
     print("-------------------------------------\n")
 
     all_results = []
-    job_counter = 0
+    
+    for i, params in enumerate(param_combinations):
+        job_start_time = time.time()
+        print(f"--- Starting Job {i+1}/{total_jobs} ---")
+        print(f"Parameters: {params}")
 
-    # The new outer loop for replications.
-    for replicate_num in range(REPLICATES_PER_SETTING):
-        print(f"========= STARTING REPLICATE {replicate_num + 1}/{REPLICATES_PER_SETTING} =========\n")
+        current_params = SWEEP_FIXED_PARAMETERS.copy()
+        current_params.update(params)
+
+        task = TrainingTask(name=dataset_name, dataset=dataset, behaviors=dataset.config.get('behaviors', []), **current_params)
         
-        for i, params in enumerate(param_combinations):
-            job_counter += 1
-            job_start_time = time.time()
-            print(f"--- Starting Job {job_counter}/{total_jobs} (Replicate {replicate_num + 1}) ---")
-            print(f"Parameters: {params}")
-
-            current_params = FIXED_PARAMETERS.copy()
-            current_params.update(params)
-
-            task = TrainingTask(
-                name=dataset_name,
-                dataset=gui_state.proj.datasets[dataset_name],
-                behaviors=gui_state.proj.datasets[dataset_name].config.get('behaviors', []),
-                custom_weights=None,
-                **current_params
-            )
-
-            gui_state.training_thread._execute_training_task(task)
+        # Instantiate the manifest provider for this job
+        split_provider = ManifestSplitProvider(manifest_path, fingerprint)
+        
+        # Execute the training task by calling it directly
+        gui_state.training_thread._execute_training_task(task, split_provider)
+        
+        report_path = os.path.join(dataset.path, "performance_report.yaml")
+        if os.path.exists(report_path):
+            with open(report_path, 'r') as f:
+                report_data = yaml.safe_load(f)
             
-            report_path = os.path.join(gui_state.proj.datasets[dataset_name].path, "performance_report.yaml")
-            if os.path.exists(report_path):
-                with open(report_path, 'r') as f:
-                    report_data = yaml.safe_load(f)
+            run_reports = report_data.get('run_results', [])
+            if run_reports:
+                result_row = current_params.copy()
+                result_row.update(params)
                 
-                run_reports = report_data.get('run_results', [])
-                if run_reports:
-                    result_row = current_params.copy()
-                    result_row.update(params)
-                    
-                    # Add the replicate number to the results row for easy analysis.
-                    result_row['replicate'] = replicate_num + 1
-                    
-                    test_f1_scores = [r['test_report'].get('macro avg', {}).get('f1-score', 0) for r in run_reports]
-                    avg_test_f1 = sum(test_f1_scores) / len(test_f1_scores) if test_f1_scores else 0
-                    result_row['avg_test_f1_macro'] = avg_test_f1
-                    
-                    best_run_idx = int(pd.Series([r['validation_report'].get('macro avg', {}).get('f1-score', 0) for r in run_reports]).idxmax())
-                    best_run_report = run_reports[best_run_idx]
-
-                    for behavior in task.behaviors:
-                        f1_score = best_run_report['test_report'].get(behavior, {}).get('f1-score', 0)
-                        result_row[f'{behavior}_Test_F1'] = f1_score
-
-                    all_results.append(result_row)
-            
-            job_end_time = time.time()
-            print(f"--- Finished Job {job_counter}/{total_jobs} in {job_end_time - job_start_time:.2f} seconds ---\n")
+                val_f1_scores = [r['validation_report'].get('macro avg', {}).get('f1-score', 0) for r in run_reports]
+                avg_val_f1 = sum(val_f1_scores) / len(val_f1_scores) if val_f1_scores else 0
+                result_row['avg_validation_f1_macro'] = avg_val_f1
+                all_results.append(result_row)
+        
+        job_end_time = time.time()
+        print(f"--- Finished Job {i+1}/{total_jobs} in {job_end_time - job_start_time:.2f} seconds ---\n")
 
     if all_results:
         results_df = pd.DataFrame(all_results)
@@ -221,18 +279,142 @@ def run_sweep(project_path: str, dataset_name: str):
         results_df.to_csv(output_path, index=False)
         print(f"--- SWEEP COMPLETE ---")
         print(f"Results saved to: {output_path}")
-        print("----------------------")
     else:
         print("--- SWEEP COMPLETE ---")
-        print("No results were generated. Please check logs for errors.")
-        print("----------------------")
+        print("No results were generated.")
+
+
+def run_final_evaluation(dataset_name: str):
+    """
+    Runs the final, rigorous evaluation on the champion model.
+    """
+    print("--- Phase: Final Evaluation ---")
+    dataset = gui_state.proj.datasets[dataset_name]
+    fingerprint = _generate_dataset_fingerprint(dataset)
+    manifest_path = os.path.join(gui_state.proj.path, "outer_splits.json")
+    
+    print(f"Using Champion Hyperparameters: {CHAMPION_PARAMETERS}")
+    
+    all_results = []
+    
+    for i in range(CHAMPION_PARAMETERS['num_runs']):
+        replicate_num = i + 1
+        job_start_time = time.time()
+        print(f"--- Starting Replicate {replicate_num}/{CHAMPION_PARAMETERS['num_runs']} ---")
+
+        task = TrainingTask(name=dataset_name, dataset=dataset, behaviors=dataset.config.get('behaviors', []), **CHAMPION_PARAMETERS)
+        split_provider = ManifestSplitProvider(manifest_path, fingerprint)
+        
+        # We need to tell the training task which replicate to use from the manifest
+        # This requires a small refactor of _execute_training_task to accept the run_num
+        # For now, we assume the loop inside _execute_training_task will use the manifest provider
+        gui_state.training_thread._execute_training_task(task, split_provider)
+
+        report_path = os.path.join(dataset.path, "performance_report.yaml")
+        if os.path.exists(report_path):
+            with open(report_path, 'r') as f:
+                report_data = yaml.safe_load(f)
+            
+            run_reports = report_data.get('run_results', [])
+            if run_reports:
+                result_row = CHAMPION_PARAMETERS.copy()
+                result_row['replicate'] = replicate_num
+                
+                best_run_report = run_reports[0] # Since num_runs=1 inside the task
+                for behavior in task.behaviors:
+                    f1_score = best_run_report['test_report'].get(behavior, {}).get('f1-score', 0)
+                    result_row[f'{behavior}_Test_F1'] = f1_score
+                
+                macro_f1 = best_run_report['test_report'].get('macro avg', {}).get('f1-score', 0)
+                result_row['avg_test_f1_macro'] = macro_f1
+                all_results.append(result_row)
+        
+        job_end_time = time.time()
+        print(f"--- Finished Replicate {replicate_num} in {job_end_time - job_start_time:.2f} seconds ---\n")
+
+    if all_results:
+        results_df = pd.DataFrame(all_results)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_filename = f"final_evaluation_results_{dataset_name}_{timestamp}.csv"
+        output_path = os.path.join(gui_state.proj.path, output_filename)
+        results_df.to_csv(output_path, index=False)
+        print(f"--- FINAL EVALUATION COMPLETE ---")
+        print(f"Results saved to: {output_path}")
+    else:
+        print("--- FINAL EVALUATION COMPLETE ---")
+        print("No results were generated.")
+
+
+def train_final_model(dataset_name: str):
+    """
+    Trains one final, deployable model on a representative split using the
+    champion hyperparameters.
+    """
+    print("--- Phase: Training Final Deployable Model ---")
+    dataset = gui_state.proj.datasets[dataset_name]
+    fingerprint = _generate_dataset_fingerprint(dataset)
+    manifest_path = os.path.join(gui_state.proj.path, "outer_splits.json")
+
+    print(f"Using Champion Hyperparameters: {CHAMPION_PARAMETERS}")
+    
+    # 1. Load the manifest and select one representative split (the first one)
+    print("Loading representative split from outer_splits.json (replicate 0)")
+    manifest_provider = ManifestSplitProvider(manifest_path, fingerprint)
+    train_subjects, val_subjects, _ = manifest_provider.get_split(0, [], [], []) # Test set is ignored
+
+    # 2. Combine train and validation subjects into one large training pool
+    final_train_subjects = train_subjects + val_subjects
+    print(f"Combining train and validation sets into a final training pool of {len(final_train_subjects)} subjects.")
+
+    # 3. Create a new Task. We will not use a validation or test set for this final fit.
+    # We set num_runs and num_trials to 1 as we are only producing one artifact.
+    final_params = CHAMPION_PARAMETERS.copy()
+    final_params['num_runs'] = 1
+    final_params['num_trials'] = 1
+    final_params['use_test'] = False # Explicitly do not use a test set
+    final_params['test_split'] = 0.0
+    
+    task = TrainingTask(name=dataset_name, dataset=dataset, behaviors=dataset.config.get('behaviors', []), **final_params)
+
+    # 4. Create a custom SplitProvider that returns our combined list and no validation set.
+    class FinalFitSplitProvider(cbas.SplitProvider):
+        def __init__(self, final_train_subjects):
+            self.final_train_subjects = final_train_subjects
+        def get_split(self, run_index, all_subjects, all_instances, behaviors):
+            # Return the combined list for training, and empty lists for val/test
+            return self.final_train_subjects, [], []
+
+    final_split_provider = FinalFitSplitProvider(final_train_subjects)
+
+    # 5. Execute the training job
+    print("Starting final training job...")
+    job_start_time = time.time()
+    
+    # The _execute_training_task will now run, but the val_ds will be empty,
+    # so early stopping based on validation performance will not trigger.
+    # The model will train for the full number of epochs specified.
+    gui_state.training_thread._execute_training_task(task, final_split_provider)
+    
+    job_end_time = time.time()
+    print(f"--- Finished Final Training in {job_end_time - job_start_time:.2f} seconds ---")
+    print(f"The final, deployable model has been saved to the project's 'models' directory.")
+    print("The official performance of this model is the one reported from the 'evaluate' phase.")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="CBAS Headless Hyperparameter Sweep Runner")
-    parser.add_argument('--project_path', required=True, type=str, help="The absolute path to the CBAS project directory.")
-    parser.add_argument('--dataset_name', required=True, type=str, help="The name of the dataset to run the sweep on.")
+    parser = argparse.ArgumentParser(description="CBAS Headless Experimental Runner")
+    parser.add_argument('--project_path', required=True, type=str)
+    parser.add_argument('--dataset_name', required=True, type=str)
+    parser.add_argument('--phase', required=True, type=str, choices=['precompute', 'sweep', 'evaluate', 'train_final'])
     args = parser.parse_args()
 
     initialize_headless_cbas(args.project_path)
-    run_sweep(args.project_path, args.dataset_name)
+    
+    if args.phase == 'precompute':
+        precompute_splits(args.dataset_name)
+    elif args.phase == 'sweep':
+        run_sweep(args.dataset_name)
+    elif args.phase == 'evaluate':
+        run_final_evaluation(args.dataset_name)
+    elif args.phase == 'train_final':
+        train_final_model(args.dataset_name)

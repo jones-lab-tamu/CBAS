@@ -60,6 +60,40 @@ def _reflect_indices(idx: np.ndarray, N: int) -> np.ndarray:
 # It ensures that each DataLoader worker manages its own file handles safely.
 _worker_state = threading.local()
 
+def create_datasets_from_splits(project, dataset_name: str, train_subjects: list, val_subjects: list, test_subjects: list, seq_len: int):
+    """
+    Creates PyTorch datasets from pre-defined lists of subject IDs.
+    This is the core data handling function used by both GUI and headless runs.
+    """
+    dataset = project.datasets.get(dataset_name)
+    if not dataset:
+        return None, None, None, [], [], [], []
+
+    all_instances = [inst for b_labels in dataset.labels.get("labels", {}).values() for inst in b_labels]
+    behaviors = dataset.config.get("behaviors", [])
+
+    def get_insts_for_subjects(subjects):
+        subject_set = set(subjects)
+        return [inst for inst in all_instances if os.path.dirname(inst['video']) in subject_set]
+
+    train_insts = get_insts_for_subjects(train_subjects)
+    val_insts = get_insts_for_subjects(val_subjects)
+    test_insts = get_insts_for_subjects(test_subjects)
+    
+    random.shuffle(train_insts)
+    random.shuffle(val_insts)
+    random.shuffle(test_insts)
+
+    train_seqs, train_labels = project.convert_instances(project.path, train_insts, seq_len, behaviors)
+    val_seqs, val_labels = project.convert_instances(project.path, val_insts, seq_len, behaviors)
+    test_seqs, test_labels = project.convert_instances(project.path, test_insts, seq_len, behaviors)
+
+    train_ds = BalancedDataset(train_seqs, train_labels, behaviors) if train_seqs else None
+    val_ds = StandardDataset(val_seqs, val_labels) if val_seqs else None
+    test_ds = StandardDataset(test_seqs, test_labels) if test_seqs else None
+
+    return train_ds, val_ds, test_ds, train_insts, val_insts, test_insts, behaviors
+
 def compute_class_weights_from_instances(
     train_insts: list,
     behaviors: list,
@@ -800,109 +834,7 @@ class Project:
         seqs, labels = zip(*shuffled_pairs)
         return list(seqs), list(labels)
 
-    def load_dataset_3way(self, name: str, seed: int = 42, val_split: float = 0.2, test_split: float = 0.0,
-                          fixed_test_groups: set | None = None, seq_len: int = 15):
-        """
-        Performs a stable, group-aware 3-way split. Can accept a fixed set of test groups
-        to ensure the test set is not re-sampled, while re-shuffling train/val.
-        """
-        dataset = self.datasets.get(name)
-        if not dataset:
-            print(f"ERROR: Dataset '{name}' not found.")
-            return (None,) * 10
-
-        with open(dataset.labels_path, "r") as f: 
-            label_config = yaml.load(f, Loader=yaml.FullLoader)
-            
-        behaviors = label_config.get("behaviors", [])
-        if not behaviors: return (None,) * 10
-        
-        all_insts = [inst for b in behaviors for inst in label_config.get("labels", {}).get(b, [])]
-        if not all_insts: return (None,) * 10
-
-        group_to_instances = defaultdict(list)
-        for inst in all_insts:
-            group_key = os.path.dirname(inst['video']).replace('\\', '/')
-            group_to_instances[group_key].append(inst)
-        
-        all_groups = sorted(list(group_to_instances.keys()))
-        rng = np.random.default_rng(seed)
-
-        train_groups, val_groups, test_groups = set(), set(), set()
-
-        if fixed_test_groups is not None:
-            test_groups = fixed_test_groups
-            remaining_groups = [g for g in all_groups if g not in test_groups]
-            rng.shuffle(remaining_groups)
-        else:
-            rng.shuffle(all_groups)
-            if test_split > 0:
-                num_test_groups = max(1, int(len(all_groups) * test_split))
-                test_groups = set(all_groups[:num_test_groups])
-            remaining_groups = [g for g in all_groups if g not in test_groups]
-        
-        # --- START OF THE FIX ---
-        # Use simple, direct partitioning of the group list. This is robust.
-        if val_split > 0 and remaining_groups:
-            num_val_groups = max(1, int(len(remaining_groups) * val_split))
-            val_groups = set(remaining_groups[:num_val_groups])
-            train_groups = set(remaining_groups[num_val_groups:])
-        else:
-            train_groups = set(remaining_groups)
-        # --- END OF THE FIX ---
-
-        train_insts = [inst for group in train_groups for inst in group_to_instances.get(group, [])]
-        val_insts = [inst for group in val_groups for inst in group_to_instances.get(group, [])]
-        test_insts = [inst for group in test_groups for inst in group_to_instances.get(group, [])]
-        
-        # Shuffle instances within each split for randomness during training
-        rng.shuffle(train_insts)
-        rng.shuffle(val_insts)
-        rng.shuffle(test_insts)
-
-        print(f"Data Split (Seed: {seed}):")
-        print(f"  - Train: {len(train_insts)} instances in {len(train_groups)} groups")
-        print(f"  - Val:   {len(val_insts)} instances in {len(val_groups)} groups")
-        print(f"  - Test:  {len(test_insts)} instances in {len(test_groups)} groups")
-
-        train_seqs, train_labels = self.convert_instances(self.path, train_insts, seq_len, behaviors)
-        val_seqs, val_labels = self.convert_instances(self.path, val_insts, seq_len, behaviors)
-        test_seqs, test_labels = self.convert_instances(self.path, test_insts, seq_len, behaviors)
-
-        train_ds = BalancedDataset(train_seqs, train_labels, behaviors) if train_seqs else None
-        val_ds = StandardDataset(val_seqs, val_labels) if val_seqs else None
-        test_ds = StandardDataset(test_seqs, test_labels) if test_seqs else None
-
-        return train_ds, val_ds, test_ds, train_insts, val_insts, test_insts, behaviors, train_groups, val_groups, test_groups
-
-    def load_dataset(self, name: str, seed: int = 42, split: float = 0.2, seq_len: int = 15, progress_callback=None) -> tuple:
-        train_insts, test_insts, behaviors = self._load_dataset_common(name, split, seed)
-        if train_insts is None: return None, None, None, None
-        
-        def train_prog(p): progress_callback(p*0.5) if progress_callback else None
-        def test_prog(p): progress_callback(50 + p*0.5) if progress_callback else None
-        
-        train_seqs, train_labels = self.convert_instances(self.path, train_insts, seq_len, behaviors, train_prog)
-        test_seqs, test_labels = self.convert_instances(self.path, test_insts, seq_len, behaviors, test_prog)
-        
-        return BalancedDataset(train_seqs, train_labels, behaviors), StandardDataset(test_seqs, test_labels), train_insts, test_insts
-        
-    def load_dataset_for_weighted_loss(self, name, seed=42, split=0.2, seq_len=15, progress_callback=None) -> tuple:
-        train_insts, test_insts, behaviors = self._load_dataset_common(name, split, seed)
-        if train_insts is None: return None, None, None, None, None
-        
-        def train_prog(p): progress_callback(p*0.5) if progress_callback else None
-        def test_prog(p): progress_callback(50 + p*0.5) if progress_callback else None
-        
-        train_seqs, train_labels = self.convert_instances(self.path, train_insts, seq_len, behaviors, train_prog)
-        if not train_labels: return None, None, None, None, None
-        
-        class_counts = np.bincount([lbl.item() for lbl in train_labels], minlength=len(behaviors))
-        weights = [sum(class_counts) / (len(behaviors) * c) if c > 0 else 0 for c in class_counts]
-        test_seqs, test_labels = self.convert_instances(self.path, test_insts, seq_len, behaviors, test_prog)
-        
-        return StandardDataset(train_seqs, train_labels), StandardDataset(test_seqs, test_labels), weights, train_insts, test_insts
-        
+           
     def __init__(self, path: str):
         if not os.path.isdir(path): raise InvalidProject(path)
         self.path = path
@@ -1067,91 +999,6 @@ class Project:
             self.reload()
             return False
            
-    def _load_dataset_common(self, name, split, seed):
-        rng = np.random.default_rng(seed)
-
-        dataset_path = os.path.join(self.datasets_dir, name)
-        if not os.path.isdir(dataset_path): raise FileNotFoundError(dataset_path)
-        
-        with open(os.path.join(dataset_path, "labels.yaml"), "r") as f: 
-            label_config = yaml.load(f, Loader=yaml.FullLoader)
-            
-        behaviors = label_config.get("behaviors", [])
-        if not behaviors: return None, None, None
-        
-        all_insts = [inst for b in behaviors for inst in label_config.get("labels", {}).get(b, [])]
-        if not all_insts: return [], [], behaviors
-        
-        group_to_behaviors, group_to_instances = {}, {}
-        for inst in all_insts:
-            if 'video' in inst and inst['video']:
-                group_key = os.path.dirname(inst['video']).replace('\\', '/')
-                group_to_instances.setdefault(group_key, []).append(inst)
-                group_to_behaviors.setdefault(group_key, set()).add(inst['label'])
-        
-        all_groups = sorted(list(group_to_instances.keys()))
-        rng.shuffle(all_groups)
-        
-        test_groups, behaviors_needed_in_test = set(), set(behaviors)
-   
-        while behaviors_needed_in_test:
-            group_found_in_pass = False
-            for group in all_groups:
-                if group in test_groups:
-                    continue
-
-                behaviors_in_group = group_to_behaviors.get(group, set())
-                if behaviors_needed_in_test.intersection(behaviors_in_group):
-                    test_groups.add(group)
-                    behaviors_needed_in_test.difference_update(behaviors_in_group)
-                    group_found_in_pass = True
-                    break 
-            
-            if not group_found_in_pass:
-                if behaviors_needed_in_test:
-                    print(f"Warning: Could not find groups to cover all behaviors. Missing: {behaviors_needed_in_test}")
-                break
-
-        total_size = len(all_insts)
-        if total_size > 0:
-            current_test_size = sum(len(group_to_instances.get(g, [])) for g in test_groups)
-            while current_test_size / total_size < split:
-                group_added_in_pass = False
-                for group in all_groups:
-                    if group not in test_groups:
-                        test_groups.add(group)
-                        current_test_size += len(group_to_instances.get(group, []))
-                        group_added_in_pass = True
-                        break
-                
-                if not group_added_in_pass:
-                    break
-        
-        train_groups = [g for g in all_groups if g not in test_groups]
-        train_insts = [inst for group in train_groups for inst in group_to_instances.get(group, [])]
-        test_insts = [inst for group in test_groups for inst in group_to_instances.get(group, [])]
-        
-        rng.shuffle(train_insts)
-        rng.shuffle(test_insts)
-        
-        print(f"Stratified Group Split (Seed: {seed}): {len(train_insts)} train instances, {len(test_insts)} test instances.")
-        print(f"  - Train groups: {len(train_groups)}, Test groups: {len(test_groups)}")
-        
-        if not train_insts and test_insts:
-            print("  - [WARN] All labeled data belongs to a single group. Subject-level split is not possible. Falling back to a random 80/20 instance split.")
-            all_insts = test_insts
-            rng.shuffle(all_insts)
-            split_idx = int(len(all_insts) * (1 - split))
-            return all_insts[:split_idx], all_insts[split_idx:], behaviors        
-        
-        if not test_insts and train_insts:
-            print("  - Warning: Stratified split resulted in an empty test set. Falling back to 80/20 instance split.")
-            all_insts = train_insts
-            rng.shuffle(all_insts)
-            split_idx = int(len(all_insts) * (1 - split))
-            return all_insts[:split_idx], all_insts[split_idx:], behaviors
-
-        return train_insts, test_insts, behaviors
 
 def evaluate_on_split(model, dataset, behaviors, device=None):
     """
@@ -1244,13 +1091,14 @@ def train_lstm_model(train_set, test_set, seq_len: int, behaviors: list, cancel_
     log_message(f"  LSTM Layers: {lstm_layers}", "INFO")
     log_message("------------------------------------", "INFO")
     
-    # Pass the new weight_decay parameter to the Adam optimizer.
     optimizer = optim.Adam([
         {'params': [p for name, p in model.named_parameters() if name != 'gate']},
         {'params': model.gate, 'weight_decay': 1e-3}
     ], lr=lr, weight_decay=weight_decay)
     
-    loss_weights = torch.tensor(class_weights, dtype=torch.float).to(device) if class_weights else None
+    # The check is now `is not None`, which is robust to the input being a tensor.
+    loss_weights = torch.tensor(class_weights, dtype=torch.float).to(device) if class_weights is not None else None
+
     
     # Pass the new label_smoothing parameter to the loss function.
     criterion = nn.CrossEntropyLoss(weight=loss_weights, label_smoothing=label_smoothing)

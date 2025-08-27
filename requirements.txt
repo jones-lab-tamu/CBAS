@@ -21,7 +21,9 @@ gevent-websocket==0.10.1
 PyYAML==6.0.2
 
 # --- Machine Learning & Data Processing ---
-transformers==4.53.3
+# Unpin transformers to allow for newer versions required by models like DINOv3.
+# A minimum version is still recommended for baseline compatibility.
+transformers>=4.53.3
 numpy==2.2.6
 pandas==2.3.1
 scikit-learn==1.7.1
@@ -41,6 +43,7 @@ pillow==11.3.0
 # --- Utilities ---
 watchdog==6.0.0
 tqdm==4.67.1
+GitPython==3.1.43 # Required for logging git commit hash
 
 # --- Transitive Dependencies (Pinned for stability) ---
 # These are dependencies of the libraries above, but we pin them
