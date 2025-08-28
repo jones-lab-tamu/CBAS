@@ -105,12 +105,18 @@ class ManifestSplitProvider(SplitProvider):
     def __init__(self, manifest_path: str, dataset_fingerprint: str):
         if not os.path.exists(manifest_path):
             raise FileNotFoundError(f"Split manifest not found at: {manifest_path}")
+
         with open(manifest_path, 'r') as f:
             self.manifest = json.load(f)
+        
         if self.manifest.get('dataset_fingerprint') != dataset_fingerprint:
-            raise ValueError("FATAL: Dataset fingerprint in manifest does not match current dataset.")
+            raise ValueError("FATAL: Dataset fingerprint in manifest does not match current dataset. The splits are not valid for this data.")
 
     def get_split(self, run_index: int, all_subjects: list, all_instances: list, behaviors: list) -> tuple[list, list, list]:
+        """
+        Retrieves a specific split from the manifest using the provided run_index.
+        The other arguments are ignored but included for signature compatibility.
+        """
         if not 0 <= run_index < len(self.manifest['splits']):
             raise IndexError(f"Run index {run_index} is out of bounds for manifest with {len(self.manifest['splits'])} splits.")
         

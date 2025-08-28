@@ -118,7 +118,7 @@ CHAMPION_PARAMETERS = {
     # --- Final Evaluation Settings ---
     'use_test': True,
     'test_split': 0.15,
-    'num_runs': 20, # 20 replicates for the final evaluation
+    'num_runs': 20,
     'num_trials': 2  # Trials per run can be kept low as we trust the params
 }
 
@@ -293,44 +293,50 @@ def run_final_evaluation(dataset_name: str):
     fingerprint = _generate_dataset_fingerprint(dataset)
     manifest_path = os.path.join(gui_state.proj.path, "outer_splits.json")
     
+    with open(manifest_path, 'r') as f:
+        num_replicates = len(json.load(f)['splits'])
+    
+    print(f"Found {num_replicates} replicates in outer_splits.json.")
     print(f"Using Champion Hyperparameters: {CHAMPION_PARAMETERS}")
     
-    all_results = []
+    # 1. Instantiate the provider ONCE, without the replicate_index.
+    split_provider = ManifestSplitProvider(manifest_path, fingerprint)
     
-    for i in range(CHAMPION_PARAMETERS['num_runs']):
-        replicate_num = i + 1
-        job_start_time = time.time()
-        print(f"--- Starting Replicate {replicate_num}/{CHAMPION_PARAMETERS['num_runs']} ---")
+    # 2. Copy champion parameters and align num_runs to the manifest length.
+    #    This prevents out-of-range indices if the manifest has a non-20 count.
+    eval_params = CHAMPION_PARAMETERS.copy()
+    eval_params['num_runs'] = num_replicates
+    task = TrainingTask(name=dataset_name,
+                        dataset=dataset,
+                        behaviors=dataset.config.get('behaviors', []),
+                        **eval_params)
+    
+    # 3. Call the training engine ONCE. The engine will iterate over range(task.num_runs),
+    #    calling provider.get_split(0), get_split(1), ... up to num_replicates - 1.
+    job_start_time = time.time()
+    gui_state.training_thread._execute_training_task(task, split_provider)
+    job_end_time = time.time()
+    print(f"--- Finished Final Evaluation in {job_end_time - job_start_time:.2f} seconds ---\n")
 
-        task = TrainingTask(name=dataset_name, dataset=dataset, behaviors=dataset.config.get('behaviors', []), **CHAMPION_PARAMETERS)
-        split_provider = ManifestSplitProvider(manifest_path, fingerprint)
+    all_results = []
+    report_path = os.path.join(dataset.path, "performance_report.yaml")
+    if os.path.exists(report_path):
+        with open(report_path, 'r') as f:
+            report_data = yaml.safe_load(f)
         
-        # We need to tell the training task which replicate to use from the manifest
-        # This requires a small refactor of _execute_training_task to accept the run_num
-        # For now, we assume the loop inside _execute_training_task will use the manifest provider
-        gui_state.training_thread._execute_training_task(task, split_provider)
-
-        report_path = os.path.join(dataset.path, "performance_report.yaml")
-        if os.path.exists(report_path):
-            with open(report_path, 'r') as f:
-                report_data = yaml.safe_load(f)
+        # The report will now contain results for all 20 runs.
+        run_reports = report_data.get('run_results', [])
+        for i, run_report in enumerate(run_reports):
+            result_row = CHAMPION_PARAMETERS.copy()
+            result_row['replicate'] = i + 1
             
-            run_reports = report_data.get('run_results', [])
-            if run_reports:
-                result_row = CHAMPION_PARAMETERS.copy()
-                result_row['replicate'] = replicate_num
-                
-                best_run_report = run_reports[0] # Since num_runs=1 inside the task
-                for behavior in task.behaviors:
-                    f1_score = best_run_report['test_report'].get(behavior, {}).get('f1-score', 0)
-                    result_row[f'{behavior}_Test_F1'] = f1_score
-                
-                macro_f1 = best_run_report['test_report'].get('macro avg', {}).get('f1-score', 0)
-                result_row['avg_test_f1_macro'] = macro_f1
-                all_results.append(result_row)
-        
-        job_end_time = time.time()
-        print(f"--- Finished Replicate {replicate_num} in {job_end_time - job_start_time:.2f} seconds ---\n")
+            for behavior in task.behaviors:
+                f1_score = run_report['test_report'].get(behavior, {}).get('f1-score', 0)
+                result_row[f'{behavior}_Test_F1'] = f1_score
+            
+            macro_f1 = run_report['test_report'].get('macro avg', {}).get('f1-score', 0)
+            result_row['avg_test_f1_macro'] = macro_f1
+            all_results.append(result_row)
 
     if all_results:
         results_df = pd.DataFrame(all_results)
