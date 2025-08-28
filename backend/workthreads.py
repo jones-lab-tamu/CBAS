@@ -545,18 +545,16 @@ class TrainingThread(threading.Thread):
             else:
                 time.sleep(1)
 
-    def _execute_training_task(self, task: TrainingTask, split_provider: cbas.SplitProvider = None):
-        """
-        Orchestrates the training process using a provided SplitProvider.
-        This version is correctly refactored to handle all training methods.
-        """
+    def _execute_training_task(self, task: TrainingTask, split_provider: cbas.SplitProvider = None, output_dir=None, plot_suffix='runs'):
+        """Orchestrates the training process using a provided SplitProvider."""
         try:
             log_message(f"--- Starting Training Job for Dataset: {task.name} ---", "INFO")
             if not gui_state.HEADLESS_MODE:
                 eel.updateTrainingStatusOnUI(task.name, "Preparing data splits...")()
 
             if split_provider is None:
-                split_provider = RandomSplitProvider(split_ratios=(1.0 - task.test_split - 0.15, 0.15, task.test_split if task.use_test else 0.0))
+                split_ratios = (1.0 - task.test_split - 0.15, 0.15, task.test_split if task.use_test else 0.0)
+                split_provider = RandomSplitProvider(split_ratios=split_ratios)
 
             all_instances = [inst for b in task.behaviors for inst in task.dataset.labels.get("labels", {}).get(b, [])]
             all_subjects = list(set(os.path.dirname(inst['video']) for inst in all_instances))
@@ -573,43 +571,15 @@ class TrainingThread(threading.Thread):
 
                 train_subjects, val_subjects, test_subjects = split_provider.get_split(run_num, all_subjects, all_instances, task.behaviors)
                 
-                # This function call remains the same. It gets us the raw data.
-                _, _, _, train_insts, val_insts, test_insts, behaviors = cbas.create_datasets_from_splits(
+                train_ds, val_ds, test_ds, train_insts, val_insts, test_insts, behaviors = cbas.create_datasets_from_splits(
                     gui_state.proj, task.name, train_subjects, val_subjects, test_subjects, task.sequence_length
                 )
 
-                # Now, we handle the dataset creation and weight calculation based on the training method.
-                
-                # First, convert all instances to tensors
-                train_seqs, train_labels = gui_state.proj.convert_instances(gui_state.proj.path, train_insts, task.sequence_length, behaviors)
-                val_seqs, val_labels = gui_state.proj.convert_instances(gui_state.proj.path, val_insts, task.sequence_length, behaviors)
-                test_seqs, test_labels = gui_state.proj.convert_instances(gui_state.proj.path, test_insts, task.sequence_length, behaviors)
-                
-                weights = None
-                if task.training_method == "weighted_loss":
-                    log_message("Using Weighted Loss. Creating standard dataset and calculating class weights.", "INFO")
-                    train_ds = cbas.StandardDataset(train_seqs, train_labels) if train_seqs else None
-                    weights = cbas.compute_class_weights_from_instances(train_insts, behaviors)
-                elif task.training_method == 'custom_weights':
-                    log_message("Using Custom Weights with standard dataset.", "INFO")
-                    train_ds = cbas.StandardDataset(train_seqs, train_labels) if train_seqs else None
-                    weights = [task.custom_weights.get(b, 1.0) for b in behaviors]
-                else: # Default to 'oversampling'
-                    log_message("Using Balanced Sampling (Oversampling).", "INFO")
-                    train_ds = cbas.BalancedDataset(train_seqs, train_labels, behaviors) if train_seqs else None
-
-                # Validation and Test sets are always standard datasets.
-                val_ds = cbas.StandardDataset(val_seqs, val_labels) if val_seqs else None
-                test_ds = cbas.StandardDataset(test_seqs, test_labels) if test_seqs else None
-
                 if train_ds is None or len(train_ds) == 0 or val_ds is None or len(val_ds) == 0:
-                    log_message(f"Data preparation for run {run_num + 1} failed. Skipping.", "WARN")
+                    log_message(f"Data splitting for run {run_num + 1} failed. Skipping.", "WARN")
                     continue
                 
-                run_best_model_for_trials = None
-                run_best_f1_for_trials = -1.0
-                run_best_reports_history = None
-                run_best_epoch = -1
+                run_best_model_for_trials, run_best_f1_for_trials, run_best_reports_history, run_best_epoch = None, -1.0, None, -1
 
                 for trial_num in range(task.num_trials):
                     if self.cancel_event.is_set(): break
@@ -700,7 +670,9 @@ class TrainingThread(threading.Thread):
                     split_assignments=final_split_assignments,
                     train_insts=train_insts,
                     val_insts=val_insts,
-                    test_insts=test_insts
+                    test_insts=test_insts,
+                    output_dir=output_dir,
+                    plot_suffix=plot_suffix
                 )
             else:
                 log_message(f"Training failed for '{task.name}'. No valid model could be trained.", "ERROR")
@@ -798,20 +770,21 @@ class TrainingThread(threading.Thread):
             
         log_message(f"Disagreement report with {len(disagreements)} items saved.", "INFO")             
 
-    def _save_averaged_training_results(self, task: TrainingTask, best_model, all_run_reports: list, best_run_history, best_run_cm, split_assignments: dict, train_insts: list, val_insts: list, test_insts: list):
+    def _save_averaged_training_results(self, task: TrainingTask, best_model, all_run_reports: list, best_run_history, best_run_cm, split_assignments: dict, train_insts: list, val_insts: list, test_insts: list, output_dir=None, plot_suffix='runs'):
         """
-        Saves the final model bundle and enriched, auditable reports.
-        This version is correctly refactored to be a pure "saving" function.
+        Saves the final model bundle and enriched, auditable reports to a specified directory.
         """
         log_message(f"Finalizing and saving model bundle for '{task.name}'...", "INFO")
         
-        # --- 1. SETUP ---
+        if output_dir is None:
+            output_dir = task.dataset.path
+        
+        os.makedirs(output_dir, exist_ok=True)
+        
         model_name = f"{task.name}_model"
         model_dir = os.path.join(gui_state.proj.models_dir, model_name)
-        plot_dir = task.dataset.path
         os.makedirs(model_dir, exist_ok=True)
 
-        # --- 2. GET REPRODUCIBILITY INFO ---
         try:
             repo = git.Repo(search_parent_directories=True, invalid_git_dir=True)
             git_commit = repo.head.object.hexsha
@@ -826,8 +799,6 @@ class TrainingThread(threading.Thread):
         except Exception:
             lib_versions = {"error": "Could not determine library versions."}
 
-        # --- 3. CALIBRATION ---
-        # Create a validation dataset from the val_insts to calibrate the model
         val_seqs, val_labels = gui_state.proj.convert_instances(gui_state.proj.path, val_insts, task.sequence_length, task.behaviors)
         val_ds = cbas.StandardDataset(val_seqs, val_labels) if val_seqs else None
 
@@ -840,7 +811,6 @@ class TrainingThread(threading.Thread):
         else:
             log_message("No validation set to calibrate on. Using default temperature of 1.0.", "WARN")
 
-        # --- 4. SAVE THE MODEL BUNDLE ---
         torch.save(best_model.state_dict(), os.path.join(model_dir, "model.pth"))
 
         model_config = {
@@ -852,7 +822,6 @@ class TrainingThread(threading.Thread):
         with open(os.path.join(model_dir, "config.yaml"), "w") as f:
             yaml.dump(model_config, f, allow_unicode=True)
 
-        # --- 5. GENERATE AND SAVE THE COMPREHENSIVE YAML REPORT ---
         full_report = {
             "dataset_name": task.name,
             "model_name": model_name,
@@ -881,9 +850,8 @@ class TrainingThread(threading.Thread):
             },
             "run_results": all_run_reports 
         }
-        report_path = os.path.join(plot_dir, "performance_report.yaml")
+        report_path = os.path.join(output_dir, "performance_report.yaml")
         with open(report_path, "w") as f:
-            # Use a helper to handle numpy types for clean YAML output
             def numpy_dumper(data):
                 if isinstance(data, np.integer): return int(data)
                 if isinstance(data, np.floating): return float(data)
@@ -892,18 +860,17 @@ class TrainingThread(threading.Thread):
             yaml.dump(json.loads(json.dumps(full_report, default=numpy_dumper)), f, allow_unicode=True, default_flow_style=False, sort_keys=False)
         log_message(f"Wrote comprehensive performance report to '{report_path}'.", "INFO")
 
-        # --- 6. SAVE PLOTS ---
         if all_run_reports:
             best_run_idx = int(np.argmax([r['validation_report'].get(task.optimization_target, {}).get('f1-score', 0) for r in all_run_reports]))
             best_run_report = all_run_reports[best_run_idx]
             
             best_val_cm = best_run_report.get("validation_cm")
             if best_val_cm is not None and np.array(best_val_cm).size > 0:
-                save_confusion_matrix_plot(np.array(best_val_cm), os.path.join(plot_dir, "confusion_matrix_validation_BEST.png"), labels=task.behaviors, title="Best Run: Validation Confusion Matrix")
+                save_confusion_matrix_plot(np.array(best_val_cm), os.path.join(output_dir, "confusion_matrix_validation_BEST.png"), labels=task.behaviors, title="Best Run: Validation Confusion Matrix")
 
             best_test_cm = best_run_report.get("test_cm")
             if best_test_cm is not None and np.array(best_test_cm).size > 0:
-                save_confusion_matrix_plot(np.array(best_test_cm), os.path.join(plot_dir, "confusion_matrix_test_FINAL.png"), labels=task.behaviors, title="Final Model: Held-Out Test Confusion Matrix")
+                save_confusion_matrix_plot(np.array(best_test_cm), os.path.join(output_dir, "confusion_matrix_test_FINAL.png"), labels=task.behaviors, title="Final Model: Held-Out Test Confusion Matrix")
 
             if best_run_history:
                 for metric in ['f1-score', 'precision', 'recall']:
@@ -911,61 +878,61 @@ class TrainingThread(threading.Thread):
                         reports=best_run_history,
                         metric=metric,
                         behaviors=task.behaviors,
-                        out_dir=plot_dir
+                        out_dir=output_dir
                     )
-                log_message(f"Epoch plots for the best run saved to '{plot_dir}'.", "INFO")
+                log_message(f"Epoch plots for the best run saved to '{output_dir}'.", "INFO")
 
             test_reports = [r.get("test_report", {}) for r in all_run_reports]
-            if any(test_reports): # Only plot if there are test reports
+            if any(test_reports):
                 plot_averaged_run_metrics(
                     reports=test_reports,
                     behaviors=task.behaviors,
-                    out_dir=plot_dir
+                    out_dir=output_dir,
+                    plot_suffix=plot_suffix
                 )
-                log_message(f"Per-run performance plots saved to '{plot_dir}'.", "INFO")
+                log_message(f"Per-run/replicate performance plots saved to '{output_dir}'.", "INFO")
 
-        # --- 7. UPDATE THE DATASET CONFIG FOR THE UI CARD ---
-        ds = task.dataset
-        config = dict(ds.config)
-        metrics_block = {}
-        
-        # Ensure best_run_report is defined even if all_run_reports is empty
-        best_run_report = all_run_reports[best_run_idx] if all_run_reports else {}
-        best_val_report_dict = best_run_report.get("validation_report", {})
-        best_test_report_dict = best_run_report.get("test_report", {})
-
-        from collections import Counter
-        train_instance_counts = Counter(inst['label'] for inst in train_insts)
-        test_instance_counts = Counter(inst['label'] for inst in test_insts)
-
-        for b in task.behaviors:
-            val_metrics = best_val_report_dict.get(b, {})
-            test_metrics = best_test_report_dict.get(b, {})
+        if output_dir == task.dataset.path:
+            ds = task.dataset
+            config = dict(ds.config)
+            metrics_block = {}
             
-            train_inst_count = train_instance_counts.get(b, 0)
-            train_frm_count = sum(int(inst['end'] - inst['start'] + 1) for inst in train_insts if inst['label'] == b)
-            test_inst_count = test_instance_counts.get(b, 0)
-            test_frm_count = sum(int(inst['end'] - inst['start'] + 1) for inst in test_insts if inst['label'] == b)
+            best_run_report = all_run_reports[best_run_idx] if all_run_reports else {}
+            best_val_report_dict = best_run_report.get("validation_report", {})
+            best_test_report_dict = best_run_report.get("test_report", {})
 
-            metrics_block[b] = {
-                "Train Inst (Frames)": f"{train_inst_count} ({train_frm_count})",
-                "Test Inst (Frames)":  f"{test_inst_count} ({test_frm_count})",
-                "Precision": round(float(val_metrics.get("precision", 0.0)), 2),
-                "Recall":    round(float(val_metrics.get("recall", 0.0)), 2),
-                "F1 Score":  round(float(val_metrics.get("f1-score", 0.0)), 2),
-                "Test F1":   "N/A" if not task.use_test else round(float(test_metrics.get("f1-score", 0.0)), 2)
-            }
+            from collections import Counter
+            train_instance_counts = Counter(inst['label'] for inst in train_insts)
+            test_instance_counts = Counter(inst['label'] for inst in test_insts)
 
-        config["metrics"] = metrics_block
-        config["state"] = "trained"
-        config["trained_model"] = model_name
+            for b in task.behaviors:
+                val_metrics = best_val_report_dict.get(b, {})
+                test_metrics = best_test_report_dict.get(b, {})
+                
+                train_inst_count = train_instance_counts.get(b, 0)
+                train_frm_count = sum(int(inst['end'] - inst['start'] + 1) for inst in train_insts if inst['label'] == b)
+                test_inst_count = test_instance_counts.get(b, 0)
+                test_frm_count = sum(int(inst['end'] - inst['start'] + 1) for inst in test_insts if inst['label'] == b)
 
-        with open(ds.config_path, "w", encoding="utf-8") as f:
-            yaml.dump(config, f, allow_unicode=True)
-        ds.config = config
-        log_message(f"Updated dataset metrics in '{ds.config_path}'.", "INFO")
+                metrics_block[b] = {
+                    "Train Inst (Frames)": f"{train_inst_count} ({train_frm_count})",
+                    "Test Inst (Frames)":  f"{test_inst_count} ({test_frm_count})",
+                    "Precision": round(float(val_metrics.get("precision", 0.0)), 2),
+                    "Recall":    round(float(val_metrics.get("recall", 0.0)), 2),
+                    "F1 Score":  round(float(val_metrics.get("f1-score", 0.0)), 2),
+                    "Test F1":   "N/A" if not task.use_test else round(float(test_metrics.get("f1-score", 0.0)), 2)
+                }
 
-        log_message(f"Training for '{task.name}' complete. Model, reports, and plots saved.", "INFO")
+            config["metrics"] = metrics_block
+            config["state"] = "trained"
+            config["trained_model"] = model_name
+
+            with open(ds.config_path, "w", encoding="utf-8") as f:
+                yaml.dump(config, f, allow_unicode=True)
+            ds.config = config
+            log_message(f"Updated dataset metrics in '{ds.config_path}'.", "INFO")
+
+        log_message(f"Training for '{task.name}' complete. Artifacts saved.", "INFO")
         
         if not gui_state.HEADLESS_MODE:
             eel.refreshAllDatasets()()
@@ -1070,12 +1037,12 @@ def plot_report_list_metric(reports: list, metric: str, behaviors: list, out_dir
     plt.savefig(os.path.join(out_dir, f"{metric.replace(' ', '_')}_epochs_plot.png"))
     plt.close()
 
-def plot_averaged_run_metrics(reports: list, behaviors: list, out_dir: str):
+def plot_averaged_run_metrics(reports: list, behaviors: list, out_dir: str, plot_suffix: str = 'runs'):
     """
     Creates bar charts for precision, recall, and f1-score, showing the mean,
     standard deviation, and all individual data points across all training runs.
     """
-    if not reports: return
+    if not reports or not any(reports): return
 
     metrics = ['precision', 'recall', 'f1-score']
     for metric in metrics:
@@ -1083,51 +1050,34 @@ def plot_averaged_run_metrics(reports: list, behaviors: list, out_dir: str):
         
         means = []
         stds = []
-
-        # =========================================================================
-        # This list will hold the individual data points for each behavior
         all_run_values = []
-        # =========================================================================
         
         for b_name in behaviors:
-            # Collect the metric for this behavior from each run's report
             run_values = [r.get(b_name, {}).get(metric, 0) for r in reports]
             means.append(np.mean(run_values))
             stds.append(np.std(run_values))
-            # =========================================================================
-            # Store the individual points for later plotting
             all_run_values.append(run_values)
-            # =========================================================================
 
         x_pos = np.arange(len(behaviors))
         
-        # Create the main bar plot with error bars
         plt.bar(x_pos, means, yerr=stds, align='center', alpha=0.7, ecolor='black', capsize=10, label=f'Mean (n={len(reports)})')
         
-        # =========================================================================
-        # Add the scatter plot of individual data points
-        # =========================================================================
         for i, run_vals in enumerate(all_run_values):
-            # Add a small amount of horizontal "jitter" to prevent points from overlapping
-            # The amount of jitter is scaled by the number of runs to look good
             jitter = np.random.normal(0, 0.04, size=len(run_vals))
             plt.scatter([i + j for j in jitter], run_vals, color='black', alpha=0.6, zorder=3, label='Individual Run' if i == 0 else "")
-        # =========================================================================
         
         plt.ylabel(metric.replace('-', ' ').title())
         plt.xticks(x_pos, behaviors, rotation='vertical')
-        plt.title(f"Average {metric.replace('-', ' ').title()} Across {len(reports)} Runs")
+        plt.title(f"Average {metric.replace('-', ' ').title()} Across {len(reports)} {plot_suffix.capitalize()}")
         plt.grid(axis='y', linestyle='--', alpha=0.7)
         
-        # Create a single, clean legend
         handles, labels = plt.gca().get_legend_handles_labels()
         by_label = dict(zip(labels, handles))
         plt.legend(by_label.values(), by_label.keys())
         
         plt.tight_layout()
         
-        # Save the figure
-        plt.savefig(os.path.join(out_dir, f"{metric.replace(' ', '_')}_runs_plot.png"))
+        plt.savefig(os.path.join(out_dir, f"{metric.replace(' ', '_')}_{plot_suffix}_plot.png"))
         plt.close()
 
 # =================================================================

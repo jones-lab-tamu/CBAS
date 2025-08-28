@@ -225,6 +225,8 @@ def run_sweep(dataset_name: str):
     dataset = gui_state.proj.datasets[dataset_name]
     fingerprint = _generate_dataset_fingerprint(dataset)
     manifest_path = os.path.join(gui_state.proj.path, "sweep_splits.json")
+    experiments_dir = os.path.join(dataset.path, "experiments")
+    os.makedirs(experiments_dir, exist_ok=True)
 
     keys, values = zip(*PARAMETER_GRID.items())
     param_combinations = [dict(zip(keys, v)) for v in itertools.product(*values)]
@@ -247,13 +249,15 @@ def run_sweep(dataset_name: str):
 
         task = TrainingTask(name=dataset_name, dataset=dataset, behaviors=dataset.config.get('behaviors', []), **current_params)
         
-        # Instantiate the manifest provider for this job
         split_provider = ManifestSplitProvider(manifest_path, fingerprint)
         
-        # Execute the training task by calling it directly
-        gui_state.training_thread._execute_training_task(task, split_provider)
+        # Define a unique output directory for this job's artifacts
+        param_str = "_".join([f"{k.replace('_','-')}-{v}" for k, v in params.items()])
+        job_output_dir = os.path.join(experiments_dir, f"sweep_{param_str}")
         
-        report_path = os.path.join(dataset.path, "performance_report.yaml")
+        gui_state.training_thread._execute_training_task(task, split_provider, output_dir=job_output_dir, plot_suffix='runs')
+        
+        report_path = os.path.join(job_output_dir, "performance_report.yaml")
         if os.path.exists(report_path):
             with open(report_path, 'r') as f:
                 report_data = yaml.safe_load(f)
@@ -275,7 +279,7 @@ def run_sweep(dataset_name: str):
         results_df = pd.DataFrame(all_results)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_filename = f"sweep_results_{dataset_name}_{timestamp}.csv"
-        output_path = os.path.join(gui_state.proj.path, output_filename)
+        output_path = os.path.join(experiments_dir, output_filename) # Save to experiments dir
         results_df.to_csv(output_path, index=False)
         print(f"--- SWEEP COMPLETE ---")
         print(f"Results saved to: {output_path}")
@@ -292,6 +296,8 @@ def run_final_evaluation(dataset_name: str):
     dataset = gui_state.proj.datasets[dataset_name]
     fingerprint = _generate_dataset_fingerprint(dataset)
     manifest_path = os.path.join(gui_state.proj.path, "outer_splits.json")
+    experiments_dir = os.path.join(dataset.path, "experiments")
+    os.makedirs(experiments_dir, exist_ok=True)
     
     with open(manifest_path, 'r') as f:
         num_replicates = len(json.load(f)['splits'])
@@ -299,32 +305,25 @@ def run_final_evaluation(dataset_name: str):
     print(f"Found {num_replicates} replicates in outer_splits.json.")
     print(f"Using Champion Hyperparameters: {CHAMPION_PARAMETERS}")
     
-    # 1. Instantiate the provider ONCE, without the replicate_index.
+    all_results = []
+    
     split_provider = ManifestSplitProvider(manifest_path, fingerprint)
     
-    # 2. Copy champion parameters and align num_runs to the manifest length.
-    #    This prevents out-of-range indices if the manifest has a non-20 count.
-    eval_params = CHAMPION_PARAMETERS.copy()
-    eval_params['num_runs'] = num_replicates
-    task = TrainingTask(name=dataset_name,
-                        dataset=dataset,
-                        behaviors=dataset.config.get('behaviors', []),
-                        **eval_params)
+    task = TrainingTask(name=dataset_name, dataset=dataset, behaviors=dataset.config.get('behaviors', []), **CHAMPION_PARAMETERS)
     
-    # 3. Call the training engine ONCE. The engine will iterate over range(task.num_runs),
-    #    calling provider.get_split(0), get_split(1), ... up to num_replicates - 1.
+    # Define a unique output directory for the final evaluation artifacts
+    eval_output_dir = os.path.join(experiments_dir, f"final_evaluation_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+    
     job_start_time = time.time()
-    gui_state.training_thread._execute_training_task(task, split_provider)
+    gui_state.training_thread._execute_training_task(task, split_provider, output_dir=eval_output_dir, plot_suffix='replicates')
     job_end_time = time.time()
     print(f"--- Finished Final Evaluation in {job_end_time - job_start_time:.2f} seconds ---\n")
 
-    all_results = []
-    report_path = os.path.join(dataset.path, "performance_report.yaml")
+    report_path = os.path.join(eval_output_dir, "performance_report.yaml")
     if os.path.exists(report_path):
         with open(report_path, 'r') as f:
             report_data = yaml.safe_load(f)
         
-        # The report will now contain results for all 20 runs.
         run_reports = report_data.get('run_results', [])
         for i, run_report in enumerate(run_reports):
             result_row = CHAMPION_PARAMETERS.copy()
@@ -342,7 +341,7 @@ def run_final_evaluation(dataset_name: str):
         results_df = pd.DataFrame(all_results)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_filename = f"final_evaluation_results_{dataset_name}_{timestamp}.csv"
-        output_path = os.path.join(gui_state.proj.path, output_filename)
+        output_path = os.path.join(experiments_dir, output_filename)
         results_df.to_csv(output_path, index=False)
         print(f"--- FINAL EVALUATION COMPLETE ---")
         print(f"Results saved to: {output_path}")

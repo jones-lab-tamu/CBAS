@@ -41,6 +41,7 @@ import classifier_head
 import gui_state
 from subprocess import Popen, PIPE, DEVNULL 
 import sys
+from backend.splits import RandomSplitProvider
 
 CHUNK_SIZE = 512
 
@@ -602,8 +603,28 @@ class Dataset:
             
     def update_instance_counts_in_config(self, project: 'Project'):
         from collections import Counter
-        train_insts, test_insts, _ = project._load_dataset_common(self.name, 0.2, seed=42)
-        if train_insts is None or test_insts is None: return
+        
+        all_instances = [inst for b_labels in self.labels.get("labels", {}).values() for inst in b_labels]
+        if not all_instances:
+            for behavior_name in self.config.get("behaviors", []):
+                self.update_metric(behavior_name, "train_inst_frames", "0 (0)")
+                self.update_metric(behavior_name, "test_inst_frames", "0 (0)")
+            return
+
+        all_subjects = list(set(os.path.dirname(inst['video']) for inst in all_instances))
+        behaviors = self.config.get("behaviors", [])
+
+        # Use the RandomSplitProvider to get a typical 80/20 split for counting purposes.
+        # We use a fixed seed for consistent counting results between saves.
+        provider = RandomSplitProvider(seed=42, split_ratios=(0.8, 0.0, 0.2), stratify=False)
+        train_subjects, _, test_subjects = provider.get_split(0, all_subjects, all_instances, behaviors)
+
+        # Filter instances based on the subject lists directly, avoiding code duplication.
+        train_subject_set = set(train_subjects)
+        test_subject_set = set(test_subjects)
+        train_insts = [inst for inst in all_instances if os.path.dirname(inst['video']) in train_subject_set]
+        test_insts = [inst for inst in all_instances if os.path.dirname(inst['video']) in test_subject_set]
+
         train_instance_counts = Counter(inst['label'] for inst in train_insts)
         test_instance_counts = Counter(inst['label'] for inst in test_insts)
         train_frame_counts = Counter()
@@ -612,13 +633,13 @@ class Dataset:
         test_frame_counts = Counter()
         for inst in test_insts:
             test_frame_counts[inst['label']] += (inst['end'] - inst['start'] + 1)
+        
         for behavior_name in self.config.get("behaviors", []):
             train_n_inst = train_instance_counts.get(behavior_name, 0)
             train_n_frame = train_frame_counts.get(behavior_name, 0)
             test_n_inst = test_instance_counts.get(behavior_name, 0)
             test_n_frame = test_frame_counts.get(behavior_name, 0)
             
-            # Use simple, machine-readable keys.
             self.update_metric(behavior_name, "train_inst_frames", f"{train_n_inst} ({int(train_n_frame)})")
             self.update_metric(behavior_name, "test_inst_frames", f"{test_n_inst} ({int(test_n_frame)})")
             
