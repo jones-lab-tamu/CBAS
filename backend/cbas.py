@@ -607,8 +607,8 @@ class Dataset:
         all_instances = [inst for b_labels in self.labels.get("labels", {}).values() for inst in b_labels]
         if not all_instances:
             for behavior_name in self.config.get("behaviors", []):
-                self.update_metric(behavior_name, "train_inst_frames", "0 (0)")
-                self.update_metric(behavior_name, "test_inst_frames", "0 (0)")
+                self.update_metric(behavior_name, "Train Inst (Frames)", "0 (0)")
+                self.update_metric(behavior_name, "Test Inst (Frames)", "0 (0)")
             return
 
         all_subjects = list(set(os.path.dirname(inst['video']) for inst in all_instances))
@@ -640,8 +640,8 @@ class Dataset:
             test_n_inst = test_instance_counts.get(behavior_name, 0)
             test_n_frame = test_frame_counts.get(behavior_name, 0)
             
-            self.update_metric(behavior_name, "train_inst_frames", f"{train_n_inst} ({int(train_n_frame)})")
-            self.update_metric(behavior_name, "test_inst_frames", f"{test_n_inst} ({int(test_n_frame)})")
+            self.update_metric(behavior_name, "Train Inst (Frames)", f"{train_n_inst} ({int(train_n_frame)})")
+            self.update_metric(behavior_name, "Test Inst (Frames)", f"{test_n_inst} ({int(test_n_frame)})")
             
     def predictions_to_instances(self, csv_path: str, model_name: str, threshold: float = 0.7) -> list:
         try: df = pd.read_csv(csv_path)
