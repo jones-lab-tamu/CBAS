@@ -372,9 +372,9 @@ def train_final_model(dataset_name: str):
     print(f"Using Champion Hyperparameters: {CHAMPION_PARAMETERS}")
     
     # --- Part 1: Train and save the final model artifact ---
-    print("Loading representative split from outer_splits.json (replicate 0)")
     manifest_provider = ManifestSplitProvider(manifest_path, fingerprint)
-    train_subjects, val_subjects, _ = manifest_provider.get_split(0, [], [], [])
+    # Get all subjects for this split, as we'll need them for counting later
+    train_subjects, val_subjects, test_subjects = manifest_provider.get_split(0, [], [], [])
 
     final_train_subjects = train_subjects + val_subjects
     print(f"Combining train and validation sets into a final training pool of {len(final_train_subjects)} subjects.")
@@ -405,9 +405,10 @@ def train_final_model(dataset_name: str):
     print(f"--- Finished Final Training in {job_end_time - job_start_time:.2f} seconds ---")
     print(f"The final, deployable model has been saved to the project's 'models' directory.")
 
-    # --- Part 2: Find the evaluation results and update the main config.yaml ---
-    print("\n--- Updating GUI Card with Final Evaluation Metrics ---")
+    # --- Part 2: Update the main config.yaml with metrics and counts ---
+    print("\n--- Updating GUI Card with Final Evaluation Metrics and Instance Counts ---")
     try:
+        # --- Sub-part A: Load evaluation metrics from CSV ---
         list_of_files = glob.glob(os.path.join(experiments_dir, 'final_evaluation_results_*.csv'))
         if not list_of_files:
             raise FileNotFoundError("No 'final_evaluation_results' CSV found. Please run the 'evaluate' phase before this one.")
@@ -416,38 +417,60 @@ def train_final_model(dataset_name: str):
         print(f"Loading metrics from: {os.path.basename(latest_file)}")
         eval_df = pd.read_csv(latest_file)
 
+        # --- Sub-part B: Calculate instance and frame counts ---
+        all_instances = [inst for b in task.behaviors for inst in dataset.labels.get("labels", {}).get(b, [])]
+        train_subject_set = set(train_subjects + val_subjects) # Final training used both
+        test_subject_set = set(test_subjects)
+        train_insts = [inst for inst in all_instances if os.path.dirname(inst['video']) in train_subject_set]
+        test_insts = [inst for inst in all_instances if os.path.dirname(inst['video']) in test_subject_set]
+
+        train_instance_counts = defaultdict(int)
+        test_instance_counts = defaultdict(int)
+        train_frame_counts = defaultdict(int)
+        test_frame_counts = defaultdict(int)
+        for inst in train_insts:
+            train_instance_counts[inst['label']] += 1
+            train_frame_counts[inst['label']] += (inst['end'] - inst['start'] + 1)
+        for inst in test_insts:
+            test_instance_counts[inst['label']] += 1
+            test_frame_counts[inst['label']] += (inst['end'] - inst['start'] + 1)
+
+        # --- Sub-part C: Write everything to the config file ---
         config_path = dataset.config_path
         with open(config_path, 'r') as f:
             config = yaml.safe_load(f)
 
-        if 'metrics' not in config:
-            config['metrics'] = {}
+        config['metrics'] = {} # Start with a fresh metrics block
 
         for behavior in task.behaviors:
-            if behavior not in config['metrics']:
-                config['metrics'][behavior] = {}
+            config['metrics'][behavior] = {}
             
-            # Define column names for all three metrics
-            f1_col = f'{behavior}_Test_F1'
-            precision_col = f'{behavior}_Test_Precision'
-            recall_col = f'{behavior}_Test_Recall'
-
-            # Read each column, calculate the mean, and update the config
+            # Write performance metrics from the CSV
+            f1_col, precision_col, recall_col = f'{behavior}_Test_F1', f'{behavior}_Test_Precision', f'{behavior}_Test_Recall'
             if f1_col in eval_df.columns:
-                config['metrics'][behavior]['F1 Score'] = round(eval_df[f1_col].mean(), 2)
+                config['metrics'][behavior]['F1 Score'] = round(float(eval_df[f1_col].mean()), 2)
             if precision_col in eval_df.columns:
-                config['metrics'][behavior]['Precision'] = round(eval_df[precision_col].mean(), 2)
+                config['metrics'][behavior]['Precision'] = round(float(eval_df[precision_col].mean()), 2)
             if recall_col in eval_df.columns:
-                config['metrics'][behavior]['Recall'] = round(eval_df[recall_col].mean(), 2)
-            
+                config['metrics'][behavior]['Recall'] = round(float(eval_df[recall_col].mean()), 2)
+
+            # Write instance and frame counts
+            train_n_inst = train_instance_counts.get(behavior, 0)
+            train_n_frame = train_frame_counts.get(behavior, 0)
+            test_n_inst = test_instance_counts.get(behavior, 0)
+            test_n_frame = test_frame_counts.get(behavior, 0)
+            config['metrics'][behavior]["Train Inst (Frames)"] = f"{train_n_inst} ({int(train_n_frame)})"
+            config['metrics'][behavior]["Test Inst (Frames)"] = f"{test_n_inst} ({int(test_n_frame)})"
+
         with open(config_path, 'w') as f:
             yaml.dump(config, f, allow_unicode=True)
         
-        print("Successfully updated config.yaml with metrics from the evaluation phase.")
+        print("Successfully updated config.yaml with metrics and instance counts.")
         print("The official performance of this model is the one reported from the 'evaluate' phase.")
 
     except Exception as e:
-        print(f"\n[ERROR] Could not update config.yaml with evaluation metrics: {e}")
+        print(f"\n[ERROR] Could not update config.yaml: {e}")
+        traceback.print_exc()
         print("The model.pth file was created, but the GUI card could not be updated.")
 
 
