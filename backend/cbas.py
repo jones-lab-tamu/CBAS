@@ -1092,7 +1092,7 @@ def train_lstm_model(train_set, test_set, seq_len: int, behaviors: list, cancel_
     if device is None: device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     train_loader = torch.utils.data.DataLoader(train_set, batch_size, shuffle=True, collate_fn=collate_fn, num_workers=0, pin_memory=(device.type == 'cuda'), drop_last=False)
-    test_loader = torch.utils.data.DataLoader(test_set, batch_size, shuffle=False, collate_fn=collate_fn, num_workers=0) if len(test_set) > 0 else None
+    test_loader = torch.utils.data.DataLoader(test_set, batch_size, shuffle=False, collate_fn=collate_fn, num_workers=0) if test_set and len(test_set) > 0 else None
     
     model = classifier_head.ClassifierLSTMDeltas(
         in_features=768,
@@ -1117,11 +1117,7 @@ def train_lstm_model(train_set, test_set, seq_len: int, behaviors: list, cancel_
         {'params': model.gate, 'weight_decay': 1e-3}
     ], lr=lr, weight_decay=weight_decay)
     
-    # The check is now `is not None`, which is robust to the input being a tensor.
     loss_weights = torch.tensor(class_weights, dtype=torch.float).to(device) if class_weights is not None else None
-
-    
-    # Pass the new label_smoothing parameter to the loss function.
     criterion = nn.CrossEntropyLoss(weight=loss_weights, label_smoothing=label_smoothing)
     
     best_f1, best_model_state, best_epoch = -1.0, None, -1
@@ -1188,9 +1184,11 @@ def train_lstm_model(train_set, test_set, seq_len: int, behaviors: list, cancel_
         current_train_f1 = train_report.get(optimization_key, {}).get("f1-score", -1.0)
         
         if progress_callback:
-            progress_callback(f"Epoch {e + 1} Val F1: {current_val_f1:.4f}")
+            val_f1_str = f"{current_val_f1:.4f}" if test_loader else "N/A"
+            progress_callback(f"Epoch {e + 1} Val F1: {val_f1_str}")
         
-        print(f"--- Epoch {e+1} | Train F1: {current_train_f1:.4f} | Val F1: {current_val_f1:.4f} ({optimization_key}) ---")
+        val_f1_print_str = f"{current_val_f1:.4f}" if test_loader else "N/A"
+        print(f"--- Epoch {e+1} | Train F1: {current_train_f1:.4f} | Val F1: {val_f1_print_str} ({optimization_key}) ---")
         
         if current_val_f1 > best_f1:
             best_f1, best_epoch, best_model_state = current_val_f1, e, model.state_dict().copy()

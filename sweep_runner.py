@@ -49,6 +49,7 @@ import json
 import hashlib
 from collections import defaultdict
 import random
+import glob
 
 import pandas as pd
 import torch
@@ -311,7 +312,6 @@ def run_final_evaluation(dataset_name: str):
     
     task = TrainingTask(name=dataset_name, dataset=dataset, behaviors=dataset.config.get('behaviors', []), **CHAMPION_PARAMETERS)
     
-    # Define a unique output directory for the final evaluation artifacts
     eval_output_dir = os.path.join(experiments_dir, f"final_evaluation_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
     
     job_start_time = time.time()
@@ -330,8 +330,16 @@ def run_final_evaluation(dataset_name: str):
             result_row['replicate'] = i + 1
             
             for behavior in task.behaviors:
-                f1_score = run_report['test_report'].get(behavior, {}).get('f1-score', 0)
+                # Extract all three metrics from the test report
+                test_metrics = run_report['test_report'].get(behavior, {})
+                f1_score = test_metrics.get('f1-score', 0)
+                precision = test_metrics.get('precision', 0)
+                recall = test_metrics.get('recall', 0)
+                
+                # Save each to a unique column
                 result_row[f'{behavior}_Test_F1'] = f1_score
+                result_row[f'{behavior}_Test_Precision'] = precision
+                result_row[f'{behavior}_Test_Recall'] = recall
             
             macro_f1 = run_report['test_report'].get('macro avg', {}).get('f1-score', 0)
             result_row['avg_test_f1_macro'] = macro_f1
@@ -352,58 +360,95 @@ def run_final_evaluation(dataset_name: str):
 
 def train_final_model(dataset_name: str):
     """
-    Trains one final, deployable model on a representative split using the
-    champion hyperparameters.
+    Trains one final, deployable model and updates the GUI card with the
+    rigorous performance metrics from the 'evaluate' phase.
     """
     print("--- Phase: Training Final Deployable Model ---")
     dataset = gui_state.proj.datasets[dataset_name]
     fingerprint = _generate_dataset_fingerprint(dataset)
     manifest_path = os.path.join(gui_state.proj.path, "outer_splits.json")
+    experiments_dir = os.path.join(dataset.path, "experiments")
 
     print(f"Using Champion Hyperparameters: {CHAMPION_PARAMETERS}")
     
-    # 1. Load the manifest and select one representative split (the first one)
+    # --- Part 1: Train and save the final model artifact ---
     print("Loading representative split from outer_splits.json (replicate 0)")
     manifest_provider = ManifestSplitProvider(manifest_path, fingerprint)
-    train_subjects, val_subjects, _ = manifest_provider.get_split(0, [], [], []) # Test set is ignored
+    train_subjects, val_subjects, _ = manifest_provider.get_split(0, [], [], [])
 
-    # 2. Combine train and validation subjects into one large training pool
     final_train_subjects = train_subjects + val_subjects
     print(f"Combining train and validation sets into a final training pool of {len(final_train_subjects)} subjects.")
 
-    # 3. Create a new Task. We will not use a validation or test set for this final fit.
-    # We set num_runs and num_trials to 1 as we are only producing one artifact.
     final_params = CHAMPION_PARAMETERS.copy()
     final_params['num_runs'] = 1
     final_params['num_trials'] = 1
-    final_params['use_test'] = False # Explicitly do not use a test set
+    final_params['use_test'] = False
     final_params['test_split'] = 0.0
     
     task = TrainingTask(name=dataset_name, dataset=dataset, behaviors=dataset.config.get('behaviors', []), **final_params)
 
-    # 4. Create a custom SplitProvider that returns our combined list and no validation set.
     class FinalFitSplitProvider(SplitProvider):
         def __init__(self, final_train_subjects):
             self.final_train_subjects = final_train_subjects
         def get_split(self, run_index, all_subjects, all_instances, behaviors):
-            # Return the combined list for training, and empty lists for val/test
             return self.final_train_subjects, [], []
 
     final_split_provider = FinalFitSplitProvider(final_train_subjects)
 
-    # 5. Execute the training job
-    print("Starting final training job...")
+    print("Starting final training job to produce model.pth...")
     job_start_time = time.time()
     
-    # The _execute_training_task will now run, but the val_ds will be empty,
-    # so early stopping based on validation performance will not trigger.
-    # The model will train for the full number of epochs specified.
-    gui_state.training_thread._execute_training_task(task, final_split_provider)
+    temp_output_dir = os.path.join(experiments_dir, f"final_train_run_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+    gui_state.training_thread._execute_training_task(task, final_split_provider, output_dir=temp_output_dir)
     
     job_end_time = time.time()
     print(f"--- Finished Final Training in {job_end_time - job_start_time:.2f} seconds ---")
     print(f"The final, deployable model has been saved to the project's 'models' directory.")
-    print("The official performance of this model is the one reported from the 'evaluate' phase.")
+
+    # --- Part 2: Find the evaluation results and update the main config.yaml ---
+    print("\n--- Updating GUI Card with Final Evaluation Metrics ---")
+    try:
+        list_of_files = glob.glob(os.path.join(experiments_dir, 'final_evaluation_results_*.csv'))
+        if not list_of_files:
+            raise FileNotFoundError("No 'final_evaluation_results' CSV found. Please run the 'evaluate' phase before this one.")
+        
+        latest_file = max(list_of_files, key=os.path.getctime)
+        print(f"Loading metrics from: {os.path.basename(latest_file)}")
+        eval_df = pd.read_csv(latest_file)
+
+        config_path = dataset.config_path
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+
+        if 'metrics' not in config:
+            config['metrics'] = {}
+
+        for behavior in task.behaviors:
+            if behavior not in config['metrics']:
+                config['metrics'][behavior] = {}
+            
+            # Define column names for all three metrics
+            f1_col = f'{behavior}_Test_F1'
+            precision_col = f'{behavior}_Test_Precision'
+            recall_col = f'{behavior}_Test_Recall'
+
+            # Read each column, calculate the mean, and update the config
+            if f1_col in eval_df.columns:
+                config['metrics'][behavior]['F1 Score'] = round(eval_df[f1_col].mean(), 2)
+            if precision_col in eval_df.columns:
+                config['metrics'][behavior]['Precision'] = round(eval_df[precision_col].mean(), 2)
+            if recall_col in eval_df.columns:
+                config['metrics'][behavior]['Recall'] = round(eval_df[recall_col].mean(), 2)
+            
+        with open(config_path, 'w') as f:
+            yaml.dump(config, f, allow_unicode=True)
+        
+        print("Successfully updated config.yaml with metrics from the evaluation phase.")
+        print("The official performance of this model is the one reported from the 'evaluate' phase.")
+
+    except Exception as e:
+        print(f"\n[ERROR] Could not update config.yaml with evaluation metrics: {e}")
+        print("The model.pth file was created, but the GUI card could not be updated.")
 
 
 if __name__ == "__main__":

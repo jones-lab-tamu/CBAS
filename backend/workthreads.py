@@ -575,8 +575,10 @@ class TrainingThread(threading.Thread):
                     gui_state.proj, task.name, train_subjects, val_subjects, test_subjects, task.sequence_length
                 )
 
-                if train_ds is None or len(train_ds) == 0 or val_ds is None or len(val_ds) == 0:
-                    log_message(f"Data splitting for run {run_num + 1} failed. Skipping.", "WARN")
+                # Relax the validation set requirement.
+                # The training function itself can handle a None val_ds.
+                if train_ds is None or len(train_ds) == 0:
+                    log_message(f"Data splitting for run {run_num + 1} failed because the training set was empty. Skipping.", "WARN")
                     continue
                 
                 run_best_model_for_trials, run_best_f1_for_trials, run_best_reports_history, run_best_epoch = None, -1.0, None, -1
@@ -614,8 +616,13 @@ class TrainingThread(threading.Thread):
                     )
 
                     if trial_model and trial_reports and trial_best_epoch != -1:
-                        f1 = trial_reports[trial_best_epoch].val_report.get(task.optimization_target, {}).get("f1-score", -1.0)
-                        if f1 > run_best_f1_for_trials:
+                        # Handle the case where there is no validation report
+                        f1 = -1.0
+                        if trial_reports[trial_best_epoch].val_report:
+                            f1 = trial_reports[trial_best_epoch].val_report.get(task.optimization_target, {}).get("f1-score", -1.0)
+                        
+                        # If there's no validation set, we still need to save the model from the first trial.
+                        if f1 > run_best_f1_for_trials or run_best_model_for_trials is None:
                             run_best_f1_for_trials = f1
                             run_best_model_for_trials = trial_model
                             run_best_reports_history = trial_reports
@@ -626,8 +633,8 @@ class TrainingThread(threading.Thread):
                 if run_best_model_for_trials:
                     run_winner_report = {
                         "best_epoch": run_best_epoch,
-                        "validation_report": run_best_reports_history[run_best_epoch].val_report,
-                        "validation_cm": run_best_reports_history[run_best_epoch].val_cm,
+                        "validation_report": run_best_reports_history[run_best_epoch].val_report if run_best_reports_history else {},
+                        "validation_cm": run_best_reports_history[run_best_epoch].val_cm if run_best_reports_history else np.array([]),
                         "test_report": {},
                         "test_cm": np.array([])
                     }
@@ -642,7 +649,7 @@ class TrainingThread(threading.Thread):
                     
                     all_run_reports.append(run_winner_report)
 
-                    if run_best_f1_for_trials > overall_best_f1:
+                    if run_best_f1_for_trials > overall_best_f1 or overall_best_model is None:
                         log_message(f"New overall best model found in Run {run_num + 1} with Validation F1: {run_best_f1_for_trials:.4f}", "INFO")
                         overall_best_f1 = run_best_f1_for_trials
                         overall_best_model = run_best_model_for_trials
