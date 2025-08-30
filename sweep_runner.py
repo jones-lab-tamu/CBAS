@@ -67,7 +67,7 @@ import cbas
 import gui_state
 import workthreads
 from workthreads import TrainingTask
-from backend.splits import RandomSplitProvider, ManifestSplitProvider, _generate_dataset_fingerprint
+from backend.splits import RandomSplitProvider, ManifestSplitProvider, _generate_dataset_fingerprint, SplitProvider
 
 # ==============================================================================
 # --- 1. EXPERIMENT DEFINITION (USER CONFIGURATION) ---
@@ -104,7 +104,7 @@ CHAMPION_PARAMETERS = {
     'weight_decay': 0.0001,
     'lstm_hidden_size': 128,
     'label_smoothing': 0.1,
-    'lstm_layers': 2,
+    'lstm_layers': 1,
 
     # --- Fixed Experimental Conditions ---
     'training_method': 'oversampling',
@@ -382,7 +382,7 @@ def train_final_model(dataset_name: str):
     task = TrainingTask(name=dataset_name, dataset=dataset, behaviors=dataset.config.get('behaviors', []), **final_params)
 
     # 4. Create a custom SplitProvider that returns our combined list and no validation set.
-    class FinalFitSplitProvider(cbas.SplitProvider):
+    class FinalFitSplitProvider(SplitProvider):
         def __init__(self, final_train_subjects):
             self.final_train_subjects = final_train_subjects
         def get_split(self, run_index, all_subjects, all_instances, behaviors):
