@@ -71,26 +71,50 @@ from workthreads import TrainingTask
 from backend.splits import RandomSplitProvider, ManifestSplitProvider, _generate_dataset_fingerprint, SplitProvider
 
 # ==============================================================================
+# --- 0. HELPER FUNCTIONS ---
+# ==============================================================================
+
+def _nice_multiple(x, base=32, minimum=32):
+    """
+    Snap x down to the nearest multiple of 'base', not below 'minimum'.
+    """
+    return max(minimum, (x // base) * base)
+
+def derive_batch_size_for_seq_len(seq_len: int,
+                                  base_batch: int = 1024,
+                                  base_seq: int = 31,
+                                  batch_cap: int = 512,
+                                  minimum: int = 32,
+                                  snap: int = 32) -> int:
+    """
+    Keep batch_size * seq_len approximately constant relative to a baseline.
+    """
+    target_tokens = base_batch * base_seq
+    raw = max(1, target_tokens // max(1, seq_len))
+    bs = _nice_multiple(raw, base=snap, minimum=minimum)
+    return min(bs, batch_cap)
+
+# ==============================================================================
 # --- 1. EXPERIMENT DEFINITION (USER CONFIGURATION) ---
 # ==============================================================================
 
 # --- A. Define the parameters you want to VARY in the sweep ---
 PARAMETER_GRID = {
-    'weight_decay': [0.0001, 0.001],
-    'lstm_hidden_size': [64, 128],
-    'label_smoothing': [0.0, 0.1],
-    'lstm_layers': [1, 2]
+    'weight_decay': [1e-4, 2e-4], # default [0.0001, 0.001]
+    'lstm_hidden_size': [128], # default [64, 128]
+    'label_smoothing': [0.1], # default [0.0, 0.1]
+    'lstm_layers': [1], #default [1, 2]
+    'learning_rate': [5e-5, 7e-5], # default [5e-5, 1e-4, 3e-4]
+    'sequence_length': [63, 95] # default [31, 63], make sure they're odd
 }
 
 # --- B. Define the parameters you want to KEEP CONSTANT for the sweep ---
 SWEEP_FIXED_PARAMETERS = {
     'training_method': 'oversampling',
     'optimization_target': 'macro avg',
-    'learning_rate': 0.0001,
     'epochs': 10,
     'patience': 3,
-    'batch_size': 1024,
-    'sequence_length': 31,
+    'batch_size': 1024, # This now serves as the BASE reference for the budget calculation
     'use_test': False, # Test set is NOT used in the sweep phase
     'test_split': 0.0,
     'num_runs': 5, # 5 replicates for the sweep
@@ -102,7 +126,7 @@ SWEEP_FIXED_PARAMETERS = {
 # This dictionary is now self-contained and defines all necessary parameters.
 CHAMPION_PARAMETERS = {
     # --- Champion Hyperparameters (Update these after your sweep) ---
-    'weight_decay': 0.0001,
+    'weight_decay': 1e-4,
     'lstm_hidden_size': 128,
     'label_smoothing': 0.1,
     'lstm_layers': 1,
@@ -110,17 +134,17 @@ CHAMPION_PARAMETERS = {
     # --- Fixed Experimental Conditions ---
     'training_method': 'oversampling',
     'optimization_target': 'macro avg',
-    'learning_rate': 0.0001,
+    'learning_rate': 5e-5,
     'epochs': 10,
     'patience': 3,
     'batch_size': 1024,
-    'sequence_length': 31,
+    'sequence_length': 63,
     
     # --- Final Evaluation Settings ---
     'use_test': True,
     'test_split': 0.15,
     'num_runs': 20,
-    'num_trials': 2  # Trials per run can be kept low as we trust the params
+    'num_trials': 1  # Trials per run can be kept low as we trust the params
 }
 
 # ==============================================================================
@@ -221,7 +245,7 @@ def precompute_splits(dataset_name: str):
 
 def run_sweep(dataset_name: str):
     """
-    Main function to execute the hyperparameter sweep using a manifest.
+    Execute the hyperparameter sweep using a precomputed manifest of splits.
     """
     dataset = gui_state.proj.datasets[dataset_name]
     fingerprint = _generate_dataset_fingerprint(dataset)
@@ -229,65 +253,92 @@ def run_sweep(dataset_name: str):
     experiments_dir = os.path.join(dataset.path, "experiments")
     os.makedirs(experiments_dir, exist_ok=True)
 
+    # Build all parameter combinations from the grid
     keys, values = zip(*PARAMETER_GRID.items())
     param_combinations = [dict(zip(keys, v)) for v in itertools.product(*values)]
     
     total_jobs = len(param_combinations)
-    print(f"--- Phase: Hyperparameter Sweep ---")
+    print("--- Phase: Hyperparameter Sweep ---")
     print(f"Found {total_jobs} unique parameter combinations to test.")
     print(f"Each combination will be run {SWEEP_FIXED_PARAMETERS['num_runs']} times using pre-computed splits.")
     print("-------------------------------------\n")
 
     all_results = []
-    
+    base_seq = SWEEP_FIXED_PARAMETERS.get('sequence_length', 31)
+    base_batch = SWEEP_FIXED_PARAMETERS.get('batch_size', 1024)
+
     for i, params in enumerate(param_combinations):
         job_start_time = time.time()
-        print(f"--- Starting Job {i+1}/{total_jobs} ---")
-        print(f"Parameters: {params}")
 
+        # Compose parameters: start from fixed, then overlay grid
         current_params = SWEEP_FIXED_PARAMETERS.copy()
         current_params.update(params)
 
+         # Dynamically derive the batch size to keep token count constant
+        # Pass a cap to the derivation function.
+        base_batch_size = SWEEP_FIXED_PARAMETERS.get('batch_size', 1024)
+        current_params['batch_size'] = derive_batch_size_for_seq_len(
+            seq_len=current_params['sequence_length'],
+            base_batch=base_batch_size,
+            base_seq=31,
+            batch_cap=min(512, base_batch_size) # Cap at 512 or the base size, whichever is smaller
+        )
+        print(f"--- Starting Job {i+1}/{total_jobs} ---")
+        # Log both the grid parameters and the final effective parameters for clarity
+        print(f"Parameters (grid): {params}")
+        print(f"Parameters (effective): {current_params}")
+        print(f"Derived Batch Size: {current_params['batch_size']}")
+
         task = TrainingTask(name=dataset_name, dataset=dataset, behaviors=dataset.config.get('behaviors', []), **current_params)
-        
         split_provider = ManifestSplitProvider(manifest_path, fingerprint)
-        
-        # Define a unique output directory for this job's artifacts
+
+        # Unique output directory for this job's artifacts
         param_str = "_".join([f"{k.replace('_','-')}-{v}" for k, v in params.items()])
         job_output_dir = os.path.join(experiments_dir, f"sweep_{param_str}")
-        
-        gui_state.training_thread._execute_training_task(task, split_provider, output_dir=job_output_dir, plot_suffix='runs')
-        
+
+        gui_state.training_thread._execute_training_task(
+            task, split_provider, output_dir=job_output_dir, plot_suffix='runs'
+        )
+
+        # Collect results
         report_path = os.path.join(job_output_dir, "performance_report.yaml")
         if os.path.exists(report_path):
             with open(report_path, 'r') as f:
                 report_data = yaml.safe_load(f)
-            
+
             run_reports = report_data.get('run_results', [])
             if run_reports:
                 result_row = current_params.copy()
-                result_row.update(params)
-                
-                val_f1_scores = [r['validation_report'].get('macro avg', {}).get('f1-score', 0) for r in run_reports]
-                avg_val_f1 = sum(val_f1_scores) / len(val_f1_scores) if val_f1_scores else 0
+                # Add comparability metadata
+                result_row['effective_tokens_per_step'] = (
+                    current_params['batch_size'] * current_params['sequence_length']
+                )
+
+                # Average validation macro F1 across runs
+                val_f1_scores = [
+                    r.get('validation_report', {}).get('macro avg', {}).get('f1-score', 0.0)
+                    for r in run_reports
+                ]
+                avg_val_f1 = sum(val_f1_scores) / len(val_f1_scores) if val_f1_scores else 0.0
                 result_row['avg_validation_f1_macro'] = avg_val_f1
+
                 all_results.append(result_row)
-        
+
         job_end_time = time.time()
         print(f"--- Finished Job {i+1}/{total_jobs} in {job_end_time - job_start_time:.2f} seconds ---\n")
 
+    # Persist sweep table
     if all_results:
         results_df = pd.DataFrame(all_results)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_filename = f"sweep_results_{dataset_name}_{timestamp}.csv"
-        output_path = os.path.join(experiments_dir, output_filename) # Save to experiments dir
+        output_path = os.path.join(experiments_dir, output_filename)
         results_df.to_csv(output_path, index=False)
-        print(f"--- SWEEP COMPLETE ---")
+        print("--- SWEEP COMPLETE ---")
         print(f"Results saved to: {output_path}")
     else:
         print("--- SWEEP COMPLETE ---")
         print("No results were generated.")
-
 
 def run_final_evaluation(dataset_name: str):
     """

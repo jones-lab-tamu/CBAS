@@ -166,6 +166,43 @@ function getTextColorForBg(hexColor) {
     return luminance > 0.5 ? '#000000' : '#FFFFFF';
 }
 
+// --- Scrub speed indicator ---
+let speedIndicatorTimeout;
+function showSpeedIndicator() {
+    const indicator = document.getElementById('speed-indicator');
+    if (!indicator) return;
+
+    indicator.textContent = `${scrubSpeedMultiplier}x`;
+    indicator.classList.add('visible');
+
+    // Clear any existing timer to reset the fade-out
+    clearTimeout(speedIndicatorTimeout);
+
+    // Set a new timer to hide the indicator
+    speedIndicatorTimeout = setTimeout(() => {
+        indicator.classList.remove('visible');
+    }, 1500); // Hide after 1.5 seconds
+}
+
+// --- Maximize/minimize toggle ---
+function toggleVideoSize() {
+    const labelCard = document.getElementById('label');
+    const toggleBtnIcon = document.querySelector('#toggle-video-size-btn i');
+    const sliderContainer = document.getElementById('maximize-slider-container');
+
+    if (!labelCard || !toggleBtnIcon || !sliderContainer) return;
+
+    labelCard.classList.toggle('video-maximized');
+
+    if (labelCard.classList.contains('video-maximized')) {
+        toggleBtnIcon.classList.replace('bi-arrows-fullscreen', 'bi-arrows-angle-contract');
+        sliderContainer.style.visibility = 'visible'; // Show slider
+    } else {
+        toggleBtnIcon.classList.replace('bi-arrows-angle-contract', 'bi-arrows-fullscreen');
+        sliderContainer.style.visibility = 'hidden'; // Hide slider
+    }
+}
+
 async function showDisagreementModal(datasetName) {
     if (!disagreementReviewBsModal) return;
 
@@ -2425,6 +2462,17 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (infoDiv) infoDiv.innerHTML = '';
         }
     });
+    document.getElementById('toggle-video-size-btn')?.addEventListener('click', toggleVideoSize);
+
+    const widthSlider = document.getElementById('maximize-width-slider');
+    const labelCard = document.getElementById('label');
+    if (widthSlider && labelCard) {
+        widthSlider.addEventListener('input', (event) => {
+            const newWidth = event.target.value;
+            // Set a CSS variable on the parent card
+            labelCard.style.setProperty('--maximized-width', `${newWidth}%`);
+        });
+    }
 });
 
 window.addEventListener("keydown", (event) => {
@@ -2457,8 +2505,15 @@ window.addEventListener("keydown", (event) => {
             if (event.ctrlKey && event.shiftKey) { eel.next_video(1)(); }
             else { eel.next_frame(scrubSpeedMultiplier)(); }
             break;
-        case "ArrowUp": scrubSpeedMultiplier = Math.min(scrubSpeedMultiplier * 2, 128); break;
-        case "ArrowDown": scrubSpeedMultiplier = Math.max(1, Math.trunc(scrubSpeedMultiplier / 2)); break;
+        // MODIFICATION: Call the new indicator function
+        case "ArrowUp": 
+            scrubSpeedMultiplier = Math.min(scrubSpeedMultiplier * 2, 128); 
+            showSpeedIndicator();
+            break;
+        case "ArrowDown": 
+            scrubSpeedMultiplier = Math.max(1, Math.trunc(scrubSpeedMultiplier / 2)); 
+            showSpeedIndicator();
+            break;
         case "Delete": eel.delete_instance_from_buffer()(); break;
         case "Backspace": eel.pop_instance_from_buffer()(); break;
         case "[": eel.update_instance_boundary('start')(); break;
@@ -2476,7 +2531,7 @@ window.addEventListener("keydown", (event) => {
 			if (bIdx !== -1) {
 				if (isReviewByBehaviorMode && document.querySelector('#controls .list-group-item.highlight-selected')) {
 					console.log("Label changing is disabled in Review by Behavior mode.");
-					return; // Do nothing
+					return;
 				}
 				eel.label_frame(bIdx)();
 			} else {

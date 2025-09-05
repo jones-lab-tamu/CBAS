@@ -722,27 +722,34 @@
   <!-- View for Labeling Interface -->
   <div class="d-flex col align-items-center justify-content-center" style="height: max-content; width: 100vw;">
     <div class="card text-start" id="label"
-      style="width: 95vw; min-width: 750px; display: none; background-color: #343a40;">
+      style="width: 95vw; display: none; background-color: #343a40;">
       <div class="card-body d-flex flex-column" style="padding: 10px;">
         <!-- Top Row: File Info and Save Button -->
         <div class="row justify-content-between align-items-center text-light mb-2">
-          <div id="file-info" class="col-md-9">
+          <div id="file-info" class="col-md-4">
             <!-- Current video path is injected here -->
           </div>
+          
+          <!-- Slider for controlling maximized width -->
+          <div id="maximize-slider-container" class="col-md-4 d-flex align-items-center" style="visibility: hidden;">
+            <label for="maximize-width-slider" class="form-label text-nowrap me-2 mb-0 small">Size:</label>
+            <input type="range" class="form-range" min="50" max="100" value="100" id="maximize-width-slider">
+          </div>
 	  
-		  <div class="col-md-3 text-end">
-		  <!-- Hidden by default -->
-		  <button id="mark-reviewed-btn" class="btn btn-info me-2" style="display: none;">
-			<i class="bi bi-check-square-fill me-2"></i>Mark as Reviewed
-		  </button>
+		  <div class="col-md-4 text-end d-flex justify-content-end align-items-center">
+            <!-- Maximize/Minimize Button -->
+            <button id="toggle-video-size-btn" class="btn btn-sm btn-outline-light me-3" data-bs-toggle="tooltip" title="Toggle Video Size">
+                <i class="bi bi-arrows-fullscreen"></i>
+            </button>
 
-		  <button id="save-labels-btn" class="btn btn-success" onclick="handleCommitClick()" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Save confirmed labels (Ctrl+S)">
-			<i class="bi bi-save-fill me-2"></i>Commit Corrections
-		  </button>
-		  <button id="cancel-commit-btn" class="btn btn-secondary ms-2" onclick="eel.cancel_commit_stage()()" style="display: none;">
-			Cancel
-		  </button>
-		</div>
+            <!-- Existing Buttons -->
+            <button id="save-labels-btn" class="btn btn-success" onclick="handleCommitClick()" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Save confirmed labels (Ctrl+S)">
+                <i class="bi bi-save-fill me-2"></i>Commit Corrections
+            </button>
+            <button id="cancel-commit-btn" class="btn btn-secondary ms-2" onclick="eel.cancel_commit_stage()()" style="display: none;">
+                Cancel
+            </button>
+		  </div>
         </div>
 		
 		<!-- Container for the contextual disagreement banner -->
@@ -760,36 +767,33 @@
         <!-- Main Content: Video and Controls Panel -->
         <div class="row flex-grow-1">
           
-			<div class="col-md-8 d-flex flex-column justify-content-center align-items-center">
-
-				<!-- Section 1: The Video Player ONLY -->
-				<div id="video-player-section" style="max-width: 504px; border: 2px solid black;">
+			<div id="video-panel" class="col-md-8 d-flex flex-column align-items-center">
+			
+				<!-- Section 1: The Video Player with Speed Indicator -->
+				<div id="video-player-section" style="border: 2px solid black; position: relative; width: 100%;">
 					<img id="label-image" src="" alt="Labeling a video" style="max-width: 100%; object-fit: contain;" draggable="false">
+					<div id="speed-indicator" class="speed-indicator-overlay">1x</div>
 				</div>
-
 				<!-- Section 2: The Full Timeline with its Label -->
-				<div id="full-timeline-section" class="d-flex align-items-center w-100 justify-content-center mt-2" style="max-width: 560px;">
+				<div id="full-timeline-section" class="d-flex align-items-center w-100 justify-content-center mt-2">
 					<div class="timeline-label"><span>Full</span></div>
 					<div class="timeline-image-wrapper">
 						<img id="full-timeline-image" src="" alt="Full Timeline" style="border:2px solid black; max-width: 100%;" draggable="false">
 					</div>
 				</div>
-
 				<!-- Section 3: The Zoom Timeline with its Label -->
-				<div id="zoom-bar-section" class="d-flex align-items-center w-100 justify-content-center mt-2" style="max-width: 560px;">
+				<div id="zoom-bar-section" class="d-flex align-items-center w-100 justify-content-center mt-2">
 					<div class="timeline-label"><span>Zoom</span></div>
 					<div class="timeline-image-wrapper">
 						<img id="zoom-bar-image" src="" alt="Zoomed timeline" style="border:2px solid #0dcaf0; max-width: 100%;" draggable="false">
 					</div>
 				</div>
-
 				<!-- Section 4: Jump to Frame Input -->
 				<div id="jump-to-frame-controls" class="d-flex align-items-center justify-content-center mt-2">
 				  <label for="frame-jump-input" class="form-label text-light me-2 mb-0">Go to Frame:</label>
 				  <input type="number" class="form-control form-control-sm" id="frame-jump-input" style="width: 120px;">
 				  <button class="btn btn-sm btn-outline-info ms-2" onclick="jumpToFrame()">Go</button>
 				</div>
-
 				<!-- Section 5: Navigation Controls -->
 				<div id="instance-nav-controls" class="mt-2">
 					<button class="btn btn-sm btn-outline-light" onclick="jumpToInstance(-1)" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Jump to Previous Instance (Shift+Tab)">
@@ -799,11 +803,10 @@
 						Next Instance <i class="bi bi-skip-forward-fill"></i>
 					</button>
 				</div>
-
 			</div>
 
           <!-- Right Side: Behavior List -->
-          <div class="col-md-4">
+          <div id="behavior-panel" class="col-md-4">
             <div id="controls" style="min-width: 156px;">
               <!-- Behavior panel is dynamically injected here by JS -->
             </div>
