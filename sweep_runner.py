@@ -105,7 +105,7 @@ PARAMETER_GRID = {
     'label_smoothing': [0.1], # default [0.0, 0.1]
     'lstm_layers': [1], #default [1, 2]
     'learning_rate': [5e-5, 7e-5], # default [5e-5, 1e-4, 3e-4]
-    'sequence_length': [63, 95] # default [31, 63], make sure they're odd
+    'sequence_length': [63, 95] # default [31, 63] - MUST BE ODD
 }
 
 # --- B. Define the parameters you want to KEEP CONSTANT for the sweep ---
@@ -138,13 +138,13 @@ CHAMPION_PARAMETERS = {
     'epochs': 10,
     'patience': 3,
     'batch_size': 1024,
-    'sequence_length': 63,
+    'sequence_length': 63, # MUST BE ODD
     
     # --- Final Evaluation Settings ---
     'use_test': True,
     'test_split': 0.15,
-    'num_runs': 20,
-    'num_trials': 1  # Trials per run can be kept low as we trust the params
+    'num_runs': 15,
+    'num_trials': 2  # Trials per run can be kept low as we trust the params
 }
 
 # ==============================================================================

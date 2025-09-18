@@ -381,6 +381,7 @@ class ClassificationThread(threading.Thread):
                     print(f"Eel call failed: {e}")
                 return None, None
 
+        # Re-ordered and enhanced logic for robust model loading.
             arch_version = meta.get("head_architecture_version", "ClassifierLegacyLSTM")
             hparams = meta.get("hyperparameters", {})
 
@@ -390,26 +391,52 @@ class ClassificationThread(threading.Thread):
                 hparams["seq_len"] = model_obj.config.get("seq_len", 31)
 
             meta["hyperparameters"] = hparams
-            
-            if arch_version.startswith("ClassifierLSTMDeltas"):
-                torch_model = classifier_head.ClassifierLSTMDeltas(
-                    in_features=768, out_features=len(model_obj.config["behaviors"]),
-                    seq_len=hparams.get("seq_len", 31)
-                )
-            else:
-                torch_model = classifier_head.ClassifierLegacyLSTM(
-                    in_features=768, out_features=len(model_obj.config["behaviors"]),
-                    seq_len=hparams.get("seq_len", 31)
-                )
 
+            # Resolve weights path early so we can infer dims if needed.
             weights_path = os.path.join(model_obj.path, "model.pth")
             if not os.path.exists(weights_path) and hasattr(model_obj, "weights_path"):
                 weights_path = model_obj.weights_path
-
+            # Load on CPU for cheap shape inspection; will move module to self.device later.
             try:
-                weights = torch.load(weights_path, map_location=self.device, weights_only=True)
+                weights = torch.load(weights_path, map_location="cpu", weights_only=True)
             except TypeError:
-                weights = torch.load(weights_path, map_location=self.device)
+                weights = torch.load(weights_path, map_location="cpu")
+
+            if arch_version.startswith("ClassifierLSTMDeltas"):
+                # Fill in missing head hyperparameters from weights if absent.
+                if "lstm_hidden_size" not in hparams:
+                    att_w = weights.get("attention_head.weight")
+                    lin2_w = weights.get("lin2.weight")
+                    inferred_h = None
+                    if att_w is not None:
+                        inferred_h = int(att_w.shape[1] // 2)
+                    elif lin2_w is not None:
+                        inferred_h = int(lin2_w.shape[1] // 2)
+                    hparams["lstm_hidden_size"] = inferred_h if inferred_h else 64
+                if "lstm_layers" not in hparams:
+                    # Infer layers by checking for layer indices in LSTM tensors.
+                    layer_ids = []
+                    for k in weights.keys():
+                        m = re.match(r"^lstm\.(weight|bias)_(ih|hh)_l(\d+)(?:_reverse)?$", k)
+                        if m:
+                            layer_ids.append(int(m.group(3)))
+                    hparams["lstm_layers"] = (max(layer_ids) + 1) if layer_ids else 1
+
+                torch_model = classifier_head.ClassifierLSTMDeltas(
+                    in_features=768,
+                    out_features=len(model_obj.config["behaviors"]),
+                    seq_len=hparams.get("seq_len", 31),
+                    lstm_hidden_size=hparams.get("lstm_hidden_size", 64),
+                    lstm_layers=hparams.get("lstm_layers", 1),
+                )
+            else:
+                torch_model = classifier_head.ClassifierLegacyLSTM(
+                    in_features=768,
+                    out_features=len(model_obj.config["behaviors"]),
+                    seq_len=hparams.get("seq_len", 31),
+                )
+
+            # Now load the (already-read) state dict and move to device.
             torch_model.load_state_dict(weights)
 
             torch_model.to(self.device).eval()
@@ -828,6 +855,29 @@ class TrainingThread(threading.Thread):
         }
         with open(os.path.join(model_dir, "config.yaml"), "w") as f:
             yaml.dump(model_config, f, allow_unicode=True)
+
+        # Write an explicit model bundle manifest for robust loading.
+        model_meta = {
+            "model_bundle_schema": "1.0",
+            "cbas_commit_hash": git_commit,
+            "encoder_model_identifier": gui_state.proj.encoder_model_identifier,
+            "head_architecture_version": type(best_model).__name__,
+            "hyperparameters": {
+                "behaviors": task.behaviors,
+                "seq_len": task.sequence_length,
+                "use_acceleration": bool(getattr(best_model, "use_acceleration", True)),
+                "lstm_hidden_size": int(getattr(best_model.lstm, "hidden_size", 64)),
+                "lstm_layers": int(getattr(best_model.lstm, "num_layers", 1)),
+            },
+            "training_run_info": {
+                "num_runs": task.num_runs,
+                "optimization_target": task.optimization_target,
+            },
+            "calibration": {"temperature": float(temperature)},
+        }
+        with open(os.path.join(model_dir, "model_meta.json"), "w") as f:
+            json.dump(model_meta, f, indent=4)
+        log_message(f"Wrote model metadata to '{os.path.join(model_dir, 'model_meta.json')}'.", "INFO")
 
         full_report = {
             "dataset_name": task.name,
