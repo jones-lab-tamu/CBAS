@@ -22,7 +22,8 @@ import re
 import traceback
 import json
 from collections import defaultdict
-import git
+import subprocess
+
 try:
     import importlib.metadata as pkg_resources
 except ImportError:
@@ -49,6 +50,21 @@ import subprocess
 
 _last_restart_times = {}
 file_watcher_handler = None
+
+# Helper: get current commit hash safely (works even when git is absent or not in a repo)
+def _safe_git_hash():
+    try:
+        # The command will be run from the current working directory.
+        # stderr is redirected to DEVNULL to suppress "fatal: not a git repository" messages.
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            stderr=subprocess.DEVNULL,
+            # Ensure the command runs from the script's directory context if needed
+            cwd=os.path.dirname(os.path.abspath(__file__)) 
+        ).decode('utf-8').strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        # This will catch errors if git is not installed or if it's not a repo.
+        return "unknown"
 
 # =================================================================
 # LOGGING HELPER
@@ -819,11 +835,7 @@ class TrainingThread(threading.Thread):
         model_dir = os.path.join(gui_state.proj.models_dir, model_name)
         os.makedirs(model_dir, exist_ok=True)
 
-        try:
-            repo = git.Repo(search_parent_directories=True, invalid_git_dir=True)
-            git_commit = repo.head.object.hexsha
-        except Exception:
-            git_commit = "N/A"
+        git_commit = _safe_git_hash()
 
         try:
             lib_versions = {
