@@ -13,7 +13,7 @@
 > [!NOTE]
 > **CBAS v3 is the actively developed version and is recommended for new projects and large videos.**
 > It introduces a streamed/chunked encoder (prevents multi-GB RAM spikes), a more robust backend,
-> and a simpler labeling/training workflow. Please report issues-v3 is under active development.
+> and a simpler labeling/training workflow. Please report issues! v3 is under active development.
 
 > [!IMPORTANT]
 > **Need to reproduce a published result exactly?** Use the **`v2-stable`** branch that matches the paper.
@@ -26,22 +26,22 @@ CBAS (Circadian Behavioral Analysis Suite) is a full-featured, open-source appli
 
 ## Key Features at a Glance (v3)
 
-* **Standalone Desktop App:** Robust, cross-platform (Windows/macOS/Linux) Electron app. No browser required.
-* **Real-time Video Acquisition:** Record and process streams from any number of RTSP cameras.
-* **High-Performance AI:** Supports state-of-the-art **DINOv3** Vision Transformer backbones (gated via Hugging Face).
-* **Active Learning Workflow:** Pre-label with an existing model, then rapidly “Review & Correct” using the interactive timeline.
-* **Confidence-Based Filtering:** Jump directly to uncertain segments to spend time where it matters most.
-* **Automated Model Training:** Create custom classifiers with balanced/weighted options and detailed performance reports.
-* **Rich Visualization:** Multi-plot actograms, side-by-side behavior comparisons, adjustable binning/light cycles, optional acrophase.
-* **Streamed Encoding (No OOM):** Videos are processed in **chunks**, not loaded entirely into RAM-fixes v2’s large-video memory failures.
+*   **Standalone Desktop App:** Robust, cross-platform (Windows/macOS/Linux) Electron app. No browser required.
+*   **Real-time Video Acquisition:** Record and process streams from any number of RTSP cameras.
+*   **High-Performance AI:** Supports state-of-the-art **DINOv3** Vision Transformer backbones (gated via Hugging Face).
+*   **Active Learning Workflow:** Pre-label with an existing model, then rapidly “Review & Correct” using the interactive timeline.
+*   **Confidence-Based Filtering:** Jump directly to uncertain segments to spend time where it matters most.
+*   **Automated Model Training:** Create custom classifiers with balanced/weighted options and detailed performance reports.
+*   **Rich Visualization:** Multi-plot actograms, side-by-side behavior comparisons, adjustable binning/light cycles, optional acrophase.
+*   **Streamed Encoding (No OOM):** Videos are processed in **chunks**, not loaded entirely into RAM-fixes v2’s large-video memory failures.
 
 ## What’s New in CBAS v3?
 
-* **Standalone Desktop Application:** Cross-platform Electron app; runs fully offline once models are cached.
-* **Supercharged Labeling:** Active-learning with confidence-guided review and fast boundary correction (keyboard-first workflow).
-* **Enhanced Visualization:** Tiled, side-by-side actograms for direct behavior comparison.
-* **Modern, Stable Backend:** Dedicated worker threads keep the UI responsive during long encodes/training.
-* **Self-Describing Models:** Bundled metadata ensures trained heads reload with the correct dimensions (prevents “shape mismatch” errors).
+*   **Standalone Desktop Application:** Cross-platform Electron app; runs fully offline once models are cached.
+*   **Supercharged Labeling:** Active-learning with confidence-guided review and fast boundary correction (keyboard-first workflow).
+*   **Enhanced Visualization:** Tiled, side-by-side actograms for direct behavior comparison.
+*   **Modern, Stable Backend:** Dedicated worker threads keep the UI responsive during long encodes/training.
+*   **Self-Describing Models:** Bundled metadata ensures trained heads reload with the correct dimensions (prevents “shape mismatch” errors).
 
 ### Which version should I use?
 
@@ -53,7 +53,6 @@ CBAS (Circadian Behavioral Analysis Suite) is a full-featured, open-source appli
 | Very old machines with a known v2 workflow | **v2-stable** (use shorter/segmented clips) |
 
 > **Seeing “Unable to allocate N GiB” in v2?** Switch to **v3**-it streams frames and eliminates whole-video RAM spikes.
-
 
 <p align="center">
     <img src=".//assets/realtime.gif" alt="CBAS actograms" style="width: 600px; height: auto;">
@@ -80,9 +79,9 @@ The acquisition module is capable of batch processing streaming video data from 
 
 This module uses a powerful machine learning model to automatically classify behaviors and provides tools to analyze the results.
 
-* **High-Performance ML Backend:** CBAS supports DINOv3 vision transformers as feature backbones with a custom LSTM head for time-series classification.
-* **Multi-Actogram Analysis:** Tiled, side-by-side behavior plots with distinct colors for clear analysis.
-* **Interactive Plotting:** Adjust bin size, start time, thresholds, light cycles; optionally plot acrophase.
+*   **High-Performance ML Backend:** CBAS supports DINOv3 vision transformers as feature backbones with a custom LSTM head for time-series classification.
+*   **Multi-Actogram Analysis:** Tiled, side-by-side behavior plots with distinct colors for clear analysis.
+*   **Interactive Plotting:** Adjust bin size, start time, thresholds, light cycles; optionally plot acrophase.
 
 <p align="center">
     <img src=".//assets/classification_1.png" alt="CBAS Classification Diagram" style="width: 500px; height: auto;">
@@ -96,9 +95,9 @@ This module uses a powerful machine learning model to automatically classify beh
 
 The training module in v3 introduces a modern, efficient workflow for creating high-quality, custom datasets and models.
 
-* **Active Learning Interface:** Pre-label, then “Review & Correct” using confidence filters and an interactive timeline.
-* **Flexible Training Options:** Balanced oversampling or weighted loss for rare behaviors.
-* **Automated Performance Reports:** F1/precision/recall plots and confusion matrices generated at the end of training.
+*   **Active Learning Interface:** Pre-label, then “Review & Correct” using confidence filters and an interactive timeline.
+*   **Flexible Training Options:** Balanced oversampling or weighted loss for rare behaviors.
+*   **Automated Performance Reports:** F1/precision/recall plots and confusion matrices generated at the end of training.
 
 <p align="center">
     <img src=".//assets/training_1.png" alt="CBAS Training Diagram" style="width: 500px; height: auto;">
@@ -234,7 +233,9 @@ The first time you launch a project with the new model, the backend will downloa
 
 ## Troubleshooting
 
-Stuck on “Loading DINO encoder…” (Windows)
+<details>
+  <summary>Stuck on “Loading DINO encoder…” (Windows)</summary>
+  
   1) Seed the model once from the SAME venv CBAS uses:
      > .\venv\Scripts\activate
      > huggingface-cli login
@@ -250,8 +251,11 @@ Stuck on “Loading DINO encoder…” (Windows)
        > powershell -NoProfile -Command "Get-ChildItem -Recurse \"$env:USERPROFILE\.cache\huggingface\hub\" -Filter *.lock | Remove-Item -Force"
        > rmdir /S /Q "%USERPROFILE%\.cache\huggingface\hub\models--facebook--dinov3-vitb16-pretrain-lvd1689m"
        > python -c "from huggingface_hub import snapshot_download as d; d('facebook/dinov3-vitb16-pretrain-lvd1689m', local_files_only=False, local_dir_use_symlinks=False)"
+</details>
 
-PyTorch size-mismatch when loading a trained model
+<details>
+  <summary>PyTorch size-mismatch when loading a trained model</summary>
+  
   - Cause: head rebuilt with wrong dims (e.g., hidden_size 64) vs checkpoint (e.g., 128).
   - Fix (v3): loader must read from model_meta.json and pass:
       • lstm_hidden_size, lstm_layers, seq_len, behaviors
@@ -259,16 +263,18 @@ PyTorch size-mismatch when loading a trained model
       • encoder_model_identifier matches the project encoder
       • *_cls.h5 embedding width (e.g., 768 for DINOv3) matches expectations
   - If you must run an older build: add lstm_hidden_size=128 (or the trained value) when constructing ClassifierLSTMDeltas.
+</details>
 
-v2 “Unable to allocate N GiB for an array …”
+<details>
+  <summary>v2 “Unable to allocate N GiB for an array …”</summary>
+  
   - Cause: v2 loads entire video into RAM (e.g., a 10-min 720p clip can be ~90 GB).
   - Best fix: use v3 (streamed/chunked encoder; no whole-video RAM spikes).
   - If staying on v2 temporarily:
       • Split videos into short segments (e.g., 60–120 s)
       • Downsample resolution/FPS before import
       • Test with short clips first
-
-
+</details>
 
 ## Hardware Requirements
 
