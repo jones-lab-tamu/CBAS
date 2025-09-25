@@ -8,41 +8,52 @@
   <img src="./frontend/assets/cbas_mouseover.svg" alt="CBAS Easter Egg Logo" style="width: 500px; height: auto;">
 </details>
 
-# CBAS v3 (BETA)
+# CBAS v3 (BETA) - *Recommended for most users*
 
-> [!WARNING]
-> **You are viewing the development branch for the upcoming CBAS v3.** This version is a complete architectural and functional overhaul and should be considered **experimental**. It may contain bugs or undergo significant changes.
+> [!NOTE]
+> **CBAS v3 is the actively developed version and is recommended for new projects and large videos.**
+> It introduces a streamed/chunked encoder (prevents multi-GB RAM spikes), a more robust backend,
+> and a simpler labeling/training workflow. Please report issues-v3 is under active development.
 
 > [!IMPORTANT]
-> **For Scientific Reproducibility:** To access the stable code used in our recent publication, please use the `v2-stable` branch.
-> *   [**Click here to browse the `v2-stable` branch**](https://github.com/jones-lab-tamu/CBAS/tree/v2-stable)
-> *   [**Click here to download a `.zip` of the `v2-stable` code directly**](https://github.com/jones-lab-tamu/CBAS/archive/refs/heads/v2-stable.zip)
+> **Need to reproduce a published result exactly?** Use the **`v2-stable`** branch that matches the paper.
+> * [**Browse `v2-stable`**](https://github.com/jones-lab-tamu/CBAS/tree/v2-stable)
+> * [**Download `.zip`**](https://github.com/jones-lab-tamu/CBAS/archive/refs/heads/v2-stable.zip)
 
----
-
-CBAS (Circadian Behavioral Analysis Suite) is a full-featured, open-source application for phenotyping complex animal behaviors. It is designed to automate the classification of behaviors from video data and provide a simple, powerful interface for visualizing and analyzing the results.
+CBAS (Circadian Behavioral Analysis Suite) is a full-featured, open-source application for phenotyping complex animal behaviors. It automates behavior classification from video and provides a streamlined interface for labeling, training, visualization, and analysis.
 
 *Originally created by Logan Perry and now maintained by the Jones Lab at Texas A&M University.*
 
-## Key Features at a Glance
+## Key Features at a Glance (v3)
 
-*   **Standalone Desktop App:** A robust, cross-platform application for Windows, macOS, and Linux. No web browser required.
-*   **Real-time Video Acquisition:** Record and process video from any number of network-based RTSP cameras simultaneously.
-*   **High-Performance AI:** Uses a state-of-the-art DINOv2 Vision Transformer backbone for powerful and accurate feature extraction.
-*   **Active Learning Workflow:** Dramatically accelerate labeling by pre-labeling videos with an existing model and using the "Review & Correct" interface to rapidly fix mistakes.
-*   **Advanced Labeling Interface:** Features an interactive, zoomable timeline, confidence-based filtering, and keyboard shortcuts for efficient instance correction.
-*   **Automated Model Training:** Create custom, high-performance behavior classifiers with just a few clicks. Includes tools for handling rare behaviors and generates detailed performance reports.
-*   **Rich Data Visualization:** Generate multi-plot actograms, compare behaviors side-by-side, and analyze circadian patterns with interactive controls.
+* **Standalone Desktop App:** Robust, cross-platform (Windows/macOS/Linux) Electron app. No browser required.
+* **Real-time Video Acquisition:** Record and process streams from any number of RTSP cameras.
+* **High-Performance AI:** Supports state-of-the-art **DINOv3** Vision Transformer backbones (gated via Hugging Face).
+* **Active Learning Workflow:** Pre-label with an existing model, then rapidly “Review & Correct” using the interactive timeline.
+* **Confidence-Based Filtering:** Jump directly to uncertain segments to spend time where it matters most.
+* **Automated Model Training:** Create custom classifiers with balanced/weighted options and detailed performance reports.
+* **Rich Visualization:** Multi-plot actograms, side-by-side behavior comparisons, adjustable binning/light cycles, optional acrophase.
+* **Streamed Encoding (No OOM):** Videos are processed in **chunks**, not loaded entirely into RAM-fixes v2’s large-video memory failures.
 
-## What's New in CBAS v3?
+## What’s New in CBAS v3?
 
-CBAS v3 is a ground-up rebuild of the original application, focused on stability, performance, and a dramatically improved user workflow.
+* **Standalone Desktop Application:** Cross-platform Electron app; runs fully offline once models are cached.
+* **Supercharged Labeling:** Active-learning with confidence-guided review and fast boundary correction (keyboard-first workflow).
+* **Enhanced Visualization:** Tiled, side-by-side actograms for direct behavior comparison.
+* **Modern, Stable Backend:** Dedicated worker threads keep the UI responsive during long encodes/training.
+* **Self-Describing Models:** Bundled metadata ensures trained heads reload with the correct dimensions (prevents “shape mismatch” errors).
 
-*   **Standalone Desktop Application:** v3 is now a robust, cross-platform desktop app powered by Electron. It no longer runs in a web browser and can be used completely offline.
-*   **Advanced "Active Learning" Workflow:** The labeling process has been supercharged. Pre-label videos with any model, then use `Tab` to instantly jump between the model's predictions and use the interactive timeline to rapidly correct boundaries.
-*   **Confidence-Based Filtering:** Focus your efforts where they matter most. The new interface allows you to filter and view only the behavioral instances the model is least certain about, making your labeling time more efficient.
-*   **Enhanced Visualization:** Generate side-by-side actograms for direct comparison of multiple behaviors.
-*   **Modern, Stable Backend:** The application's backend has been re-engineered with dedicated worker threads for a stable, responsive, and crash-free experience during intensive tasks like training and inference.
+### Which version should I use?
+
+| Scenario | Recommended |
+|---|---|
+| New project, large videos (≥ 5–10 min) | **v3 (beta)** – streamed encoder prevents RAM exhaustion |
+| Active labeling/training with confidence-guided review | **v3 (beta)** |
+| Exact reproduction of published results | **v2-stable** |
+| Very old machines with a known v2 workflow | **v2-stable** (use shorter/segmented clips) |
+
+> **Seeing “Unable to allocate N GiB” in v2?** Switch to **v3**-it streams frames and eliminates whole-video RAM spikes.
+
 
 <p align="center">
     <img src=".//assets/realtime.gif" alt="CBAS actograms" style="width: 600px; height: auto;">
@@ -65,13 +76,13 @@ The acquisition module is capable of batch processing streaming video data from 
 </p>
 
 ---
-### Module 2: Classification and Visualization (Majorly Upgraded in v3)
+### Module 2: Classification and Visualization (Majorly upgraded in v3)
 
 This module uses a powerful machine learning model to automatically classify behaviors and provides tools to analyze the results.
 
-*   **High-Performance ML Backend:** CBAS uses a frozen [DINOv2 vision transformer](https://arxiv.org/abs/2304.07193) as its feature-extracting backbone, with a custom LSTM-based model head for time-series classification.
-*   **Multi-Actogram Analysis:** The new visualization interface allows for **tiled, side-by-side comparison of multiple behaviors**, each with a distinct color for clear analysis.
-*   **Interactive Plotting:** All actogram parameters (bin size, start time, thresholds, light cycles) can be adjusted in real-time. You can also toggle the plotting of the acrophase to analyze circadian periodicity.
+* **High-Performance ML Backend:** CBAS supports DINOv3 vision transformers as feature backbones with a custom LSTM head for time-series classification.
+* **Multi-Actogram Analysis:** Tiled, side-by-side behavior plots with distinct colors for clear analysis.
+* **Interactive Plotting:** Adjust bin size, start time, thresholds, light cycles; optionally plot acrophase.
 
 <p align="center">
     <img src=".//assets/classification_1.png" alt="CBAS Classification Diagram" style="width: 500px; height: auto;">
@@ -85,9 +96,9 @@ This module uses a powerful machine learning model to automatically classify beh
 
 The training module in v3 introduces a modern, efficient workflow for creating high-quality, custom datasets and models.
 
-*   **Active Learning Interface:** The new "Review & Correct" mode allows you to pre-label videos with an existing model. You can then use the new **confidence-based filtering and interactive timeline** to rapidly find and correct the model's mistakes, dramatically reducing manual labeling time.
-*   **Flexible Training Options:** Train models using balanced oversampling or a weighted-loss function to handle rare behaviors.
-*   **Automated Performance Reports:** After training, CBAS automatically generates detailed performance reports, including F1/precision/recall plots and confusion matrices, to help you evaluate and trust your new custom model.
+* **Active Learning Interface:** Pre-label, then “Review & Correct” using confidence filters and an interactive timeline.
+* **Flexible Training Options:** Balanced oversampling or weighted loss for rare behaviors.
+* **Automated Performance Reports:** F1/precision/recall plots and confusion matrices generated at the end of training.
 
 <p align="center">
     <img src=".//assets/training_1.png" alt="CBAS Training Diagram" style="width: 500px; height: auto;">
@@ -172,10 +183,10 @@ The next time you open the "Label/Train" page or click the "Refresh Datasets" bu
 
 ### Advanced: Using Experimental Encoder Models
 
-CBAS allows power users to experiment with different feature encoder models on a per-project basis. To do this, find the `cbas_config.yaml.example` file in the application's root directory. Copy this file into the root of your specific CBAS project folder (i.e., the folder that contains the `cameras/`, `data_sets/`, `models/`, and `recordings/` subfolders) and rename it to `cbas_config.yaml`. Edit the file to select the desired model. 
+CBAS allows power users to experiment with different feature encoder models on a per-project basis. Copy `cbas_config.yaml.example` into your project root as `cbas_config.yaml` and edit the `encoder_model_identifier`.
 
-> [!WARNING]
-> Using experimental models like DINOv3 may require additional installation steps, such as authenticating with Huging Face Hub. This will also require re-encoding all videos in that project.
+> [!NOTE]
+> Using **DINOv3** requires a one-time Hugging Face authentication (read token) and accepting the model’s terms. Switching encoders requires **re-encoding** videos in that project.
 
 #### Instructions for Using Gated Models (like DINOv3)
 
@@ -220,6 +231,45 @@ Before you can download the model, you must accept its terms on the model's page
 
 The first time you launch a project with the new model, the backend will download the model files, which may take several minutes. All subsequent launches will be fast. Because this is a new encoder, all videos in this project will be automatically re-queued for encoding.
 --------------
+
+## Troubleshooting
+
+Stuck on “Loading DINO encoder…” (Windows)
+  1) Seed the model once from the SAME venv CBAS uses:
+     > .\venv\Scripts\activate
+     > huggingface-cli login
+     > python -c "from huggingface_hub import snapshot_download as d; d('facebook/dinov3-vitb16-pretrain-lvd1689m', local_files_only=False, local_dir_use_symlinks=False)"
+  2) Launch with offline cache so CBAS doesn’t make network calls:
+     > set HF_HUB_OFFLINE=1
+     > npm start
+  3) If it still stalls:
+     - Ensure the token is set in this venv:  `huggingface-cli whoami`
+     - Accept model terms in your browser while logged in (model page on Hugging Face).
+     - Upgrade hub libs in this venv:  `pip install -U huggingface_hub transformers timm`
+     - Clear stale locks and re-download:
+       > powershell -NoProfile -Command "Get-ChildItem -Recurse \"$env:USERPROFILE\.cache\huggingface\hub\" -Filter *.lock | Remove-Item -Force"
+       > rmdir /S /Q "%USERPROFILE%\.cache\huggingface\hub\models--facebook--dinov3-vitb16-pretrain-lvd1689m"
+       > python -c "from huggingface_hub import snapshot_download as d; d('facebook/dinov3-vitb16-pretrain-lvd1689m', local_files_only=False, local_dir_use_symlinks=False)"
+
+PyTorch size-mismatch when loading a trained model
+  - Cause: head rebuilt with wrong dims (e.g., hidden_size 64) vs checkpoint (e.g., 128).
+  - Fix (v3): loader must read from model_meta.json and pass:
+      • lstm_hidden_size, lstm_layers, seq_len, behaviors
+    Also verify:
+      • encoder_model_identifier matches the project encoder
+      • *_cls.h5 embedding width (e.g., 768 for DINOv3) matches expectations
+  - If you must run an older build: add lstm_hidden_size=128 (or the trained value) when constructing ClassifierLSTMDeltas.
+
+v2 “Unable to allocate N GiB for an array …”
+  - Cause: v2 loads entire video into RAM (e.g., a 10-min 720p clip can be ~90 GB).
+  - Best fix: use v3 (streamed/chunked encoder; no whole-video RAM spikes).
+  - If staying on v2 temporarily:
+      • Split videos into short segments (e.g., 60–120 s)
+      • Downsample resolution/FPS before import
+      • Test with short clips first
+
+
+
 ## Hardware Requirements
 
 While not required, we **strongly** recommend using a modern NVIDIA GPU (RTX 20-series or newer) to allow for GPU-accelerated training and inference.
