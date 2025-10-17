@@ -9,149 +9,179 @@ For instructions on how to use the CBAS software to record from already-configur
 ## 1. Required Hardware & Software
 
 ### Hardware
-(See the [master parts list](Recording_setup.md) for detailed recommendations and links).
+(See the [master parts list](Recording_setup.md) for detailed recommendations and links.)
 
--   PoE IP cameras
--   Network Switch (e.g., Aruba Instant On 1930 24G Class4 PoE)
--   10Gb SFP+ to RJ-45 Transceiver (for connecting the computer to the switch's high-speed uplink port)
--   Cat5/6 Ethernet cables (for connecting cameras to the switch)
--   Cat6a/8 Ethernet cable (for connecting the computer to the switch)
--   A dedicated computer for recording and analysis
+- PoE IP cameras  
+- Network Switch (e.g., Aruba Instant On 1930 24G Class4 PoE)  
+- 10Gb SFP+ to RJ-45 Transceiver (for connecting the computer to the switch's high-speed uplink port)  
+- Cat5/6 Ethernet cables (for connecting cameras to the switch)  
+- Cat6a/8 Ethernet cable (for connecting the computer to the switch)  
+- A dedicated computer for recording and analysis  
+- NAS (e.g., Synology) for network-based storage and backup  
 
 ### Software
--   [Advanced IP Scanner](https://advanced-ip-scanner.com/download/): For easily discovering all devices on your network.
--   [VLC Media Player](https://videolan.org/vlc): For testing the camera's RTSP stream directly.
+- [Advanced IP Scanner](https://advanced-ip-scanner.com/download/): For easily discovering all devices on your network.  
+- [VLC Media Player](https://videolan.org/vlc): For testing the camera's RTSP stream directly.  
 
 ---
 
 ## 2. Physical Connections
 
 <p align="left">
-    <img src=".//assets/switch.png" alt="Switch Connection Diagram" style="width: 300px; height: auto;">
+  <img src=".//assets/switch.png" alt="Switch Connection Diagram" style="width: 300px; height: auto;">
 </p>
 
-1.  Insert the RJ-45 transceiver into one of the SFP+ uplink ports on the switch (typically on the far right).
-2.  Using a high-quality ethernet cable (Cat6a/8), connect the computer's ethernet port to the transceiver in the switch.
-3.  Using Cat5/6 cables, connect each PoE IP camera to one of the numbered PoE ports on the switch. The switch will provide power and data over this single cable.
+1. Insert the RJ-45 transceiver into one of the SFP+ uplink ports on the switch (typically on the far right).  
+2. Using a high-quality Ethernet cable (Cat6a/8), connect the computer’s Ethernet port to the transceiver in the switch.  
+3. Using Cat5/6 cables, connect each PoE IP camera to one of the numbered PoE ports on the switch. The switch will provide power and data over this single cable.  
+4. Connect the **NAS** to one of the remaining Ethernet ports on the switch (not Wi-Fi).  
 
 ---
 
-## 3. Configure the Computer's Static IP Address
+## 3. Configure the Computer’s Static IP Address
 
-To ensure reliable communication on this isolated network, we must manually assign an IP address to the computer.
+To ensure reliable communication on this isolated network, manually assign an IP address to the computer:
 
-1.  In Windows Search, type **'Ethernet settings'** and open it.
-2.  Find your ethernet adapter and click **Edit** next to "IP assignment".
-3.  Change the dropdown from "Automatic (DHCP)" to **Manual**.
-4.  Toggle the **IPv4** switch to **On**.
-5.  Fill in the fields exactly as follows:
-    -   **IP address:** `192.168.1.30`
-    -   **Subnet mask:** `255.255.255.0`
-    -   **Gateway:** (leave blank)
-    -   **Preferred DNS:** (leave blank)
-6.  Click **Save**.
+1. In Windows Search, type **“Ethernet settings”** and open it.  
+2. Find your Ethernet adapter and click **Edit** next to “IP assignment.”  
+3. Change the dropdown from “Automatic (DHCP)” to **Manual.**  
+4. Toggle the **IPv4** switch to **On.**  
+5. Fill in the fields as follows:  
+   - **IP address:** `192.168.1.30`  
+   - **Subnet mask:** `255.255.255.0`  
+   - **Gateway:** (leave blank)  
+   - **Preferred DNS:** (leave blank)  
+6. Click **Save.**
 
 ---
 
 ## 4. Configure the Network Switch
 
-1.  Open a web browser (Chrome, Edge, etc.).
-2.  Navigate to the switch's default IP address: `http://192.168.1.1`
-3.  The switch's login portal will appear. **Do not** connect it to the internet or an Aruba cloud account.
-4.  Sign in with the default credentials (username: `admin`, password: *leave blank*).
-5.  You will be prompted to create a new, secure password. Do so and log in again.
-6.  On the Aruba dashboard, navigate to **Setup Network**.
-7.  Under IPv4 Configuration, ensure the settings are as follows:
-    -   **Management Address Type:** Static
-    -   **IP Address:** `192.168.1.1/24`
-    -   **Subnet:** `255.255.255.0`
+1. Open a web browser (Chrome, Edge, etc.).  
+2. Navigate to the switch’s default IP address: `http://192.168.1.1`  
+3. The switch’s login portal will appear. **Do not** connect it to the internet or an Aruba cloud account.  
+4. Sign in with the default credentials (username: `admin`, password: *leave blank*).  
+5. You will be prompted to create a new, secure password. Do so and log in again.  
+6. On the Aruba dashboard, go to **Setup Network.**  
+7. Under **IPv4 Configuration**, set:  
+   - **Management Address Type:** Static  
+   - **IP Address:** `192.168.1.2/24`  
+   - **Subnet:** `255.255.255.0`  
+
+> **Note:**  
+> The NAS will use `192.168.1.1`, and the switch is now assigned `192.168.1.2` to avoid IP conflicts.  
+> After applying changes, the switch will briefly disconnect; reconnect at `http://192.168.1.2`.  
+> Record these IPs for future reference.  
 
 ---
 
-## 5. Discover and Set Camera Static IPs
+## 5. Configure the NAS
 
-Your cameras will initially get a random IP address from the switch. We need to find these addresses and then assign each camera a permanent, static IP.
-
-### Step 5.1: Discover Initial IP Addresses
-You can use the switch's ARP table, but **Advanced IP Scanner** is often easier.
-1.  Open Advanced IP Scanner.
-2.  Set the scan range to `192.168.1.1-254` and click **Scan**.
-3.  You will see a list of connected devices. Your computer (`192.168.1.30`), the switch (`192.168.1.1`), and your cameras will be listed. The camera manufacturer may appear as "Jinan Jovision Science & Technology Co., Ltd.".
-4.  Note down the initial IP address for each camera.
-
-### Step 5.2: Assign Static IPs
-For each camera, you will log into its web interface to change its network settings.
-1.  Open a new browser tab and type in one of the camera's discovered IP addresses (e.g., `192.168.1.38`).
-2.  Log in with the camera's default credentials (username: `admin`, password: *leave blank*).
-3.  You will be prompted to set a new, secure password for the camera. **Remember this password!**
-4.  Navigate to the **Network -> Basic** configuration page.
-5.  On the **TCP/IP** tab, configure the following:
-    1.  **Uncheck DHCP**. This will allow you to set a static IP.
-    2.  Manually change the **IP address**. It's best practice to assign them sequentially and outside the range the switch might use for DHCP. A good range is `192.168.1.51` to `192.168.1.100`. Assign each camera a unique IP (e.g., `.51`, `.52`, `.53`, ...).
-    3.  Check **CloudSEE1.0 Compatibility Mode**.
-    4.  Uncheck **Auto online/offline**.
-    5.  Uncheck **IP self-adaption**.
-    6.  Click **Lock IP** if available.
-    7.  Click **Save**. The camera may reboot.
-6.  Repeat this process for all cameras, giving each a unique, permanent IP address.
+1. Power on the NAS and connect it to the same switch.  
+2. Using a browser, visit `http://192.168.1.1:5000` to access the NAS login page.  
+   - If it does not appear, use the vendor’s discovery utility (e.g., Synology Assistant) or check the switch’s ARP table to locate its IP.  
+3. Log in with the NAS admin credentials.  
+4. Go to **Control Panel → Network → Network Interface.**  
+5. Edit the LAN interface and set:  
+   - **IP address:** `192.168.1.1`  
+   - **Subnet mask:** `255.255.255.0`  
+   - **Gateway / DNS:** (leave blank for isolated network)  
+6. Under **File Services**, enable **SMB** sharing.  
+   - Disable **SMB1** and ensure **SMB2/3** are enabled.  
+7. Create a shared folder for CBAS projects (e.g., `CBAS_Projects`, or another descriptive name).  
+8. Assign appropriate read/write permissions for the user account that CBAS will use (e.g., `labuser`, `cbas`, or your preferred account name).  
+9. On the CBAS computer, mount the NAS share permanently:  
+   ```powershell
+   net use Z: \\192.168.1.1\<YourShareName> /user:<YourUsername> "YourPasswordHere" /persistent:yes
+   ```  
+10. Verify the share is accessible:  
+    ```powershell
+    dir Z:\
+    ```  
 
 ---
 
-## 6. Configure Camera Video & Image Settings
+## 6. Discover and Set Camera Static IPs
 
-Once you can access each camera's web interface at its new static IP, you should configure the video stream and image settings for optimal recording with CBAS.
+Your cameras will initially get a random IP from the switch. Assign each a permanent, static IP to ensure consistency.
 
-*These are recommended settings, but you can adjust them for your specific needs.*
+### Step 6.1: Discover Initial IP Addresses
+Use **Advanced IP Scanner**:
+1. Set the scan range to `192.168.1.1–254` and click **Scan.**  
+2. You should see:  
+   - NAS (`192.168.1.1`)  
+   - Switch (`192.168.1.2`)  
+   - Computer (`192.168.1.30`)  
+   - Cameras (`192.168.1.51–100`)  
+3. Note the IP for each camera.  
 
-1.  **Video Stream (`Video and Audio -> Video Stream`):**
-    -   **Main Stream (used for analysis):**
-        -   **Codec:** H265
-        -   **FPS:** 10
-        -   **Quality:** Best
-        -   **Bitrate Control:** VBR (Variable Bitrate)
-        -   **Resolution:** 2304x1296 (or highest available)
-        -   **Bitrate:** 3072
-    -   **Sub Stream (used for live preview):**
-        -   **Codec:** H265
-        -   **FPS:** 10
-        -   **Quality:** Good
-        -   **Bitrate Control:** VBR
-        -   **Resolution:** 720x480
-        -   **Bitrate:** 256
-2.  **Audio Stream (`Video and Audio -> Audio Stream`):**
-    -   **Uncheck** "Enable audio stream".
-3.  **Image Settings (`Display -> Image`):**
-    -   **Brightness:** 100
-    -   **Contrast:** 100
-    -   **Saturation:** 0 (This creates a black and white image, which is ideal for IR recordings).
-    -   **Sharpness:** 128
-    -   **Mirror, Flip, SmartIR:** all **unchecked**.
-    -   **Image Style:** Standard
-4.  **Exposure Settings (`Display -> Exposure`):**
-    -   **Anti-Flicker:** Off
-    -   **Max exposure time:** 1/3 (Allows for maximum light sensitivity in dark conditions).
-    -   **Min exposure time:** 1/100000
-5.  **Day & Night Settings (`Display -> Day&Night`):**
-    -   **Switch mode:** Auto
-    -   **Sensitivity:** 4
-6.  **On-Screen Display (`Display -> OSD`):**
-    -   **Uncheck** all options (like Large Font, Name Position, Time Position) to disable the timestamp and camera name overlay. CBAS does not record this overlay, but disabling it ensures a clean stream.
-7.  **Disable Unused Features:**
-    -   `Privacy Mask`: Ensure "Enable privacy mask" is **unchecked**.
-    -   `Alarm -> Motion Detection`: Ensure "Enable motion" is **unchecked**.
-8.  Click **Save** after making changes in each section.
+### Step 6.2: Assign Static IPs
+1. Open the camera’s IP in a browser (e.g., `192.168.1.53`).  
+2. Log in (`admin`, *leave password blank*).  
+3. Set a new password.  
+4. Go to **Network → Basic → TCP/IP.**  
+5. Configure:  
+   - Uncheck **DHCP.**  
+   - Assign a unique IP in `192.168.1.51–192.168.1.100`.  
+   - Check **CloudSEE1.0 Compatibility Mode.**  
+   - Uncheck **Auto online/offline** and **IP self-adaption.**  
+   - Click **Lock IP** (if available).  
+   - Click **Save.**
 
 ---
 
-## 7. Final Verification
+## 7. Configure Camera Video & Image Settings
 
-Before proceeding to use the cameras in CBAS, do a final check.
+Once IPs are stable, configure the video parameters for CBAS:
 
-1.  Run **Advanced IP Scanner** again on the `192.168.1.1-254` range. Verify that all your cameras appear with their new, permanent static IPs.
-2.  Open **VLC Media Player** and test a camera stream.
-    -   Go to `Media -> Open Network Stream`.
-    -   Enter the camera's URL in the format `rtsp://<username>:<password>@<camera_ip_address>:8554/profile0`.
-    -   Example: `rtsp://admin:MySecurePwd@192.168.1.51:8554/profile0`
-    -   Click Play. You should see a live video feed.
+**Main Stream (analysis):**
+- Codec: H265  
+- FPS: 10  
+- Quality: Best  
+- Bitrate Control: VBR  
+- Resolution: 2304×1296  
+- Bitrate: 3072  
 
-Your hardware and network are now fully configured and ready to be used with the CBAS software.
+**Sub Stream (live preview):**
+- Codec: H265  
+- FPS: 10  
+- Quality: Good  
+- Bitrate Control: VBR  
+- Resolution: 720×480  
+- Bitrate: 256  
+
+Disable nonessential features:
+- Uncheck **Enable audio stream.**  
+- Disable overlays in **OSD.**  
+- Uncheck **Enable privacy mask.**  
+- Uncheck **Enable motion detection.**
+
+---
+
+## 8. Final Verification
+
+Before recording in CBAS, confirm that the network is stable and isolated.
+
+1. **Scan the subnet:**  
+   Run **Advanced IP Scanner** on `192.168.1.1–254` and verify all expected devices appear.  
+2. **Test a camera stream in VLC:**  
+   ```
+   rtsp://admin:password@192.168.1.51:8554/profile0
+   ```  
+3. **Confirm NAS access:**  
+   ```powershell
+   dir Z:\
+   ```  
+   Ensure you can see your CBAS project directory.  
+4. **Check routing priority:**  
+   ```powershell
+   Get-NetRoute -DestinationPrefix 192.168.1.0/24
+   ```  
+   Verify the Ethernet interface (not Wi-Fi) has the lowest metric.  
+5. **Optional troubleshooting:**  
+   If CBAS cannot detect cameras or NAS, temporarily disable Wi-Fi and ensure the switch (`192.168.1.2`) responds to:  
+   ```powershell
+   ping 192.168.1.2
+   ```  
+
+Your hardware and network are now fully configured and NAS-integrated for CBAS recording and analysis.
