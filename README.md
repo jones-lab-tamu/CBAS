@@ -178,7 +178,7 @@ The `JonesLabModel` is a **legacy CBAS v2 model**. It uses a different model hea
 Attempting to load it directly in CBAS v3 will result in **shape mismatch** or **“too many values to unpack”** errors.
 
 Most users should **not** copy or attempt to use this model in new projects.  
-If you want a working demonstration, train a small v3 model on your own labeled data or use a **v3-compatible demo model** if provided.
+If you want a working demonstration, train a small v3 model on your own labeled data or use a **v3-compatible demo model** if provided [to do: upload a v3 demo model plus demo videos to run it on!]
 
 #### For Advanced Users Only
 If you fully understand the v2 model structure and still wish to explore it:
