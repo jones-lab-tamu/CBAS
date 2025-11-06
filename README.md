@@ -170,15 +170,25 @@ The documentation is organized to follow the logical workflow of a typical proje
 	
 ### Optional: Using the Default `JonesLabModel`
 
-CBAS includes a pre-trained model, the `JonesLabModel`, which can serve as a demonstration or as a starting point for the "Guided Labeling" workflow. Please be aware that this model was trained on a specific hardware and environmental setup, and its performance will vary on your own data.
+CBAS includes a pre-trained model, the `JonesLabModel`, which was originally developed for the **Guided Labeling** workflow. It was trained under tightly controlled conditions using Jones Lab’s own recording hardware and lighting environment. Performance on your own data will vary substantially.
 
-This model is not loaded by default. To use it in your project:
+#### Important Compatibility Notice
+The `JonesLabModel` is a **legacy CBAS v2 model**. It uses a different model head, parameter dimensions, and encoder configuration than CBAS v3.  
+**It is not compatible with CBAS v3 inference without manual conversion.**  
+Attempting to load it directly in CBAS v3 will result in **shape mismatch** or **“too many values to unpack”** errors.
 
-1.  **Locate the Model:** Find the `JonesLabModel` folder inside the application's source code directory (it is located at `CBAS/models/JonesLabModel`).
-2.  **Copy to Your Project:** Copy this entire `JonesLabModel` folder.
-3.  **Paste into Your Project:** Paste the folder into your own project's `models/` directory.
+Most users should **not** copy or attempt to use this model in new projects.  
+If you want a working demonstration, train a small v3 model on your own labeled data or use a **v3-compatible demo model** if provided.
 
-The next time you open the "Label/Train" page or click the "Refresh Datasets" button, the `JonesLabModel` card will appear, and it will be available for inference.
+#### For Advanced Users Only
+If you fully understand the v2 model structure and still wish to explore it:
+
+1. **Locate the model:** Find the `JonesLabModel` folder inside the source directory (`CBAS/models/JonesLabModel`).
+2. **Copy to your project:** Copy the entire folder.
+3. **Paste into your project:** Paste it into your project’s `models/` directory.
+
+When you next open the **Label/Train** page or click **Refresh Datasets**, the `JonesLabModel` card will appear.  
+*Note: This model will only function correctly under CBAS v2 or a v3 installation explicitly adapted for legacy support.*
 
 ### Advanced: Using Experimental Encoder Models
 
