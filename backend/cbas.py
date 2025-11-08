@@ -2,6 +2,7 @@
 Core backend logic and data models for the CBAS application.
 This version uses the proven v2-stable logic for recording.
 """
+from __future__ import annotations
 
 # Standard library imports
 import os
@@ -18,6 +19,7 @@ import re
 import threading
 import json
 from collections import defaultdict
+import atexit
 
 # Third-party imports
 import cv2
@@ -39,11 +41,251 @@ from scipy.signal import medfilt
 # Local application imports
 import classifier_head
 import gui_state
-from subprocess import Popen, PIPE, DEVNULL 
+from subprocess import Popen, PIPE, DEVNULL
 import sys
 from backend.splits import RandomSplitProvider
 
 CHUNK_SIZE = 512
+
+# =========================================================================
+# LAZY DATA LOADING IMPLEMENTATION (PHASE 1 & 3 REFACTOR)
+# =========================================================================
+
+# This dictionary will be created as a fresh, empty dict in each DataLoader
+# worker process. It is not shared between them. It caches open H5 file handles.
+_worker_h5_handles = {}
+
+def _cleanup_worker_handles():
+    """Function to be called when a worker process exits to close H5 files."""
+    for handle in _worker_h5_handles.values():
+        try:
+            handle.close()
+        except Exception:
+            pass # Ignore errors on close, the process is terminating anyway
+    _worker_h5_handles.clear()
+
+def worker_init_fn(worker_id):
+    """Initializes a DataLoader worker by registering the cleanup function."""
+    atexit.register(_cleanup_worker_handles)
+
+def _validate_lazy_vs_eager(project_root_path, instances_subset, seq_len, behaviors):
+    """
+    A debug function to compare the output of the old eager loading method
+    with the new lazy loading method to ensure byte-level equivalence.
+    """
+    print(f"Validating on a subset of {len(instances_subset)} instances...")
+    half_seqlen = seq_len // 2
+
+    # --- 1. Eager Path (Old Logic, re-implemented for validation) ---
+    eager_seqs = []
+    eager_labels = []
+    eager_instances_by_video = defaultdict(list)
+    for inst in instances_subset:
+        eager_instances_by_video[inst.get("video")].append(inst)
+
+    for relative_video_path, video_instances in eager_instances_by_video.items():
+        absolute_video_path = os.path.join(project_root_path, relative_video_path)
+        cls_path = os.path.splitext(absolute_video_path)[0] + "_cls.h5"
+        if not os.path.exists(cls_path): continue
+        try:
+            with h5py.File(cls_path, "r") as f: cls_arr = f["cls"][:]
+        except Exception: continue
+        if cls_arr.ndim < 2 or cls_arr.shape[0] < seq_len: continue
+        
+        for inst in video_instances:
+            start, end = int(inst.get("start", -1)), int(inst.get("end", -1))
+            if start == -1 or end == -1: continue
+            try:
+                label_index = behaviors.index(inst["label"].strip())
+            except ValueError: continue
+
+            for frame_idx in range(start, end + 1):
+                window_start, window_end = frame_idx - half_seqlen, frame_idx + half_seqlen + 1
+                if window_start < 0 or window_end > cls_arr.shape[0]: continue
+                window = cls_arr[window_start:window_end]
+                if window.shape[0] != seq_len: continue
+                eager_seqs.append(torch.from_numpy(window).float())
+                eager_labels.append(torch.tensor(label_index).long())
+
+    # --- 2. Lazy Path (New Logic) ---
+    lazy_manifest = []
+    lazy_instances_by_video = defaultdict(list)
+    for inst in instances_subset:
+        lazy_instances_by_video[inst.get("video")].append(inst)
+    
+    for relative_video_path, video_instances in lazy_instances_by_video.items():
+        absolute_video_path = os.path.join(project_root_path, relative_video_path)
+        cls_path = os.path.splitext(absolute_video_path)[0] + "_cls.h5"
+        if not os.path.exists(cls_path): continue
+        try:
+            with h5py.File(cls_path, "r") as f: num_frames = f["cls"].shape[0]
+        except Exception: continue
+        if num_frames < seq_len: continue
+        
+        for inst in video_instances:
+            start, end = int(inst.get("start", -1)), int(inst.get("end", -1))
+            if start == -1 or end == -1: continue
+            try:
+                label_index = behaviors.index(inst["label"].strip())
+            except ValueError: continue
+            for frame_idx in range(start, end + 1):
+                if (frame_idx - half_seqlen >= 0) and (frame_idx + half_seqlen < num_frames):
+                    lazy_manifest.append((cls_path, frame_idx, label_index))
+
+    # --- 3. Comparison ---
+    if len(eager_seqs) != len(lazy_manifest):
+        raise ValueError(f"Mismatch in number of examples: Eager={len(eager_seqs)}, Lazy={len(lazy_manifest)}")
+
+    print(f"Generated {len(eager_seqs)} windows for comparison. Checking for equivalence...")
+
+    h5_handles = {}
+    try:
+        for i in range(len(lazy_manifest)):
+            eager_tensor, eager_label = eager_seqs[i], eager_labels[i]
+
+            h5_path, center_frame, label_index = lazy_manifest[i]
+            if h5_path not in h5_handles:
+                h5_handles[h5_path] = h5py.File(h5_path, 'r')
+            h5_file = h5_handles[h5_path]
+            
+            window_start = center_frame - half_seqlen
+            window_end = center_frame + half_seqlen + 1
+            window_data = h5_file['cls'][window_start:window_end]
+            lazy_tensor = torch.from_numpy(window_data).float()
+            lazy_label = torch.tensor(label_index).long()
+
+            if not torch.equal(eager_tensor, lazy_tensor) or not torch.equal(eager_label, lazy_label):
+                raise ValueError(f"Data mismatch at index {i} for window centered at frame {center_frame} in {h5_path}")
+    finally:
+        for handle in h5_handles.values():
+            handle.close()
+
+    print("Validation successful: All generated tensors are byte-for-byte identical.")
+
+
+class LazyStandardDataset(torch.utils.data.Dataset):
+    """
+    A lazy-loading PyTorch Dataset. It stores a manifest of "pointers" to
+    data windows and only loads a window from disk when requested by __getitem__.
+    """
+    def __init__(self, manifest: list, seq_len: int):
+        self.manifest = manifest
+        self.seq_len = seq_len
+        self.half_seqlen = seq_len // 2
+
+    def __len__(self):
+        return len(self.manifest)
+
+    def __getitem__(self, idx):
+        # 1. Get the pointer for this specific training example
+        h5_path, center_frame, label_index = self.manifest[idx]
+
+        # 2. Use the process-local dictionary to get/cache the H5 file handle
+        if h5_path not in _worker_h5_handles:
+            try:
+                # Open the file in read-only mode and cache the handle
+                _worker_h5_handles[h5_path] = h5py.File(h5_path, 'r')
+            except Exception as e:
+                # If a file is corrupt or missing, this prevents a crash.
+                # We return a dummy tensor that can be filtered out later.
+                print(f"WORKER-ERROR: Could not open H5 file {h5_path}. {e}")
+                return torch.zeros(self.seq_len, 768), torch.tensor(-1).long()
+        
+        h5_file = _worker_h5_handles[h5_path]
+
+        # 3. Read ONLY the required slice of data from disk
+        window_start = center_frame - self.half_seqlen
+        window_end = center_frame + self.half_seqlen + 1
+        
+        try:
+            window_data = h5_file['cls'][window_start:window_end]
+            
+            # 4. Convert to tensor and return
+            window_tensor = torch.from_numpy(window_data).float()
+            
+            # Defensive check for corrupted data reads
+            if window_tensor.shape[0] != self.seq_len:
+                 return torch.zeros(self.seq_len, 768), torch.tensor(-1).long()
+
+            return window_tensor, torch.tensor(label_index).long()
+        except Exception as e:
+            print(f"WORKER-ERROR: Could not read slice from {h5_path}. {e}")
+            return torch.zeros(self.seq_len, 768), torch.tensor(-1).long()
+
+
+class LazyBalancedDataset(torch.utils.data.Dataset):
+    """
+    A lazy-loading version of the BalancedDataset. It buckets the *indices*
+    of the manifest, not the tensors themselves, and uses LazyStandardDataset's
+    __getitem__ logic to load data on the fly.
+    """
+    def __init__(self, manifest: list, seq_len: int, behaviors: list):
+        self.manifest = manifest
+        self.seq_len = seq_len
+        self.behaviors = behaviors
+        self.num_behaviors = len(behaviors)
+        self.half_seqlen = seq_len // 2
+
+        # Bucket the indices of the manifest, not the data itself
+        self.buckets = {b: [] for b in self.behaviors}
+        for i, (_, _, label_index) in enumerate(manifest):
+            if 0 <= label_index < self.num_behaviors:
+                behavior_name = self.behaviors[label_index]
+                self.buckets[behavior_name].append(i)
+        
+        self.available_behaviors = [b for b in self.behaviors if self.buckets[b]]
+        self.num_available_behaviors = len(self.available_behaviors)
+
+        self.total_sequences = len(manifest)
+        self.counter = 0
+
+    def __len__(self):
+        if self.num_available_behaviors == 0: return 0
+        # This logic ensures the length is a multiple of the number of available classes,
+        # which helps the sampler see each class roughly equally.
+        return self.total_sequences + (self.num_available_behaviors - self.total_sequences % self.num_available_behaviors) % self.num_available_behaviors
+
+    def __getitem__(self, idx: int):
+        if self.num_available_behaviors == 0:
+            raise IndexError("No behaviors with samples available in this dataset split.")
+
+        # Oversampling logic: pick a behavior class to sample from
+        b_idx_in_available = self.counter % self.num_available_behaviors
+        b_name = self.available_behaviors[b_idx_in_available]
+        self.counter += 1
+        
+        # Get the list of manifest indices for the chosen behavior
+        indices_for_behavior = self.buckets[b_name]
+        
+        # Pick a random sample from that list
+        manifest_idx = indices_for_behavior[idx % len(indices_for_behavior)]
+        
+        # --- The rest is identical to LazyStandardDataset.__getitem__ ---
+        h5_path, center_frame, label_index = self.manifest[manifest_idx]
+
+        if h5_path not in _worker_h5_handles:
+            try:
+                _worker_h5_handles[h5_path] = h5py.File(h5_path, 'r')
+            except Exception as e:
+                print(f"WORKER-ERROR: Could not open H5 file {h5_path}. {e}")
+                return torch.zeros(self.seq_len, 768), torch.tensor(-1).long()
+        
+        h5_file = _worker_h5_handles[h5_path]
+
+        window_start = center_frame - self.half_seqlen
+        window_end = center_frame + self.half_seqlen + 1
+        
+        try:
+            window_data = h5_file['cls'][window_start:window_end]
+            window_tensor = torch.from_numpy(window_data).float()
+            if window_tensor.shape[0] != self.seq_len:
+                 return torch.zeros(self.seq_len, 768), torch.tensor(-1).long()
+            return window_tensor, torch.tensor(label_index).long()
+        except Exception as e:
+            print(f"WORKER-ERROR: Could not read slice from {h5_path}. {e}")
+            return torch.zeros(self.seq_len, 768), torch.tensor(-1).long()
+
+# =========================================================================
 
 def _reflect_indices(idx: np.ndarray, N: int) -> np.ndarray:
     """Helper to safely reflect indices for padding."""
@@ -57,14 +299,11 @@ def _reflect_indices(idx: np.ndarray, N: int) -> np.ndarray:
 
 ### DATA LOADING ###
 
-# This is the per-worker, thread-local HDF5 file handle cache.
-# It ensures that each DataLoader worker manages its own file handles safely.
-_worker_state = threading.local()
-
 def create_datasets_from_splits(project, dataset_name: str, train_subjects: list, val_subjects: list, test_subjects: list, seq_len: int):
     """
     Creates PyTorch datasets from pre-defined lists of subject IDs.
     This is the core data handling function used by both GUI and headless runs.
+    (REFACTORED FOR LAZY LOADING AND VALIDATION)
     """
     dataset = project.datasets.get(dataset_name)
     if not dataset:
@@ -81,17 +320,33 @@ def create_datasets_from_splits(project, dataset_name: str, train_subjects: list
     val_insts = get_insts_for_subjects(val_subjects)
     test_insts = get_insts_for_subjects(test_subjects)
     
-    random.shuffle(train_insts)
-    random.shuffle(val_insts)
-    random.shuffle(test_insts)
+    # --- START OF PHASE 3 VALIDATION LOGIC ---
+    if os.environ.get('CBAS_VALIDATE_LAZY_LOADER') == '1':
+        print("--- RUNNING LAZY LOADER VALIDATION ---")
+        try:
+            # Pass a small subset of train_insts to the validation function
+            _validate_lazy_vs_eager(
+                project.path,
+                train_insts[:100], # Limit to first 100 instances for speed
+                seq_len,
+                behaviors
+            )
+            print("--- LAZY LOADER VALIDATION PASSED ---")
+        except Exception as e:
+            print(f"--- FATAL: LAZY LOADER VALIDATION FAILED: {e} ---")
+            traceback.print_exc()
+            raise e # Re-raise to stop the training process
+    # --- END OF PHASE 3 VALIDATION LOGIC ---
 
-    train_seqs, train_labels = project.convert_instances(project.path, train_insts, seq_len, behaviors)
-    val_seqs, val_labels = project.convert_instances(project.path, val_insts, seq_len, behaviors)
-    test_seqs, test_labels = project.convert_instances(project.path, test_insts, seq_len, behaviors)
+    # Generate the lightweight manifests (lists of pointers)
+    train_manifest = project.convert_instances(project.path, train_insts, seq_len, behaviors)
+    val_manifest = project.convert_instances(project.path, val_insts, seq_len, behaviors)
+    test_manifest = project.convert_instances(project.path, test_insts, seq_len, behaviors)
 
-    train_ds = BalancedDataset(train_seqs, train_labels, behaviors) if train_seqs else None
-    val_ds = StandardDataset(val_seqs, val_labels) if val_seqs else None
-    test_ds = StandardDataset(test_seqs, test_labels) if test_seqs else None
+    # Instantiate the new lazy dataset classes
+    train_ds = LazyBalancedDataset(train_manifest, seq_len, behaviors) if train_manifest else None
+    val_ds = LazyStandardDataset(val_manifest, seq_len) if val_manifest else None
+    test_ds = LazyStandardDataset(test_manifest, seq_len) if test_manifest else None
 
     return train_ds, val_ds, test_ds, train_insts, val_insts, test_insts, behaviors
 
@@ -102,74 +357,25 @@ def compute_class_weights_from_instances(
 ):
     """
     Compute per-class weights based on training instance counts.
-    
-    Args:
-        train_insts (list): A list of training instances, where each inst has a
-                            'label' field corresponding to a behavior.
-        behaviors (list): List of all behavior class names (str).
-        epsilon (float): Small constant to assign weight to zero-count classes.
-
-    Returns:
-        torch.Tensor: Normalized weight tensor of shape (num_classes,).
     """
-    # Count frequency of each behavior
     counts = {b: 0 for b in behaviors}
     for inst in train_insts:
         lbl = inst.get("label")
         if lbl in counts:
             counts[lbl] += 1
 
-    # Convert counts to weights (inverse frequency)
     raw_weights = []
     for b in behaviors:
         c = counts[b]
         if c == 0:
-            raw_weights.append(1.0 / epsilon)   # rare class gets big weight
+            raw_weights.append(1.0 / epsilon)
         else:
             raw_weights.append(1.0 / c)
 
-    # Normalize weights so they sum to num_classes
     weights = np.array(raw_weights, dtype=np.float32)
     weights = weights / weights.sum() * len(behaviors)
 
     return torch.tensor(weights, dtype=torch.float32)
-
-class StandardDataset(torch.utils.data.Dataset):
-    def __init__(self, sequences, labels): self.sequences, self.labels = sequences, labels
-    def __len__(self): return len(self.sequences)
-    def __getitem__(self, idx): return self.sequences[idx], self.labels[idx]
-
-class BalancedDataset(torch.utils.data.Dataset):
-    def __init__(self, sequences: list, labels: list, behaviors: list):
-        self.behaviors, self.num_behaviors = behaviors, len(behaviors)
-        self.buckets = {b: [] for b in self.behaviors}
-        for seq, label in zip(sequences, labels):
-            if 0 <= label.item() < self.num_behaviors:
-                self.buckets[self.behaviors[label.item()]].append(seq)
-        
-        self.available_behaviors = [b for b in self.behaviors if self.buckets[b]]
-        self.num_available_behaviors = len(self.available_behaviors)
-
-        self.total_sequences = sum(len(b) for b in self.buckets.values())
-        self.counter = 0
-        
-    def __len__(self):
-        if self.num_available_behaviors == 0: return 0
-        return self.total_sequences + (self.num_available_behaviors - self.total_sequences % self.num_available_behaviors) % self.num_available_behaviors
-        
-    def __getitem__(self, idx: int):
-        if self.num_available_behaviors == 0:
-            raise IndexError("No behaviors with samples available in this dataset split.")
-
-        b_idx_in_available = self.counter % self.num_available_behaviors
-        b_name = self.available_behaviors[b_idx_in_available]
-        
-        original_b_idx = self.behaviors.index(b_name)
-        
-        self.counter += 1
-        
-        sample_idx = idx % len(self.buckets[b_name])
-        return self.buckets[b_name][sample_idx], torch.tensor(original_b_idx).long()
     
 class InvalidProject(Exception):
     def __init__(self, path):
@@ -187,14 +393,13 @@ def encode_file(encoder: nn.Module, path: str, progress_callback=None) -> str | 
         return None
 
     out_file_path = os.path.splitext(path)[0] + "_cls.h5"
-    tmp_file_path = out_file_path + ".tmp"  # Write to a temporary file first
+    tmp_file_path = out_file_path + ".tmp"
 
     try:
         with h5py.File(tmp_file_path, "w") as h5f:
             if gui_state.proj:
                 h5f.attrs['encoder_model_identifier'] = gui_state.proj.encoder_model_identifier
                 h5f.attrs['schema_version'] = "1.0"
-                # Add video-specific metadata if needed
             
             dset = h5f.create_dataset(
                 "cls", shape=(0, 768), maxshape=(None, 768),
@@ -218,9 +423,8 @@ def encode_file(encoder: nn.Module, path: str, progress_callback=None) -> str | 
                     dset.resize(dset.shape[0] + len(embeddings_out), axis=0)
                     dset[-len(embeddings_out):] = embeddings_out
 
-                h5f.flush()  # Ensure all data is written
+                h5f.flush()
 
-        # <-- at this point h5f is closed
         os.replace(tmp_file_path, out_file_path)
 
         print(f"Successfully encoded {os.path.basename(path)} to {os.path.basename(out_file_path)}")
@@ -243,7 +447,6 @@ def infer_file(
 ) -> str | None:
     """
     Runs inference on a single HDF5 file and saves the results to a CSV.
-    This version is updated to be compatible with the final model API.
     """
     output_file = file_path.replace("_cls.h5", f"_{dataset_name}_outputs.csv")
     try:
@@ -258,16 +461,14 @@ def infer_file(
         return None
 
     cls_np_f32 = cls_np.astype(np.float32)
-    cls = torch.from_numpy(cls_np_f32)  # No need to mean-center here, model does it
+    cls = torch.from_numpy(cls_np_f32)
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Ensure model is on same device as input tensors
     param = next(model.parameters(), None)
     if param is not None and param.device != device:
         model = model.to(device)
 
-    # The calling function (ClassificationThread.run) is responsible for setting model.eval()
     predictions, batch_windows = [], []
     half_seqlen = seq_len // 2
     for i in range(half_seqlen, len(cls) - half_seqlen):
@@ -370,6 +571,10 @@ def _create_matplotlib_actogram(binned_activity, light_cycle_booleans, tau, bin_
     fig.tight_layout()
     return fig
 
+# =========================================================================
+# CORE DATA MODEL CLASSES (RESTORED AND REORDERED)
+# =========================================================================
+
 class DinoEncoder(nn.Module):
     def __init__(self, model_identifier: str, device="cuda"):
         super().__init__()
@@ -379,7 +584,6 @@ class DinoEncoder(nn.Module):
         try:
             self.model = transformers.AutoModel.from_pretrained(model_identifier).to(self.device)
         except Exception as e:
-            # Provide a helpful error message to the user via the log
             from workthreads import log_message
             log_message("--- MODEL LOADING FAILED ---", "ERROR")
             log_message(f"Could not load the encoder model: '{model_identifier}'.", "ERROR")
@@ -388,7 +592,6 @@ class DinoEncoder(nn.Module):
             log_message("2. Agreed to the model's terms of use on its Hugging Face page.", "ERROR")
             log_message("3. Installed the latest version of 'transformers' from source if required.", "ERROR")
             log_message(f"Original error: {e}", "ERROR")
-            # Re-raise the exception to stop the application startup
             raise e
 
         self.model.eval()
@@ -421,23 +624,17 @@ class Recording:
         for csv_file_path in [f for f in all_files if f.endswith(".csv")]:
             base_name = os.path.basename(csv_file_path)
             
-            # Ensure the file is a classification output file
             if base_name.endswith("_outputs.csv"):
-                # Isolate the part of the filename that contains the video name and model name
-                # e.g., "OVX1_00045_cbas_aug" from "OVX1_00045_cbas_aug_outputs.csv"
-                name_part = base_name[:-12] # len("_outputs.csv") is 12
+                name_part = base_name[:-12]
                 
-                # Find which video file this CSV corresponds to by checking prefixes
                 matched_video_base = None
                 for vf in self.video_files:
                     vf_base = os.path.splitext(os.path.basename(vf))[0]
                     if name_part.startswith(vf_base):
-                        # We found a match, e.g., "OVX1_00045_cbas_aug" starts with "OVX1_00045"
                         matched_video_base = vf_base
                         break
                 
                 if matched_video_base:
-                    # The model name is what's left after removing the video name and the connecting underscore
                     model_name = name_part[len(matched_video_base) + 1:]
                     self.classifications.setdefault(model_name, []).append(csv_file_path)
 
@@ -468,17 +665,14 @@ class Camera:
         self.crop_width = float(settings.get("crop_width", 1.0))
         self.crop_height = float(settings.get("crop_height", 1.0))
 
-        # This ensures we always have the high-quality stream URL available,
-        # regardless of what the user entered.
         if "/profile1" in self.rtsp_url:
             self.profile0_url = self.rtsp_url.replace("/profile1", "/profile0")
         else:
-            self.profile0_url = self.rtsp_url # Assume it's already profile0 or a different URL structure
+            self.profile0_url = self.rtsp_url
 
         if write_to_disk: self.write_settings_to_config()
 
     def write_settings_to_config(self):
-        """Saves the current camera object's settings to its config.yaml file."""
         with open(os.path.join(self.path, "config.yaml"), "w") as file:
             yaml.dump(self.settings_to_dict(), file, allow_unicode=True)
 
@@ -508,7 +702,7 @@ class Camera:
         command = [
             'ffmpeg', '-hide_banner', '-loglevel', 'warning',
             '-rtsp_transport', 'tcp', '-timeout', '15000000',
-            '-stream_loop', '-1', # Using the most stable flag for your ffmpeg version
+            '-stream_loop', '-1',
             '-i', recording_url,
             '-vf', filter_string, '-r', str(self.framerate), '-an', '-c:v', 'libx264',
             '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-g', str(self.framerate * 2),
@@ -526,7 +720,6 @@ class Camera:
                 command, stdin=PIPE, stdout=DEVNULL, stderr=ffmpeg_log_file,
                 shell=False, creationflags=creation_flags
             )
-            # Store the process, start time, AND session name for restarts
             self.project.active_recordings[self.name] = (process, time.time(), session_name)
             return True
         except Exception as e:
@@ -535,7 +728,7 @@ class Camera:
             
     def stop_recording(self) -> bool:
         if self.name in self.project.active_recordings:
-            process, _, _ = self.project.active_recordings.pop(self.name) # Unpack the 3-item tuple
+            process, _, _ = self.project.active_recordings.pop(self.name)
             try:
                 if process.stdin:
                     process.stdin.write(b'q')
@@ -546,24 +739,19 @@ class Camera:
                 print(f"Error while stopping process for {self.name}: {e}. Killing process.")
                 process.kill()
 
-            # After stopping, find the very last created video file and queue it.
-            # This ensures the final piece of the recording is always processed.
             try:
-                # Check if a session name has been set
                 if self.project.current_session_name:
                     camera_folder = os.path.join(self.project.recordings_dir, self.project.current_session_name, self.name)
                     if os.path.isdir(camera_folder):
-                        # Find all .mp4 files and get the one with the latest modification time.
                         video_files = [os.path.join(camera_folder, f) for f in os.listdir(camera_folder) if f.endswith('.mp4')]
                         if video_files:
                             latest_file = max(video_files, key=os.path.getmtime)
                             with gui_state.encode_lock:
                                 if latest_file not in gui_state.encode_tasks:
                                     gui_state.encode_tasks.append(latest_file)
-                                    from workthreads import log_message # Local import to avoid circular dependency
+                                    from workthreads import log_message
                                     log_message(f"Queued final segment on stop: '{os.path.basename(latest_file)}'", "INFO")
             except Exception as e:
-                # Use a local import here too to be safe
                 from workthreads import log_message
                 log_message(f"Could not queue final segment for {self.name}: {e}", "ERROR")
 
@@ -614,12 +802,9 @@ class Dataset:
         all_subjects = list(set(os.path.dirname(inst['video']) for inst in all_instances))
         behaviors = self.config.get("behaviors", [])
 
-        # Use the RandomSplitProvider to get a typical 80/20 split for counting purposes.
-        # We use a fixed seed for consistent counting results between saves.
         provider = RandomSplitProvider(seed=42, split_ratios=(0.8, 0.0, 0.2), stratify=False)
         train_subjects, _, test_subjects = provider.get_split(0, all_subjects, all_instances, behaviors)
 
-        # Filter instances based on the subject lists directly, avoiding code duplication.
         train_subject_set = set(train_subjects)
         test_subject_set = set(test_subjects)
         train_insts = [inst for inst in all_instances if os.path.dirname(inst['video']) in train_subject_set]
@@ -715,13 +900,11 @@ class Actogram:
 
         activity_per_frame = []
         
-        # Use preloaded_df if available 
         if preloaded_df is not None:
             if self.behavior in preloaded_df.columns:
                 probs = preloaded_df[self.behavior].to_numpy()
                 is_max = (preloaded_df[preloaded_df.columns.drop(self.behavior)].max(axis=1) < probs).to_numpy()
                 activity_per_frame.extend((probs * is_max >= self.threshold).astype(float).tolist())
-        # Original logic if no preloaded_df
         elif directory and model:
             all_csvs_for_model = [os.path.join(directory, f) for f in os.listdir(directory) if f.endswith(f"_{model}_outputs.csv")]
             if not all_csvs_for_model: return
@@ -737,12 +920,10 @@ class Actogram:
                 is_max = (df[df.columns.drop(self.behavior)].max(axis=1) < probs).to_numpy()
                 activity_per_frame.extend((probs * is_max >= self.threshold).astype(float).tolist())
         else:
-             # Not enough information to proceed
              return
             
         if not activity_per_frame: return
         
-        # Binning and plotting
         self.binned_activity = [np.sum(activity_per_frame[i:i + self.binsize_frames]) for i in range(0, len(activity_per_frame), self.binsize_frames)]
         if not self.binned_activity: return
         fig = _create_matplotlib_actogram(self.binned_activity, [c=="1" for c in self.lightcycle_str], 24.0, self.bin_size_minutes, f"{model} - {behavior}", self.start_hour_on_plot, self.plot_acrophase, base_color)
@@ -753,109 +934,7 @@ class Actogram:
             self.blob = base64.b64encode(buf.read()).decode('utf-8')
             plt.close(fig)
 
-class StandardDataset(torch.utils.data.Dataset):
-    def __init__(self, sequences, labels): self.sequences, self.labels = sequences, labels
-    def __len__(self): return len(self.sequences)
-    def __getitem__(self, idx): return self.sequences[idx], self.labels[idx]
-
-class BalancedDataset(torch.utils.data.Dataset):
-    def __init__(self, sequences: list, labels: list, behaviors: list):
-        self.behaviors, self.num_behaviors = behaviors, len(behaviors)
-        self.buckets = {b: [] for b in self.behaviors}
-        for seq, label in zip(sequences, labels):
-            if 0 <= label.item() < self.num_behaviors:
-                self.buckets[self.behaviors[label.item()]].append(seq)
-        
-        # Filter out behaviors that have no samples to prevent errors.
-        self.available_behaviors = [b for b in self.behaviors if self.buckets[b]]
-        self.num_available_behaviors = len(self.available_behaviors)
-
-        self.total_sequences = sum(len(b) for b in self.buckets.values())
-        self.counter = 0
-        
-    def __len__(self):
-        # Base the length on the number of *available* behaviors.
-        if self.num_available_behaviors == 0: return 0
-        return self.total_sequences + (self.num_available_behaviors - self.total_sequences % self.num_available_behaviors) % self.num_available_behaviors
-        
-    def __getitem__(self, idx: int):
-        if self.num_available_behaviors == 0:
-            raise IndexError("No behaviors with samples available in this dataset split.")
-
-        # Cycle through only the behaviors that actually have samples.
-        b_idx_in_available = self.counter % self.num_available_behaviors
-        b_name = self.available_behaviors[b_idx_in_available]
-        
-        # Get the original index of this behavior to return the correct label tensor.
-        original_b_idx = self.behaviors.index(b_name)
-        
-        self.counter += 1
-        
-        # The original check is now implicitly handled by the loop.
-        # This line is no longer needed: if not self.buckets[b_name]: raise IndexError(f"Behavior '{b_name}' has no samples.")
-        
-        sample_idx = idx % len(self.buckets[b_name])
-        return self.buckets[b_name][sample_idx], torch.tensor(original_b_idx).long()
-
 class Project:
-    def convert_instances(self, project_root_path: str, insts: list, seq_len: int, behaviors: list, progress_callback=None) -> tuple:
-        seqs, labels = [], []
-        half_seqlen = seq_len // 2
-        instances_by_video = {}
-        for inst in insts:
-            video_path = inst.get("video")
-            if video_path: instances_by_video.setdefault(video_path, []).append(inst)
-        total_videos = len(instances_by_video)
-        for i, (relative_video_path, video_instances) in enumerate(instances_by_video.items()):
-            if progress_callback: progress_callback((i + 1) / total_videos * 100)
-            absolute_video_path = os.path.join(project_root_path, relative_video_path)
-            cls_path = os.path.splitext(absolute_video_path)[0] + "_cls.h5"
-            if not os.path.exists(cls_path):
-                print(f"Warning: H5 file not found, skipping instances for {relative_video_path}")
-                continue
-            try:
-                with h5py.File(cls_path, "r") as f: cls_arr = f["cls"][:]
-            except Exception as e:
-                print(f"Warning: Could not read H5 file {cls_path}: {e}")
-                continue
-            if cls_arr.ndim < 2 or cls_arr.shape[0] < seq_len: continue
-            
-            # The new ClassifierLSTMDeltas model does not require external mean-centering.
-            # This line was a vestige of the older model and has been removed to prevent train/serve skew.
-            # cls_centered = cls_arr - np.mean(cls_arr, axis=0)
-            
-            for inst in video_instances:
-                start = int(inst.get("start", -1))
-                end = int(inst.get("end", -1))
-                if start == -1 or end == -1: continue
-                
-                valid_start = start
-                valid_end = end
-
-                for frame_idx in range(valid_start, valid_end + 1):
-                    window_start = frame_idx - half_seqlen
-                    window_end = frame_idx + half_seqlen + 1
-                    
-                    if window_start < 0: continue
-                    if window_end > cls_arr.shape[0]: continue
-                                        
-                    window = cls_arr[window_start:window_end]
-                    if window.shape[0] != seq_len: continue
-                    
-                    try:
-                        label_index = behaviors.index(inst["label"].strip())
-                        seqs.append(torch.from_numpy(window).float())
-                        labels.append(torch.tensor(label_index).long())
-                    except ValueError:
-                        print(f"WARNING: The label '{inst['label']}' in video '{inst['video']}' is not in the master behavior list. This instance will be SKIPPED.")
-
-        if not seqs: return [], []
-        shuffled_pairs = list(zip(seqs, labels))
-        random.shuffle(shuffled_pairs)
-        seqs, labels = zip(*shuffled_pairs)
-        return list(seqs), list(labels)
-
-           
     def __init__(self, path: str):
         if not os.path.isdir(path): raise InvalidProject(path)
         self.path = path
@@ -866,8 +945,6 @@ class Project:
         for subdir in [self.cameras_dir, self.recordings_dir, self.models_dir, self.datasets_dir]:
             os.makedirs(subdir, exist_ok=True)
         
-
-        # Load the project-specific config file if it exists
         self.project_config = {}
         config_path = os.path.join(self.path, "cbas_config.yaml")
         if os.path.exists(config_path):
@@ -878,10 +955,9 @@ class Project:
             except Exception as e:
                 print(f"WARNING: Could not read or parse cbas_config.yaml. Using defaults. Error: {e}")
         
-        # Determine the encoder model to use for this project
         self.encoder_model_identifier = self.project_config.get(
             "encoder_model_identifier", 
-            "facebook/dinov2-with-registers-base" # DINOv2 with registers, the safe default
+            "facebook/dinov2-with-registers-base"
         )
 
         self.active_recordings: dict[str, tuple[subprocess.Popen, float, str]] = {}
@@ -1019,35 +1095,73 @@ class Project:
             print(f"An error occurred during deletion of '{name}': {e}")
             self.reload()
             return False
-           
+    
+    def convert_instances(self, project_root_path: str, insts: list, seq_len: int, behaviors: list, progress_callback=None) -> list:
+        """
+        Generates a memory-efficient "manifest" of training examples.
+        (REFACTORED FOR LAZY LOADING)
+        """
+        manifest = []
+        half_seqlen = seq_len // 2
+        
+        instances_by_video = defaultdict(list)
+        for inst in insts:
+            instances_by_video[inst.get("video")].append(inst)
+
+        total_videos = len(instances_by_video)
+        for i, (relative_video_path, video_instances) in enumerate(instances_by_video.items()):
+            if progress_callback: progress_callback((i + 1) / total_videos * 100)
+            
+            if not relative_video_path: continue
+
+            absolute_video_path = os.path.join(project_root_path, relative_video_path)
+            cls_path = os.path.splitext(absolute_video_path)[0] + "_cls.h5"
+            if not os.path.exists(cls_path):
+                print(f"Warning: H5 file not found, skipping instances for {relative_video_path}")
+                continue
+            
+            try:
+                with h5py.File(cls_path, "r") as f:
+                    num_frames = f["cls"].shape[0]
+            except Exception as e:
+                print(f"Warning: Could not read H5 file {cls_path}: {e}")
+                continue
+
+            if num_frames < seq_len: continue
+            
+            for inst in video_instances:
+                start = int(inst.get("start", -1))
+                end = int(inst.get("end", -1))
+                if start == -1 or end == -1: continue
+                
+                try:
+                    label_index = behaviors.index(inst["label"].strip())
+                except ValueError:
+                    print(f"WARNING: The label '{inst['label']}' in video '{inst['video']}' is not in the master behavior list. This instance will be SKIPPED.")
+                    continue
+
+                for frame_idx in range(start, end + 1):
+                    if (frame_idx - half_seqlen >= 0) and (frame_idx + half_seqlen < num_frames):
+                        manifest.append((cls_path, frame_idx, label_index))
+
+        return manifest
+
 
 def evaluate_on_split(model, dataset, behaviors, device=None):
     """
     Performs a one-time evaluation of a trained model on a given dataset split.
-
-    Args:
-        model (torch.nn.Module): The trained model to evaluate.
-        dataset (torch.utils.data.Dataset): The dataset split (e.g., validation or test) to evaluate on.
-        behaviors (list[str]): The list of behavior names.
-        device (torch.device, optional): The device to run evaluation on. Defaults to CUDA if available.
-
-    Returns:
-        dict: A dictionary containing the classification report and confusion matrix.
     """
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-    # Use a simple, non-shuffled DataLoader for evaluation.
-    # num_workers can be > 0 here as this is a separate, self-contained process.
     loader = torch.utils.data.DataLoader(dataset, batch_size=512, shuffle=False,
                                          num_workers=0, pin_memory=(device.type=='cuda'),
-                                         collate_fn=collate_fn)
+                                         collate_fn=collate_fn, worker_init_fn=worker_init_fn)
     y_true, y_pred = [], []
-    model.to(device).eval() # Ensure model is on the correct device and in eval mode
+    model.to(device).eval()
     
     with torch.no_grad():
         for x, y in loader:
-            # The in-RAM loader provides clean data, but this check is good practice.
             valid = (y != -1)
             if not valid.any(): continue
             
@@ -1065,6 +1179,11 @@ def evaluate_on_split(model, dataset, behaviors, device=None):
     return {"report": rep, "cm": cm}
 
 def collate_fn(batch):
+    # Filter out samples that failed to load
+    batch = [b for b in batch if b[1] != -1]
+    if not batch:
+        return torch.tensor([]), torch.tensor([])
+    
     dcls, lbls = zip(*batch)
     return torch.stack(dcls), torch.stack(lbls)
     
@@ -1091,8 +1210,8 @@ def train_lstm_model(train_set, test_set, seq_len: int, behaviors: list, cancel_
     if len(train_set) == 0: return None, None, -1
     if device is None: device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    train_loader = torch.utils.data.DataLoader(train_set, batch_size, shuffle=True, collate_fn=collate_fn, num_workers=0, pin_memory=(device.type == 'cuda'), drop_last=False)
-    test_loader = torch.utils.data.DataLoader(test_set, batch_size, shuffle=False, collate_fn=collate_fn, num_workers=0) if test_set and len(test_set) > 0 else None
+    train_loader = torch.utils.data.DataLoader(train_set, batch_size, shuffle=True, collate_fn=collate_fn, num_workers=0, pin_memory=(device.type == 'cuda'), drop_last=False, worker_init_fn=worker_init_fn)
+    test_loader = torch.utils.data.DataLoader(test_set, batch_size, shuffle=False, collate_fn=collate_fn, num_workers=0, worker_init_fn=worker_init_fn) if test_set and len(test_set) > 0 else None
     
     model = classifier_head.ClassifierLSTMDeltas(
         in_features=768,
@@ -1132,6 +1251,7 @@ def train_lstm_model(train_set, test_set, seq_len: int, behaviors: list, cancel_
         
         model.train()
         for i, (d, l) in enumerate(train_loader):
+            if d.numel() == 0: continue
             d, l = d.to(device).float(), l.to(device)
             optimizer.zero_grad()
             
@@ -1153,6 +1273,7 @@ def train_lstm_model(train_set, test_set, seq_len: int, behaviors: list, cancel_
         train_actuals, train_predictions = [], []
         with torch.no_grad():
             for d, l in train_loader:
+                if d.numel() == 0: continue
                 logits, _ = model(d.to(device).float())
                 train_actuals.extend(l.cpu().numpy())
                 train_predictions.extend(logits.argmax(1).cpu().numpy())
@@ -1170,6 +1291,7 @@ def train_lstm_model(train_set, test_set, seq_len: int, behaviors: list, cancel_
             val_actuals, val_predictions = [], []
             with torch.no_grad():
                 for d, l in test_loader:
+                    if d.numel() == 0: continue
                     logits, _ = model(d.to(device).float())
                     val_actuals.extend(l.cpu().numpy())
                     val_predictions.extend(logits.argmax(1).cpu().numpy())

@@ -845,12 +845,18 @@ class TrainingThread(threading.Thread):
         except Exception:
             lib_versions = {"error": "Could not determine library versions."}
 
-        val_seqs, val_labels = gui_state.proj.convert_instances(gui_state.proj.path, val_insts, task.sequence_length, task.behaviors)
-        val_ds = cbas.StandardDataset(val_seqs, val_labels) if val_seqs else None
+        val_manifest = gui_state.proj.convert_instances(gui_state.proj.path, val_insts, task.sequence_length, task.behaviors)
+        val_ds = cbas.LazyStandardDataset(val_manifest, task.sequence_length) if val_manifest else None
 
         temperature = 1.0
         if val_ds and len(val_ds) > 0:
-            val_loader = torch.utils.data.DataLoader(val_ds, batch_size=task.batch_size, num_workers=0, pin_memory=(self.device.type == "cuda"))
+            val_loader = torch.utils.data.DataLoader(
+                val_ds, 
+                batch_size=task.batch_size, 
+                num_workers=0, 
+                pin_memory=(self.device.type == "cuda"),
+                worker_init_fn=cbas.worker_init_fn
+            )
             log_message("Calibrating model temperature on validation set...", "INFO")
             temperature = fit_temperature(best_model, val_loader, self.device)
             log_message(f"Optimal temperature found: {temperature:.4f}", "INFO")
