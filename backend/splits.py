@@ -26,8 +26,9 @@ def _generate_dataset_fingerprint(dataset):
     all_instances = [inst for b_labels in dataset.labels.get("labels", {}).values() for inst in b_labels]
 
     for inst in all_instances:
-        # Use the directory name as the unique subject identifier
-        subjects.add(os.path.dirname(inst['video']))
+        # NORMALIZE: Ensure consistent path separators for subject identification.
+        subject_path = os.path.dirname(inst['video']).replace('\\', '/')
+        subjects.add(subject_path)
         label_counts[inst['label']] += 1
 
     # Create a stable, sorted representation to ensure consistent hashing
@@ -71,11 +72,15 @@ class RandomSplitProvider(SplitProvider):
         # It shuffles, splits, and validates.
         subject_to_insts = defaultdict(list)
         for inst in all_instances:
-            subject = os.path.dirname(inst['video'])
+            # NORMALIZE: Ensure consistent path separators for grouping.
+            subject = os.path.dirname(inst['video']).replace('\\', '/')
             subject_to_insts[subject].append(inst)
 
+        # Ensure all_subjects list is also normalized and unique
+        normalized_subjects = sorted(list(subject_to_insts.keys()))
+
         for attempt in range(10):
-            shuffled_subjects = list(all_subjects)
+            shuffled_subjects = list(normalized_subjects)
             rng.shuffle(shuffled_subjects)
             n_total = len(shuffled_subjects)
             n_train = int(self.ratios[0] * n_total)

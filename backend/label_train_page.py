@@ -59,6 +59,7 @@ def run_preflight_check(dataset_name: str, test_split: float) -> dict:
         group_to_instances = defaultdict(list)
         group_to_behaviors = defaultdict(set)
         for inst in all_insts:
+            # NORMALIZE: Ensure consistent path separators.
             group_key = os.path.dirname(inst['video']).replace('\\', '/')
             group_to_instances[group_key].append(inst)
             group_to_behaviors[group_key].add(inst['label'])
@@ -76,7 +77,7 @@ def run_preflight_check(dataset_name: str, test_split: float) -> dict:
         test_inst_count = 0
         temp_groups = list(all_groups) # Use a copy for allocation
         for group in temp_groups:
-            if test_inst_count / total_instances < test_split:
+            if total_instances > 0 and (test_inst_count / total_instances) < test_split:
                 test_groups.add(group)
                 test_inst_count += len(group_to_instances[group])
         
@@ -110,7 +111,7 @@ def run_preflight_check(dataset_name: str, test_split: float) -> dict:
             return {"is_valid": False, "message": f"Validation set would be missing behaviors: {', '.join(missing)}"}
 
         test_behaviors = {b for g in test_groups for b in group_to_behaviors[g]}
-        if test_behaviors != behaviors:
+        if test_behaviors and test_behaviors != behaviors:
             missing = behaviors - test_behaviors
             return {"is_valid": True, "message": f"Warning: Test set will be missing behaviors: {', '.join(missing)}. Proceed with caution."}
 
@@ -541,14 +542,8 @@ def get_label_coverage_report(dataset_name: str) -> dict:
         label = inst.get("label")
         if video_path and label:
             try:
-
-                # The unique identifier for a subject is its full relative path,
-                # not just its folder name.
-                subject_path = os.path.dirname(video_path)
-                
-                # Normalize slashes for consistent display
-                subject_path = subject_path.replace('\\', '/')
-
+                # NORMALIZE: Ensure consistent path separators for subject identification.
+                subject_path = os.path.dirname(video_path).replace('\\', '/')
                 subject_behaviors[subject_path].add(label)
 
             except Exception:
@@ -567,12 +562,12 @@ def get_label_coverage_report(dataset_name: str) -> dict:
         missing_behaviors = master_behaviors - behaviors
         if not missing_behaviors:
             report["complete_subjects"].append({
-                "name": subject_path, # Use the full path as the name
+                "name": subject_path,
                 "count": len(behaviors)
             })
         else:
             report["incomplete_subjects"].append({
-                "name": subject_path, # Use the full path as the name
+                "name": subject_path,
                 "count": len(behaviors),
                 "missing": sorted(list(missing_behaviors))
             })
