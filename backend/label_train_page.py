@@ -619,10 +619,6 @@ def _start_labeling_worker(name: str, video_to_open: str = None, preloaded_insta
         gui_state.label_dirty_instances.clear()
         gui_state.label_session_buffer, gui_state.selected_instance_index = [], -1
         
-        # For any editable session (Manual or Guided),
-        # we MUST clear the probability_df. It is only used for read-only playback.
-        # The 'probability_df' passed into this function from a guided session is used
-        # to create the initial instances, but should not persist to be used by the renderer.
         gui_state.label_probability_df = None
 
         gui_state.label_confirmation_mode = False
@@ -630,7 +626,6 @@ def _start_labeling_worker(name: str, video_to_open: str = None, preloaded_insta
         
         eel.setConfirmationModeUI(False)()
         
-        # 1. Force a reload of the specific dataset object from disk.
         gui_state.proj.datasets[name] = cbas.Dataset(gui_state.proj.datasets[name].path)
         dataset: cbas.Dataset = gui_state.proj.datasets[name]
         gui_state.label_dataset = dataset
@@ -641,26 +636,23 @@ def _start_labeling_worker(name: str, video_to_open: str = None, preloaded_insta
         
         relative_video_path = os.path.relpath(video_to_open, start=gui_state.proj.path).replace('\\', '/')
 
-        # =========================================================================
-        # ROBUST LABEL MERGING LOGIC
-        # =========================================================================
-
-        # Step 1: Load all existing human-verified labels for this video.
-        # These are automatically kept and form the "base layer" of truth.
         human_labels = []
         for b_name, b_insts in gui_state.label_dataset.labels["labels"].items():
             for inst in b_insts:
-                if inst.get("video") == relative_video_path:
-                    human_labels.append(inst)
+                # Normalize the path from the file for comparison
+                inst_video_path = inst.get("video", "").replace('\\', '/')
+                if inst_video_path == relative_video_path:
+                    # Create a copy and ensure its path is normalized before appending
+                    inst_copy = inst.copy()
+                    inst_copy["video"] = inst_video_path
+                    human_labels.append(inst_copy)
         
-        # Add the trusted human labels to the session buffer immediately.
         gui_state.label_session_buffer.extend(human_labels)
         print(f"Loaded {len(human_labels)} existing human labels for '{relative_video_path}' into buffer.")
 
         labeling_mode = 'scratch'
         model_name_for_ui = ''
 
-        # Step 2: If this is a guided session, process the model's predictions.
         if preloaded_instances:
             labeling_mode = 'review'
             model_name_for_ui = getattr(gui_state, "live_inference_model_name", "") 
@@ -674,46 +666,33 @@ def _start_labeling_worker(name: str, video_to_open: str = None, preloaded_insta
             
             print(f"Processing {len(filtered_predictions)} initially filtered model predictions.")
 
-            # Step 2a: Build the "Time Map" of occupied zones from human labels.
             human_intervals = sorted([(h['start'], h['end']) for h in human_labels])
 
-            # Step 2b: Process each prediction against the time map.
             for pred_inst in filtered_predictions:
-                # A prediction starts as a single continuous interval.
                 pred_intervals_to_add = [(pred_inst['start'], pred_inst['end'])]
 
-                # Check this prediction against every known human-occupied zone.
                 for h_start, h_end in human_intervals:
-                    # This list will hold the pieces of the prediction that survive the check.
                     surviving_pieces = []
                     
-                    # For each piece of our current prediction, see if it overlaps.
                     while pred_intervals_to_add:
                         p_start, p_end = pred_intervals_to_add.pop(0)
                         
-                        # No overlap if prediction ends before human label starts,
-                        # or prediction starts after human label ends.
                         is_safe = p_end < h_start or p_start > h_end
                         
                         if is_safe:
                             surviving_pieces.append((p_start, p_end))
                             continue
                         
-                        # If there is an overlap, create the non-overlapping pieces.
-                        # Piece 1: The part of the prediction before the human label.
                         if p_start < h_start:
                             surviving_pieces.append((p_start, h_start - 1))
                         
-                        # Piece 2: The part of the prediction after the human label.
                         if p_end > h_end:
                             surviving_pieces.append((h_end + 1, p_end))
 
-                    # The surviving pieces become the new intervals to check against the *next* human label.
                     pred_intervals_to_add = surviving_pieces
                 
-                # After checking against all human labels, add any surviving pieces to the session buffer.
                 for start, end in pred_intervals_to_add:
-                    if start <= end: # Ensure the piece is valid
+                    if start <= end:
                         new_inst = pred_inst.copy()
                         new_inst['start'] = start
                         new_inst['end'] = end
@@ -722,7 +701,6 @@ def _start_labeling_worker(name: str, video_to_open: str = None, preloaded_insta
         dataset_behaviors = gui_state.label_dataset.labels.get("behaviors", [])
         behavior_colors = [str(gui_state.label_col_map(tab20_map(i))) for i in range(len(dataset_behaviors))]
         
-        # Populate the new, safe state variables
         gui_state.label_session_behaviors = dataset_behaviors
         gui_state.label_session_colors = behavior_colors
 
@@ -880,7 +858,6 @@ def analyze_label_conflicts(dataset_name: str) -> dict:
         "total_overlaps": total_overlaps
     }
 
-
 def clean_and_sort_labels(dataset_name: str) -> bool:
     """
     Performs a full cleanup, normalization, and sort of a labels.yaml file.
@@ -904,19 +881,24 @@ def clean_and_sort_labels(dataset_name: str) -> bool:
     for behavior, instances in data.get("labels", {}).items():
         if not isinstance(instances, list): continue
         for instance in instances:
+            # NORMALIZE path before creating the tuple for de-duplication
+            video_path_normalized = instance.get("video", "").replace('\\', '/')
             instance_tuple = (
                 instance.get("start"), instance.get("end"),
-                instance.get("label"), instance.get("video")
+                instance.get("label"), video_path_normalized
             )
             if instance_tuple not in seen_instances:
                 seen_instances.add(instance_tuple)
                 instance['start'] = float(instance['start'])
                 instance['end'] = float(instance['end'])
+                # Store the normalized path back into the instance
+                instance['video'] = video_path_normalized
                 all_instances.append(instance)
 
     # --- 2. De-confliction (Merge/Trim) ---
     instances_by_video = defaultdict(list)
     for inst in all_instances:
+        # Grouping now uses the already-normalized path
         instances_by_video[inst.get('video')].append(inst)
 
     final_clean_instances = []
@@ -971,29 +953,25 @@ def clean_and_sort_labels(dataset_name: str) -> bool:
 
         final_clean_instances.extend(merged_instances)
 
-    # --- 3. Normalize all path separators to forward slashes ---
-    for inst in final_clean_instances:
-        if 'video' in inst and isinstance(inst['video'], str):
-            inst['video'] = inst['video'].replace('\\', '/')
-
-    # --- 4. Sort the final, clean list for readability ---
+    # --- 3. Sort the final, clean list for readability ---
     final_clean_instances.sort(key=lambda x: (
         x.get('label', ''), 
         x.get('video', ''), 
         x.get('start', 0)
     ))
 
-    # --- 5. Rebuild the final YAML structure ---
+    # --- 4. Rebuild the final YAML structure ---
     cleaned_data = data.copy()
     cleaned_data["labels"] = defaultdict(list)
     for inst in final_clean_instances:
         inst.pop('_confirmed', None)
+        # The 'video' path is already normalized from step 1
         cleaned_data["labels"][inst['label']].append(inst)
     
     final_labels_dict = {k: v for k, v in sorted(cleaned_data["labels"].items())}
     cleaned_data["labels"] = final_labels_dict
 
-    # --- 6. Save the cleaned and sorted data back to the file ---
+    # --- 5. Save the cleaned and sorted data back to the file ---
     try:
         with open(labels_file_path, 'w') as f:
             yaml.dump(cleaned_data, f, allow_unicode=True, sort_keys=False)
