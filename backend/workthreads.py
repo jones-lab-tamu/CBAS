@@ -874,7 +874,6 @@ class TrainingThread(threading.Thread):
         with open(os.path.join(model_dir, "config.yaml"), "w") as f:
             yaml.dump(model_config, f, allow_unicode=True)
 
-        # Write an explicit model bundle manifest for robust loading.
         model_meta = {
             "model_bundle_schema": "1.0",
             "cbas_commit_hash": git_commit,
@@ -936,7 +935,7 @@ class TrainingThread(threading.Thread):
         log_message(f"Wrote comprehensive performance report to '{report_path}'.", "INFO")
 
         if all_run_reports:
-            best_run_idx = int(np.argmax([r['validation_report'].get(task.optimization_target, {}).get('f1-score', 0) for r in all_run_reports]))
+            best_run_idx = int(np.argmax([r.get('validation_report', {}).get(task.optimization_target, {}).get('f1-score', -1.0) for r in all_run_reports]))
             best_run_report = all_run_reports[best_run_idx]
             
             best_val_cm = best_run_report.get("validation_cm")
@@ -967,7 +966,8 @@ class TrainingThread(threading.Thread):
                 )
                 log_message(f"Per-run/replicate performance plots saved to '{output_dir}'.", "INFO")
 
-        if output_dir == task.dataset.path:
+        # --- Normalize paths before comparison ---
+        if os.path.normpath(output_dir) == os.path.normpath(task.dataset.path):
             ds = task.dataset
             config = dict(ds.config)
             metrics_block = {}
