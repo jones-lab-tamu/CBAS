@@ -293,8 +293,6 @@ def model_exists(model_name: str) -> bool:
     """Checks if a model with the given name exists in the current project."""
     return gui_state.proj and model_name in gui_state.proj.models
 
-
-
 def load_dataset_configs() -> dict:
     """
     Loads configurations for all available datasets and determines their current state
@@ -307,31 +305,28 @@ def load_dataset_configs() -> dict:
     for name, dataset in gui_state.proj.datasets.items():
         config = dataset.config.copy()
         
-        # The state is determined by finding the associated model.
-        # First, check the config file for a direct link to the model.
-        model_name = config.get("model") # e.g., "cbas_aug_model"
-        
-        # If a model name is linked, check if that model actually exists.
-        if model_name and model_name in gui_state.proj.models:
-            model_path = gui_state.proj.models[model_name].weights_path
-            if os.path.exists(model_path):
+        # First, trust the state if it's explicitly set in the config file.
+        if 'state' in config and config['state'] == 'trained':
+            config['state'] = 'trained'
+        else:
+            # Fallback logic for older or intermediate states
+            # Check for both 'trained_model' (new key) and 'model' (legacy key)
+            model_name = config.get("trained_model") or config.get("model")
+            
+            if model_name and model_name in gui_state.proj.models and os.path.exists(gui_state.proj.models[model_name].weights_path):
                 config['state'] = 'trained'
             else:
-                # The link is broken, treat as labeled
-                config['state'] = 'labeled'
-        else:
-            # No model is linked, check if it has labels.
-            has_labels = False
-            if dataset.labels and "labels" in dataset.labels:
-                for behavior_name in dataset.labels["labels"]:
-                    if dataset.labels["labels"][behavior_name]:
-                        has_labels = True
-                        break
-            
-            if has_labels:
-                config['state'] = 'labeled'
-            else:
-                config['state'] = 'new'
+                has_labels = False
+                if dataset.labels and "labels" in dataset.labels:
+                    for behavior_name in dataset.labels["labels"]:
+                        if dataset.labels["labels"][behavior_name]:
+                            has_labels = True
+                            break
+                
+                if has_labels:
+                    config['state'] = 'labeled'
+                else:
+                    config['state'] = 'new'
 
         disagreement_report_path = os.path.join(dataset.path, "disagreement_report.yaml")
         config['has_disagreements'] = os.path.exists(disagreement_report_path)
@@ -339,7 +334,6 @@ def load_dataset_configs() -> dict:
         dataset_configs[name] = config
         
     return dataset_configs
-
 
 
 def get_available_models() -> list[str]:
