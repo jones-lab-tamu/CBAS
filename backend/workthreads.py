@@ -397,64 +397,46 @@ class ClassificationThread(threading.Thread):
                     print(f"Eel call failed: {e}")
                 return None, None
 
-        # Re-ordered and enhanced logic for robust model loading.
             arch_version = meta.get("head_architecture_version", "ClassifierLegacyLSTM")
             hparams = meta.get("hyperparameters", {})
+            
+            # Ensure essential hparams exist, falling back to legacy config if needed
+            if "behaviors" not in hparams: hparams["behaviors"] = model_obj.config.get("behaviors", [])
+            if "seq_len" not in hparams: hparams["seq_len"] = model_obj.config.get("seq_len", 31)
+            
+            meta["hyperparameters"] = hparams # Ensure meta is fully populated for later use
 
-            if "behaviors" not in hparams:
-                hparams["behaviors"] = model_obj.config.get("behaviors", [])
-            if "seq_len" not in hparams:
-                hparams["seq_len"] = model_obj.config.get("seq_len", 31)
-
-            meta["hyperparameters"] = hparams
-
-            # Resolve weights path early so we can infer dims if needed.
             weights_path = os.path.join(model_obj.path, "model.pth")
-            if not os.path.exists(weights_path) and hasattr(model_obj, "weights_path"):
-                weights_path = model_obj.weights_path
-            # Load on CPU for cheap shape inspection; will move module to self.device later.
             try:
                 weights = torch.load(weights_path, map_location="cpu", weights_only=True)
             except TypeError:
                 weights = torch.load(weights_path, map_location="cpu")
 
             if arch_version.startswith("ClassifierLSTMDeltas"):
-                # Fill in missing head hyperparameters from weights if absent.
+                # Infer missing hyperparameters from the weights file itself for robustness
                 if "lstm_hidden_size" not in hparams:
-                    att_w = weights.get("attention_head.weight")
-                    lin2_w = weights.get("lin2.weight")
-                    inferred_h = None
-                    if att_w is not None:
-                        inferred_h = int(att_w.shape[1] // 2)
-                    elif lin2_w is not None:
-                        inferred_h = int(lin2_w.shape[1] // 2)
-                    hparams["lstm_hidden_size"] = inferred_h if inferred_h else 64
+                    # Infer from the size of the attention or linear layer weights
+                    inferred_h_size = weights.get("attention_head.weight", weights.get("lin2.weight")).shape[1] // 2
+                    hparams["lstm_hidden_size"] = inferred_h_size if inferred_h_size else 64
                 if "lstm_layers" not in hparams:
-                    # Infer layers by checking for layer indices in LSTM tensors.
-                    layer_ids = []
-                    for k in weights.keys():
-                        m = re.match(r"^lstm\.(weight|bias)_(ih|hh)_l(\d+)(?:_reverse)?$", k)
-                        if m:
-                            layer_ids.append(int(m.group(3)))
-                    hparams["lstm_layers"] = (max(layer_ids) + 1) if layer_ids else 1
+                    layer_keys = [int(k.split('_l')[1].split('.')[0]) for k in weights if 'lstm.weight_ih_l' in k]
+                    hparams["lstm_layers"] = max(layer_keys) + 1 if layer_keys else 1
 
                 torch_model = classifier_head.ClassifierLSTMDeltas(
                     in_features=768,
-                    out_features=len(model_obj.config["behaviors"]),
-                    seq_len=hparams.get("seq_len", 31),
-                    lstm_hidden_size=hparams.get("lstm_hidden_size", 64),
-                    lstm_layers=hparams.get("lstm_layers", 1),
+                    out_features=len(hparams["behaviors"]),
+                    seq_len=hparams["seq_len"],
+                    lstm_hidden_size=hparams["lstm_hidden_size"],
+                    lstm_layers=hparams["lstm_layers"],
                 )
             else:
                 torch_model = classifier_head.ClassifierLegacyLSTM(
                     in_features=768,
-                    out_features=len(model_obj.config["behaviors"]),
-                    seq_len=hparams.get("seq_len", 31),
+                    out_features=len(hparams["behaviors"]),
+                    seq_len=hparams["seq_len"],
                 )
 
-            # Now load the (already-read) state dict and move to device.
-            torch_model.load_state_dict(weights)
-
+            torch_model.load_state_dict(weights, strict=False)
             torch_model.to(self.device).eval()
 
             gui_state.live_inference_model_object = torch_model

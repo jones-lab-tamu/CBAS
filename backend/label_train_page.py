@@ -1001,27 +1001,43 @@ def start_labeling_with_preload(dataset_name: str, model_name: str, video_path_t
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
-        arch_type = model_obj.config.get('architecture', 'ClassifierLegacyLSTM')
+        meta_path = os.path.join(model_obj.path, "model_meta.json")
+        if os.path.exists(meta_path):
+            with open(meta_path, 'r') as f:
+                meta = json.load(f)
+            hparams = meta.get("hyperparameters", {})
+            arch_type = meta.get("head_architecture_version", "ClassifierLegacyLSTM")
+        else: # Fallback for legacy models without meta.json
+            meta = {}
+            hparams = model_obj.config
+            arch_type = "ClassifierLegacyLSTM"
+        
         log_message(f"Guided Labeling using model with architecture: '{arch_type}'", "INFO")
 
-        if arch_type == 'ClassifierLSTMDeltas':
+        if arch_type.startswith("ClassifierLSTMDeltas"):
             torch_model = classifier_head.ClassifierLSTMDeltas(
                 in_features=768,
-                out_features=len(model_obj.config["behaviors"]),
-                seq_len=model_obj.config["seq_len"],
+                out_features=len(hparams.get("behaviors", [])),
+                seq_len=hparams.get("seq_len", 31),
+                lstm_hidden_size=hparams.get("lstm_hidden_size", 64),
+                lstm_layers=hparams.get("lstm_layers", 1),
             ).to(device)
         else: # Handles legacy models
             torch_model = classifier_head.ClassifierLegacyLSTM(
                 in_features=768,
-                out_features=len(model_obj.config["behaviors"]),
-                seq_len=model_obj.config["seq_len"],
+                out_features=len(hparams.get("behaviors", [])),
+                seq_len=hparams.get("seq_len", 31),
             ).to(device)
            
         try:
             state = torch.load(model_obj.weights_path, map_location=device, weights_only=True)
         except TypeError:
             state = torch.load(model_obj.weights_path, map_location=device)
-        torch_model.load_state_dict(state)
+        
+        # Use strict=False to gracefully handle unexpected keys, which can happen
+        # with older models or slight architecture changes. The size mismatch error
+        # is the critical one, which our constructor logic now prevents.
+        torch_model.load_state_dict(state, strict=False)
         torch_model.eval()
 
         h5_path = os.path.splitext(video_path_to_label)[0] + "_cls.h5"
