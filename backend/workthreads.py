@@ -966,46 +966,68 @@ class TrainingThread(threading.Thread):
                 )
                 log_message(f"Per-run/replicate performance plots saved to '{output_dir}'.", "INFO")
 
-        # --- Normalize paths before comparison ---
         if os.path.normpath(output_dir) == os.path.normpath(task.dataset.path):
             ds = task.dataset
-            config = dict(ds.config)
-            metrics_block = {}
             
+            # 1. Read the latest config from disk to work with
+            with open(ds.config_path, "r", encoding="utf-8") as f:
+                config = yaml.safe_load(f)
+
+            # 2. Prepare the metrics block with performance scores
+            metrics_block = {}
             best_run_report = all_run_reports[best_run_idx] if all_run_reports else {}
             best_val_report_dict = best_run_report.get("validation_report", {})
             best_test_report_dict = best_run_report.get("test_report", {})
 
-            from collections import Counter
-            train_instance_counts = Counter(inst['label'] for inst in train_insts)
-            test_instance_counts = Counter(inst['label'] for inst in test_insts)
-
             for b in task.behaviors:
                 val_metrics = best_val_report_dict.get(b, {})
                 test_metrics = best_test_report_dict.get(b, {})
-                
-                train_inst_count = train_instance_counts.get(b, 0)
-                train_frm_count = sum(int(inst['end'] - inst['start'] + 1) for inst in train_insts if inst['label'] == b)
-                test_inst_count = test_instance_counts.get(b, 0)
-                test_frm_count = sum(int(inst['end'] - inst['start'] + 1) for inst in test_insts if inst['label'] == b)
-
                 metrics_block[b] = {
-                    "Train Inst (Frames)": f"{train_inst_count} ({train_frm_count})",
-                    "Test Inst (Frames)":  f"{test_inst_count} ({test_frm_count})",
                     "Precision": round(float(val_metrics.get("precision", 0.0)), 2),
                     "Recall":    round(float(val_metrics.get("recall", 0.0)), 2),
                     "F1 Score":  round(float(val_metrics.get("f1-score", 0.0)), 2),
                     "Test F1":   "N/A" if not task.use_test else round(float(test_metrics.get("f1-score", 0.0)), 2)
                 }
+            
+            # 3. Calculate instance counts using the FULL dataset, not a subset
+            from collections import Counter
+            all_instances = [inst for b_labels in ds.labels.get("labels", {}).values() for inst in b_labels]
+            all_subjects = list(set(os.path.dirname(inst['video']).replace('\\','/') for inst in all_instances))
+            
+            # Use the same splitting logic as the official count function to be consistent
+            provider = RandomSplitProvider(seed=42, split_ratios=(0.8, 0.0, 0.2), stratify=False)
+            train_subjects, _, test_subjects = provider.get_split(0, all_subjects, all_instances, task.behaviors)
 
+            train_subject_set = set(train_subjects)
+            test_subject_set = set(test_subjects)
+            
+            # Filter all instances based on the calculated subject splits
+            all_train_insts = [inst for inst in all_instances if os.path.dirname(inst['video']).replace('\\','/') in train_subject_set]
+            all_test_insts = [inst for inst in all_instances if os.path.dirname(inst['video']).replace('\\','/') in test_subject_set]
+            
+            train_instance_counts = Counter(inst['label'] for inst in all_train_insts)
+            test_instance_counts = Counter(inst['label'] for inst in all_test_insts)
+            train_frame_counts = Counter()
+            for inst in all_train_insts: train_frame_counts[inst['label']] += (inst['end'] - inst['start'] + 1)
+            test_frame_counts = Counter()
+            for inst in all_test_insts: test_frame_counts[inst['label']] += (inst['end'] - inst['start'] + 1)
+            
+            # 4. Add the calculated counts to the metrics block
+            for b in task.behaviors:
+                metrics_block[b]["Train Inst (Frames)"] = f"{train_instance_counts.get(b, 0)} ({int(train_frame_counts.get(b, 0))})"
+                metrics_block[b]["Test Inst (Frames)"] = f"{test_instance_counts.get(b, 0)} ({int(test_frame_counts.get(b, 0))})"
+
+            # 5. Update the config dictionary and write to file ONCE
             config["metrics"] = metrics_block
             config["state"] = "trained"
             config["trained_model"] = model_name
 
             with open(ds.config_path, "w", encoding="utf-8") as f:
                 yaml.dump(config, f, allow_unicode=True)
+            
+            # 6. Update the in-memory object to match
             ds.config = config
-            log_message(f"Updated dataset metrics in '{ds.config_path}'.", "INFO")
+            log_message(f"Updated dataset metrics and counts in '{ds.config_path}'.", "INFO")
 
         log_message(f"Training for '{task.name}' complete. Artifacts saved.", "INFO")
         
