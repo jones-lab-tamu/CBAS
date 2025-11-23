@@ -612,6 +612,7 @@ def _start_labeling_worker(name: str, video_to_open: str = None, preloaded_insta
         gui_state.label_type, gui_state.label_start = -1, -1
         gui_state.label_history, gui_state.label_behavior_colors = [], []
         gui_state.label_dirty_instances.clear()
+        gui_state.label_suppressed_ids.clear()
         gui_state.label_session_buffer, gui_state.selected_instance_index = [], -1
         
         gui_state.label_probability_df = None
@@ -1136,8 +1137,8 @@ def save_session_labels():
     
 def refilter_instances(new_threshold: int, mode: str = 'below'):
     """
-    (REWRITTEN) Non-destructively re-filters the session buffer, now
-    correctly handling edited instances to prevent ghosts and preserve edits.
+    Non-destructively re-filters the session buffer.
+    FIX: Uses Ancestry Tracking AND Deletion Suppression.
     """
     log_message(f"Refiltering instances with mode '{mode}' and threshold {new_threshold}%", "INFO")
     gui_state.label_confidence_threshold = new_threshold
@@ -1147,61 +1148,46 @@ def refilter_instances(new_threshold: int, mode: str = 'below'):
         render_image()
         return
 
-    # 1. Preserve human-verified instances AND identify which predictions have been edited.
+    # 1. Identify Preserved Instances (Human created OR User confirmed/edited)
     preserved_instances = []
-    edited_prediction_ids = set()
+    suppression_set = set()
 
     for inst in gui_state.label_session_buffer:
-        if 'confidence' not in inst:
+        # Preserve if Manual (no confidence) OR Confirmed
+        if 'confidence' not in inst or inst.get('_confirmed', False):
             preserved_instances.append(inst)
-            if '_original_start' in inst:
-                original_id = (inst['_original_start'], inst['_original_end'])
-                edited_prediction_ids.add(original_id)
+            
+            # Add current signature
+            current_sig = (inst['start'], inst['end'], inst['label'])
+            suppression_set.add(current_sig)
+            
+            # Add parent ancestry if it exists (handling edits)
+            if '_parent_id' in inst:
+                suppression_set.add(inst['_parent_id'])
 
-    # 2. Apply the confidence filter to the raw predictions.
+    # 2. Filter Raw Predictions
     threshold_float = new_threshold / 100.0
-    if mode == 'above':
-        newly_filtered_candidates = [
-            p for p in unfiltered_predictions if p.get('confidence', 0.0) >= threshold_float
-        ]
-    else: # Default to 'below'
-        newly_filtered_candidates = [
-            p for p in unfiltered_predictions if p.get('confidence', 1.0) < threshold_float
-        ]
+    filtered_predictions = []
     
-    # 3. Run candidates through the Time Map logic, but with an extra check to ignore already-edited predictions.
-    human_intervals = sorted([(h['start'], h['end']) for h in preserved_instances])
-    
-    final_guided_labels = []
-    for pred_inst in newly_filtered_candidates:
-        prediction_id = (pred_inst['start'], pred_inst['end'])
-        if prediction_id in edited_prediction_ids:
-            continue
-
-        pred_intervals_to_add = [(pred_inst['start'], pred_inst['end'])]
-        for h_start, h_end in human_intervals:
-            surviving_pieces = []
-            while pred_intervals_to_add:
-                p_start, p_end = pred_intervals_to_add.pop(0)
-                is_safe = p_end < h_start or p_start > h_end
-                if is_safe:
-                    surviving_pieces.append((p_start, p_end))
-                    continue
-                if p_start < h_start:
-                    surviving_pieces.append((p_start, h_start - 1))
-                if p_end > h_end:
-                    surviving_pieces.append((h_end + 1, p_end))
-            pred_intervals_to_add = surviving_pieces
+    for p in unfiltered_predictions:
+        conf = p.get('confidence', 0.0)
         
-        for start, end in pred_intervals_to_add:
-            if start <= end:
-                new_inst = pred_inst.copy()
-                new_inst['start'] = start
-                new_inst['end'] = end
-                final_guided_labels.append(new_inst)
+        passes_threshold = False
+        if mode == 'above':
+            passes_threshold = (conf >= threshold_float)
+        else:
+            passes_threshold = (conf < threshold_float)
+            
+        if passes_threshold:
+            p_sig = (p['start'], p['end'], p['label'])
+            
+            # CHECK BOTH: Is it replaced by a human label? OR Was it explicitly deleted?
+            if p_sig not in suppression_set and p_sig not in gui_state.label_suppressed_ids:
+                filtered_predictions.append(p)
 
-    # 4. Rebuild the session buffer and update the UI.
-    gui_state.label_session_buffer = preserved_instances + final_guided_labels
+    # 3. Merge and Sort
+    gui_state.label_session_buffer = preserved_instances + filtered_predictions
+    gui_state.label_session_buffer.sort(key=lambda x: x['start'])
     
     gui_state.selected_instance_index = -1
     eel.highlightBehaviorRow(None)()
@@ -1272,21 +1258,21 @@ def jump_to_frame(frame_number: int):
 def confirm_selected_instance():
     """
     Toggles the 'confirmed' state of the currently selected instance.
+    Does NOT remove the confidence score, allowing toggling back to 'prediction' state.
     """
     if gui_state.selected_instance_index != -1 and gui_state.selected_instance_index < len(gui_state.label_session_buffer):
         instance = gui_state.label_session_buffer[gui_state.selected_instance_index]
-        is_currently_confirmed = instance.get('_confirmed', False)
-
-        if is_currently_confirmed:
-            instance['_confirmed'] = False
-            if '_original_start' in instance:
-                instance['start'] = instance['_original_start']
-                instance['end'] = instance['_original_end']
-            print(f"Unlocked instance {gui_state.selected_instance_index} and reverted changes.")
         
-        else:
-            instance['_confirmed'] = True
-            print(f"Confirmed instance {gui_state.selected_instance_index}.")
+        # Toggle the confirmation flag
+        is_currently_confirmed = instance.get('_confirmed', False)
+        instance['_confirmed'] = not is_currently_confirmed
+        
+        # Note: We do NOT strip the 'confidence' key here. 
+        # If we did, the user couldn't "Unlock" a prediction to revert it to its transparent state.
+        # The 'refilter_instances' logic will handle this via the _confirmed flag.
+        
+        status = "Confirmed" if instance['_confirmed'] else "Unlocked"
+        print(f"{status} instance {gui_state.selected_instance_index}.")
             
         render_image()
 
@@ -1404,7 +1390,7 @@ def update_instance_boundary(boundary_type: str):
 
     active_instance = gui_state.label_session_buffer[gui_state.selected_instance_index]
     
-    # Add a guard clause to block edits in "Review by Behavior" mode.
+    # Guard clause for Review Mode
     if gui_state.label_filter_for_behavior is not None:
         if active_instance.get('label') != gui_state.label_filter_for_behavior:
             log_message("Edit blocked: Cannot adjust boundaries of a non-target behavior in this mode.", "WARN")
@@ -1413,19 +1399,17 @@ def update_instance_boundary(boundary_type: str):
     gui_state.label_dirty_instances.add(id(active_instance))
     new_boundary_frame = gui_state.label_index
 
-
-    # When a predicted instance is edited for the FIRST time, we must save its
-    # original boundaries so we can identify and ignore it later during filtering.
-    if 'confidence' in active_instance and '_original_start' not in active_instance:
-        active_instance['_original_start'] = active_instance['start']
-        active_instance['_original_end'] = active_instance['end']
-    
-    # Now, promote it to a human-verified label by removing its confidence score.
-    # This makes it immune to the confidence filter.
+    # If this was a model prediction, we must capture its original identity
+    # before we modify it. This allows 'refilter_instances' to suppress the original ghost.
     if 'confidence' in active_instance:
+        if '_parent_id' not in active_instance:
+            # The signature is (start, end, label)
+            active_instance['_parent_id'] = (active_instance['start'], active_instance['end'], active_instance['label'])
+        
+        # Promote to human label immediately upon edit
+        del active_instance['confidence']
         active_instance['_confirmed'] = True
-        active_instance.pop('confidence', None)
-        log_message(f"Promoted instance {gui_state.selected_instance_index} to human-verified after edit.", "INFO")
+        log_message(f"Promoted instance {gui_state.selected_instance_index} to human-verified after boundary edit.", "INFO")
 
     if boundary_type == 'start':
         if new_boundary_frame >= active_instance['end']: return
@@ -1448,9 +1432,8 @@ def update_instance_boundary(boundary_type: str):
             if i < gui_state.selected_instance_index: gui_state.selected_instance_index -= 1
             gui_state.label_session_buffer.pop(i)
 
-    active_instance_idx = gui_state.selected_instance_index
-    if active_instance_idx < len(gui_state.label_session_buffer):
-        active_instance = gui_state.label_session_buffer[active_instance_idx]
+    if gui_state.selected_instance_index < len(gui_state.label_session_buffer):
+        active_instance = gui_state.label_session_buffer[gui_state.selected_instance_index]
         if boundary_type == 'start': active_instance['start'] = new_boundary_frame
         elif boundary_type == 'end': active_instance['end'] = new_boundary_frame
     
@@ -1510,19 +1493,16 @@ def add_instance_to_buffer():
     update_counts()
 
 
-
 def label_frame(value: int):
     """Handles user keypresses to start, end, or change labels."""
     
-    # Add a guard clause to block edits in "Review by Behavior" mode.
+    # Guard clause for Review Mode
     if gui_state.label_filter_for_behavior is not None:
         instance_under_playhead = None
         for inst in gui_state.label_session_buffer:
             if inst.get("start", -1) <= gui_state.label_index <= inst.get("end", -1):
                 instance_under_playhead = inst
                 break
-        
-        # Block the action if the user is trying to change the label of a ghosted instance.
         if instance_under_playhead and instance_under_playhead.get('label') != gui_state.label_filter_for_behavior:
             log_message("Edit blocked: Cannot change the label of a non-target behavior in this mode.", "WARN")
             return
@@ -1539,9 +1519,18 @@ def label_frame(value: int):
             
     if clicked_instance_index != -1 and gui_state.label_type == -1:
         new_behavior_name = behaviors[value]
-        # Mark the instance as dirty BEFORE changing it
         instance_to_change = gui_state.label_session_buffer[clicked_instance_index]
+        
         gui_state.label_dirty_instances.add(id(instance_to_change))
+        
+        if 'confidence' in instance_to_change:
+            if '_parent_id' not in instance_to_change:
+                instance_to_change['_parent_id'] = (instance_to_change['start'], instance_to_change['end'], instance_to_change['label'])
+            
+            del instance_to_change['confidence']
+            instance_to_change['_confirmed'] = True
+            log_message(f"Promoted instance {clicked_instance_index} after label change.", "INFO")
+        
         instance_to_change['label'] = new_behavior_name
         print(f"Changed instance {clicked_instance_index} to '{new_behavior_name}'.")
     else:
@@ -1557,8 +1546,6 @@ def label_frame(value: int):
             eel.updateConfidenceBadge(None, None)()
             
     render_image()
-
-
 
 def delete_instance_from_buffer():
     """Finds and removes an instance from the session buffer at the current frame."""
@@ -1580,6 +1567,12 @@ def delete_instance_from_buffer():
 
     if idx_to_remove != -1:
         removed_inst = gui_state.label_session_buffer.pop(idx_to_remove)
+        
+        if 'confidence' in removed_inst:
+            # Signature: (start, end, label)
+            sig = (removed_inst['start'], removed_inst['end'], removed_inst['label'])
+            gui_state.label_suppressed_ids.add(sig)
+
         gui_state.label_dirty_instances.add(f"deleted_{removed_inst['label']}")
         if removed_inst in gui_state.label_history:
             gui_state.label_history.remove(removed_inst)

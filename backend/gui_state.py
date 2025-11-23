@@ -54,6 +54,7 @@ label_session_colors: List[str] = []
 label_probability_df: Union[pd.DataFrame, None] = None
 label_history: List[Dict[str, Any]] = []
 label_dirty_instances: set = set()
+label_suppressed_ids: set = set()
 selected_instance_index: int = -1
 label_behavior_colors: List[str] = []
 label_confirmation_mode: bool = False
