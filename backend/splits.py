@@ -44,10 +44,9 @@ def _generate_dataset_fingerprint(dataset):
 
 class SplitProvider:
     """Abstract base class for data splitters."""
-    def get_split(self, run_index: int, all_subjects: list, all_instances: list, behaviors: list) -> tuple[list, list, list]:
+    def get_split(self, run_index: int, all_subjects: list, all_instances: list, behaviors: list, allow_relaxed_fallback: bool = False) -> tuple[list, list, list]:
         """Returns lists of subject IDs for train, validation, and test sets for a given run index."""
         raise NotImplementedError
-
 class RandomSplitProvider(SplitProvider):
     """
     Generates group-aware, stratified splits on the fly using a random seed.
@@ -64,32 +63,58 @@ class RandomSplitProvider(SplitProvider):
         val_behaviors = {inst['label'] for inst in val_insts}
         return train_behaviors == all_behaviors and val_behaviors == all_behaviors
 
-    def get_split(self, run_index: int, all_subjects: list, all_instances: list, behaviors: list) -> tuple[list, list, list]:
-        # Use the run_index to ensure each run gets a different, reproducible seed.
+    def _basic_subject_split(self, rng, all_subjects):
+        """
+        Fallback method: Splits subjects purely by ratio, ignoring behavior balance.
+        Crucially uses the provided RNG to maintain reproducibility.
+        """
+        shuffled_subjects = list(all_subjects)
+        rng.shuffle(shuffled_subjects)
+        
+        n_total = len(shuffled_subjects)
+        n_train = int(self.ratios[0] * n_total)
+        n_val = int(self.ratios[1] * n_total)
+        
+        if n_train == 0 and n_total > 0:
+            n_train = 1
+            
+        train_subjects = shuffled_subjects[:n_train]
+        val_subjects = shuffled_subjects[n_train : n_train + n_val]
+        test_subjects = shuffled_subjects[n_train + n_val:]
+        
+        if self.ratios[2] == 0.0 and (n_train + n_val) < n_total:
+            val_subjects = shuffled_subjects[n_train:]
+            test_subjects = []
+            
+        return train_subjects, val_subjects, test_subjects
+
+    def get_split(self, run_index: int, all_subjects: list, all_instances: list, behaviors: list, allow_relaxed_fallback: bool = False) -> tuple[list, list, list]:
         current_seed = self.initial_seed + run_index
         rng = np.random.default_rng(current_seed)
         
-        # It shuffles, splits, and validates.
         subject_to_insts = defaultdict(list)
         for inst in all_instances:
-            # NORMALIZE: Ensure consistent path separators for grouping.
             subject = os.path.dirname(inst['video']).replace('\\', '/')
             subject_to_insts[subject].append(inst)
 
-        # Ensure all_subjects list is also normalized and unique
         normalized_subjects = sorted(list(subject_to_insts.keys()))
 
         for attempt in range(10):
+            attempt_rng = np.random.default_rng(current_seed + attempt + 1)
             shuffled_subjects = list(normalized_subjects)
-            rng.shuffle(shuffled_subjects)
+            attempt_rng.shuffle(shuffled_subjects)
+            
             n_total = len(shuffled_subjects)
             n_train = int(self.ratios[0] * n_total)
             n_val = int(self.ratios[1] * n_total)
+            
             train_subjects = shuffled_subjects[:n_train]
             val_subjects = shuffled_subjects[n_train : n_train + n_val]
             test_subjects = shuffled_subjects[n_train + n_val:]
+            
             if self.ratios[2] == 0.0 and (n_train + n_val) < n_total:
                 val_subjects = shuffled_subjects[n_train:]
+                
             if self.stratify:
                 train_insts = [inst for s in train_subjects for inst in subject_to_insts[s]]
                 val_insts = [inst for s in val_subjects for inst in subject_to_insts[s]]
@@ -97,7 +122,21 @@ class RandomSplitProvider(SplitProvider):
                     return train_subjects, val_subjects, test_subjects
             else:
                 return train_subjects, val_subjects, test_subjects
-            rng = np.random.default_rng(current_seed + attempt + 1)
+        
+        if allow_relaxed_fallback:
+            warning_msg = (
+                "Stratification Failed: Dataset is too small or imbalanced to fully balance behaviors.\n"
+                "FALLBACK ACTIVE: Using strict Subject-Disjoint split to maintain scientific validity.\n"
+                "NOTE: Rare behaviors may be missing from Validation/Test sets, resulting in 'N/A' scores."
+            )
+            print(f"[WARN] {warning_msg}")
+            try:
+                import gui_state
+                if not gui_state.HEADLESS_MODE and gui_state.log_queue:
+                    gui_state.log_queue.put(f"[WARN] {warning_msg}")
+            except ImportError:
+                pass
+            return self._basic_subject_split(rng, normalized_subjects)
         
         raise RuntimeError("Failed to generate a valid stratified split after 10 attempts.")
 
@@ -117,10 +156,11 @@ class ManifestSplitProvider(SplitProvider):
         if self.manifest.get('dataset_fingerprint') != dataset_fingerprint:
             raise ValueError("FATAL: Dataset fingerprint in manifest does not match current dataset. The splits are not valid for this data.")
 
-    def get_split(self, run_index: int, all_subjects: list, all_instances: list, behaviors: list) -> tuple[list, list, list]:
+    def get_split(self, run_index: int, all_subjects: list, all_instances: list, behaviors: list, allow_relaxed_fallback: bool = False) -> tuple[list, list, list]:
         """
-        Retrieves a specific split from the manifest using the provided run_index.
-        The other arguments are ignored but included for signature compatibility.
+        Retrieves a specific split from the manifest.
+        NOTE: allow_relaxed_fallback is accepted for API compatibility but ignored 
+        because the split is pre-determined by the manifest file.
         """
         if not 0 <= run_index < len(self.manifest['splits']):
             raise IndexError(f"Run index {run_index} is out of bounds for manifest with {len(self.manifest['splits'])} splits.")

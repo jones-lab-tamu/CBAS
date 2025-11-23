@@ -595,7 +595,9 @@ class TrainingThread(threading.Thread):
                 if self.cancel_event.is_set(): break
                 log_message(f"--- Starting Run {run_num + 1}/{task.num_runs} ---", "INFO")
 
-                train_subjects, val_subjects, test_subjects = split_provider.get_split(run_num, all_subjects, all_instances, task.behaviors)
+                train_subjects, val_subjects, test_subjects = split_provider.get_split(
+                    run_num, all_subjects, all_instances, task.behaviors, allow_relaxed_fallback=True
+                )
                 
                 train_ds, val_ds, test_ds, train_insts, val_insts, test_insts, behaviors = cbas.create_datasets_from_splits(
                     gui_state.proj, task.name, train_subjects, val_subjects, test_subjects, task.sequence_length

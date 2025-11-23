@@ -216,8 +216,12 @@ def precompute_splits(dataset_name: str):
         "splits": []
     }
     provider = RandomSplitProvider(split_ratios=(0.85, 0.15, 0.0)) # 85% train, 15% val, 0% test
-    for i in range(10): # Generate 10 splits for the fine-grained sweep
-        train, val, test = provider.get_split(i, all_subjects, all_instances, dataset.config.get("behaviors", []))
+    for i in range(10): 
+        # Allow fallback
+        train, val, test = provider.get_split(
+            i, all_subjects, all_instances, dataset.config.get("behaviors", []), 
+            allow_relaxed_fallback=True
+        )
         sweep_manifest["splits"].append({"train": train, "validation": val, "test": test})
     
     sweep_path = os.path.join(gui_state.proj.path, "sweep_splits.json")
@@ -232,8 +236,12 @@ def precompute_splits(dataset_name: str):
         "splits": []
     }
     provider = RandomSplitProvider(split_ratios=(0.70, 0.15, 0.15)) # 70/15/15 split
-    for i in range(20): # Generate 20 outer splits
-        train, val, test = provider.get_split(i, all_subjects, all_instances, dataset.config.get("behaviors", []))
+    for i in range(20): 
+        # Allow fallback
+        train, val, test = provider.get_split(
+            i, all_subjects, all_instances, dataset.config.get("behaviors", []), 
+            allow_relaxed_fallback=True
+        )
         outer_manifest["splits"].append({"train": train, "validation": val, "test": test})
 
     outer_path = os.path.join(gui_state.proj.path, "outer_splits.json")
@@ -441,7 +449,9 @@ def train_final_model(dataset_name: str):
     class FinalFitSplitProvider(SplitProvider):
         def __init__(self, final_train_subjects):
             self.final_train_subjects = final_train_subjects
-        def get_split(self, run_index, all_subjects, all_instances, behaviors):
+        
+        # Accept argument to satisfy TrainingThread interface
+        def get_split(self, run_index, all_subjects, all_instances, behaviors, allow_relaxed_fallback=False):
             return self.final_train_subjects, [], []
 
     final_split_provider = FinalFitSplitProvider(final_train_subjects)
