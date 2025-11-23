@@ -980,6 +980,7 @@ def clean_and_sort_labels(dataset_name: str) -> bool:
 def start_labeling_with_preload(dataset_name: str, model_name: str, video_path_to_label: str, smoothing_window: int) -> bool:
     """
     Runs a quick inference step and then spawns the labeling worker.
+    Intelligently infers model architecture parameters from weights if config is missing them.
     """
     try:
         print(f"Request to pre-label '{os.path.basename(video_path_to_label)}' with model '{model_name}'...")
@@ -1014,31 +1015,53 @@ def start_labeling_with_preload(dataset_name: str, model_name: str, video_path_t
             hparams = model_obj.config
             arch_type = "ClassifierLegacyLSTM"
         
+        # Ensure behaviors list is present
+        if "behaviors" not in hparams: hparams["behaviors"] = model_obj.config.get("behaviors", [])
+        if "seq_len" not in hparams: hparams["seq_len"] = model_obj.config.get("seq_len", 31)
+
         log_message(f"Guided Labeling using model with architecture: '{arch_type}'", "INFO")
 
-        if arch_type.startswith("ClassifierLSTMDeltas"):
-            torch_model = classifier_head.ClassifierLSTMDeltas(
-                in_features=768,
-                out_features=len(hparams.get("behaviors", [])),
-                seq_len=hparams.get("seq_len", 31),
-                lstm_hidden_size=hparams.get("lstm_hidden_size", 64),
-                lstm_layers=hparams.get("lstm_layers", 1),
-            ).to(device)
-        else: # Handles legacy models
-            torch_model = classifier_head.ClassifierLegacyLSTM(
-                in_features=768,
-                out_features=len(hparams.get("behaviors", [])),
-                seq_len=hparams.get("seq_len", 31),
-            ).to(device)
-           
+        # LOAD WEIGHTS FIRST TO INFER PARAMS
         try:
             state = torch.load(model_obj.weights_path, map_location=device, weights_only=True)
         except TypeError:
             state = torch.load(model_obj.weights_path, map_location=device)
-        
-        # Use strict=False to gracefully handle unexpected keys, which can happen
-        # with older models or slight architecture changes. The size mismatch error
-        # is the critical one, which our constructor logic now prevents.
+
+        if arch_type.startswith("ClassifierLSTMDeltas"):
+            # Infer hidden size from weights if missing in config
+            # This handles models trained with custom sizes (e.g. 128) that lost their meta tag
+            if "lstm_hidden_size" not in hparams:
+                # Try to find a weight tensor that reveals the size
+                # attention_head.weight shape is [1, hidden_size * 2]
+                # lin2.weight shape is [behaviors, hidden_size * 2]
+                inferred_dim = None
+                if "attention_head.weight" in state:
+                    inferred_dim = state["attention_head.weight"].shape[1] // 2
+                elif "lin2.weight" in state:
+                    inferred_dim = state["lin2.weight"].shape[1] // 2
+                
+                hparams["lstm_hidden_size"] = inferred_dim if inferred_dim else 64
+                log_message(f"Inferred LSTM hidden size from weights: {hparams['lstm_hidden_size']}", "INFO")
+
+            if "lstm_layers" not in hparams:
+                # Infer layers by counting lstm weight keys, ignoring '_reverse' suffix for bidirectional models
+                layer_keys = [int(k.split('weight_ih_l')[1].split('_')[0]) for k in state.keys() if 'lstm.weight_ih_l' in k]
+                hparams["lstm_layers"] = max(layer_keys) + 1 if layer_keys else 1
+
+            torch_model = classifier_head.ClassifierLSTMDeltas(
+                in_features=768,
+                out_features=len(hparams["behaviors"]),
+                seq_len=hparams["seq_len"],
+                lstm_hidden_size=hparams["lstm_hidden_size"],
+                lstm_layers=hparams["lstm_layers"],
+            ).to(device)
+        else: # Handles legacy models
+            torch_model = classifier_head.ClassifierLegacyLSTM(
+                in_features=768,
+                out_features=len(hparams["behaviors"]),
+                seq_len=hparams["seq_len"],
+            ).to(device)
+           
         torch_model.load_state_dict(state, strict=False)
         torch_model.eval()
 
@@ -1059,7 +1082,6 @@ def start_labeling_with_preload(dataset_name: str, model_name: str, video_path_t
             smoothing_window=smoothing_window
         )
 
-        
         eel.spawn(_start_labeling_worker, dataset_name, video_path_to_label, preloaded_instances, probability_df)
         
         print(f"Spawned pre-labeling worker for video '{os.path.basename(video_path_to_label)}'.")
