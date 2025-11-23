@@ -591,128 +591,132 @@ class TrainingThread(threading.Thread):
             overall_best_run_history = None
             final_split_assignments = {}
 
-            for run_num in range(task.num_runs):
-                if self.cancel_event.is_set(): break
-                log_message(f"--- Starting Run {run_num + 1}/{task.num_runs} ---", "INFO")
-
-                train_subjects, val_subjects, test_subjects = split_provider.get_split(
-                    run_num, all_subjects, all_instances, task.behaviors, allow_relaxed_fallback=True
-                )
-                
-                train_ds, val_ds, test_ds, train_insts, val_insts, test_insts, behaviors = cbas.create_datasets_from_splits(
-                    gui_state.proj, task.name, train_subjects, val_subjects, test_subjects, task.sequence_length
-                )
-
-                # Relax the validation set requirement.
-                # The training function itself can handle a None val_ds.
-                if train_ds is None or len(train_ds) == 0:
-                    log_message(f"Data splitting for run {run_num + 1} failed because the training set was empty. Skipping.", "WARN")
-                    continue
-                
-                run_best_model_for_trials, run_best_f1_for_trials, run_best_reports_history, run_best_epoch = None, -1.0, None, -1
-
-                for trial_num in range(task.num_trials):
+            try:
+                for run_num in range(task.num_runs):
                     if self.cancel_event.is_set(): break
-                    log_message(f"Run {run_num + 1}, Trial {trial_num + 1}/{task.num_trials} for '{task.name}'.", "INFO")
+                    log_message(f"--- Starting Run {run_num + 1}/{task.num_runs} ---", "INFO")
+
+                    train_subjects, val_subjects, test_subjects = split_provider.get_split(
+                        run_num, all_subjects, all_instances, task.behaviors, allow_relaxed_fallback=True
+                    )
                     
-                    def training_progress_updater(message: str):
-                        if not gui_state.HEADLESS_MODE:
-                            f1_match = re.search(r"Val F1: ([\d\.]+)", message)
-                            current_best = run_best_f1_for_trials
-                            if f1_match:
-                                current_best = max(run_best_f1_for_trials, float(f1_match.group(1)))
-                            f1_text = f"{current_best:.4f}" if current_best >= 0 else "N/A"
-                            display_message = f"Run {run_num + 1}/{task.num_runs}, Trial {trial_num + 1}/{task.num_trials}... Best Val F1: {f1_text}"
-                            eel.updateTrainingStatusOnUI(task.name, display_message, message)()
-
-                    weights = None
-                    if task.training_method == "weighted_loss":
-                        weights = cbas.compute_class_weights_from_instances(train_insts, behaviors)
-                    elif task.training_method == 'custom_weights' and task.custom_weights:
-                        weights = [task.custom_weights.get(b, 1.0) for b in behaviors]
-
-                    trial_model, trial_reports, trial_best_epoch = cbas.train_lstm_model(
-                        train_ds, val_ds, task.sequence_length, behaviors, self.cancel_event,
-                        lr=task.learning_rate, batch_size=task.batch_size,
-                        epochs=task.epochs, device=self.device, class_weights=weights,
-                        patience=task.patience, progress_callback=training_progress_updater,
-                        optimization_target=task.optimization_target,
-                        weight_decay=task.weight_decay,
-                        label_smoothing=task.label_smoothing,
-                        lstm_hidden_size=task.lstm_hidden_size,
-                        lstm_layers=task.lstm_layers
+                    train_ds, val_ds, test_ds, train_insts, val_insts, test_insts, behaviors = cbas.create_datasets_from_splits(
+                        gui_state.proj, task.name, train_subjects, val_subjects, test_subjects, task.sequence_length
                     )
 
-                    if trial_model and trial_reports and trial_best_epoch != -1:
-                        # Handle the case where there is no validation report
-                        f1 = -1.0
-                        if trial_reports[trial_best_epoch].val_report:
-                            f1 = trial_reports[trial_best_epoch].val_report.get(task.optimization_target, {}).get("f1-score", -1.0)
-                        
-                        # If there's no validation set, we still need to save the model from the first trial.
-                        if f1 > run_best_f1_for_trials or run_best_model_for_trials is None:
-                            run_best_f1_for_trials = f1
-                            run_best_model_for_trials = trial_model
-                            run_best_reports_history = trial_reports
-                            run_best_epoch = trial_best_epoch
-                
-                if self.cancel_event.is_set(): break
-
-                if run_best_model_for_trials:
-                    run_winner_report = {
-                        "best_epoch": run_best_epoch,
-                        "validation_report": run_best_reports_history[run_best_epoch].val_report if run_best_reports_history else {},
-                        "validation_cm": run_best_reports_history[run_best_epoch].val_cm if run_best_reports_history else np.array([]),
-                        "test_report": {},
-                        "test_cm": np.array([])
-                    }
-
-                    if task.use_test and test_ds and len(test_ds) > 0:
-                        log_message(f"Run {run_num + 1}: Evaluating best model on held-out test set...", "INFO")
-                        if not gui_state.HEADLESS_MODE:
-                            eel.updateTrainingStatusOnUI(task.name, f"Run {run_num + 1}/{task.num_runs}: Evaluating on test set...")()
-                        test_results = cbas.evaluate_on_split(run_best_model_for_trials, test_ds, behaviors, device=self.device)
-                        run_winner_report["test_report"] = test_results["report"]
-                        run_winner_report["test_cm"] = test_results["cm"]
+                    # Relax the validation set requirement.
+                    if train_ds is None or len(train_ds) == 0:
+                        log_message(f"Data splitting for run {run_num + 1} failed because the training set was empty. Skipping.", "WARN")
+                        continue
                     
-                    all_run_reports.append(run_winner_report)
+                    run_best_model_for_trials, run_best_f1_for_trials, run_best_reports_history, run_best_epoch = None, -1.0, None, -1
 
-                    if run_best_f1_for_trials > overall_best_f1 or overall_best_model is None:
-                        log_message(f"New overall best model found in Run {run_num + 1} with Validation F1: {run_best_f1_for_trials:.4f}", "INFO")
-                        overall_best_f1 = run_best_f1_for_trials
-                        overall_best_model = run_best_model_for_trials
-                        overall_best_run_history = run_best_reports_history
-                        final_split_assignments = {
-                            "master_seed": split_provider.initial_seed if isinstance(split_provider, RandomSplitProvider) else "N/A",
-                            "train_groups": sorted(list(train_subjects)),
-                            "val_groups": sorted(list(val_subjects)),
-                            "test_groups": sorted(list(test_subjects))
+                    for trial_num in range(task.num_trials):
+                        if self.cancel_event.is_set(): break
+                        log_message(f"Run {run_num + 1}, Trial {trial_num + 1}/{task.num_trials} for '{task.name}'.", "INFO")
+                        
+                        def training_progress_updater(message: str):
+                            if not gui_state.HEADLESS_MODE:
+                                f1_match = re.search(r"Val F1: ([\d\.]+)", message)
+                                current_best = run_best_f1_for_trials
+                                if f1_match:
+                                    current_best = max(run_best_f1_for_trials, float(f1_match.group(1)))
+                                f1_text = f"{current_best:.4f}" if current_best >= 0 else "N/A"
+                                display_message = f"Run {run_num + 1}/{task.num_runs}, Trial {trial_num + 1}/{task.num_trials}... Best Val F1: {f1_text}"
+                                eel.updateTrainingStatusOnUI(task.name, display_message, message)()
+
+                        weights = None
+                        if task.training_method == "weighted_loss":
+                            weights = cbas.compute_class_weights_from_instances(train_insts, behaviors)
+                        elif task.training_method == 'custom_weights' and task.custom_weights:
+                            weights = [task.custom_weights.get(b, 1.0) for b in behaviors]
+
+                        trial_model, trial_reports, trial_best_epoch = cbas.train_lstm_model(
+                            train_ds, val_ds, task.sequence_length, behaviors, self.cancel_event,
+                            lr=task.learning_rate, batch_size=task.batch_size,
+                            epochs=task.epochs, device=self.device, class_weights=weights,
+                            patience=task.patience, progress_callback=training_progress_updater,
+                            optimization_target=task.optimization_target,
+                            weight_decay=task.weight_decay,
+                            label_smoothing=task.label_smoothing,
+                            lstm_hidden_size=task.lstm_hidden_size,
+                            lstm_layers=task.lstm_layers
+                        )
+
+                        if trial_model and trial_reports and trial_best_epoch != -1:
+                            # Handle the case where there is no validation report
+                            f1 = -1.0
+                            if trial_reports[trial_best_epoch].val_report:
+                                f1 = trial_reports[trial_best_epoch].val_report.get(task.optimization_target, {}).get("f1-score", -1.0)
+                            
+                            # If there's no validation set, we still need to save the model from the first trial.
+                            if f1 > run_best_f1_for_trials or run_best_model_for_trials is None:
+                                run_best_f1_for_trials = f1
+                                run_best_model_for_trials = trial_model
+                                run_best_reports_history = trial_reports
+                                run_best_epoch = trial_best_epoch
+                    
+                    if self.cancel_event.is_set(): break
+
+                    if run_best_model_for_trials:
+                        run_winner_report = {
+                            "best_epoch": run_best_epoch,
+                            "validation_report": run_best_reports_history[run_best_epoch].val_report if run_best_reports_history else {},
+                            "validation_cm": run_best_reports_history[run_best_epoch].val_cm if run_best_reports_history else np.array([]),
+                            "test_report": {},
+                            "test_cm": np.array([])
                         }
 
-            if self.cancel_event.is_set():
-                log_message(f"Training for '{task.name}' was cancelled by user.", "WARN")
-                if not gui_state.HEADLESS_MODE:
-                    eel.updateTrainingStatusOnUI(task.name, "Training cancelled.")()
-                return
+                        if task.use_test and test_ds and len(test_ds) > 0:
+                            log_message(f"Run {run_num + 1}: Evaluating best model on held-out test set...", "INFO")
+                            if not gui_state.HEADLESS_MODE:
+                                eel.updateTrainingStatusOnUI(task.name, f"Run {run_num + 1}/{task.num_runs}: Evaluating on test set...")()
+                            test_results = cbas.evaluate_on_split(run_best_model_for_trials, test_ds, behaviors, device=self.device)
+                            run_winner_report["test_report"] = test_results["report"]
+                            run_winner_report["test_cm"] = test_results["cm"]
+                        
+                        all_run_reports.append(run_winner_report)
 
-            if overall_best_model and all_run_reports:
-                self._save_averaged_training_results(
-                    task=task,
-                    best_model=overall_best_model,
-                    all_run_reports=all_run_reports,
-                    best_run_history=overall_best_run_history,
-                    best_run_cm=None,
-                    split_assignments=final_split_assignments,
-                    train_insts=train_insts,
-                    val_insts=val_insts,
-                    test_insts=test_insts,
-                    output_dir=output_dir,
-                    plot_suffix=plot_suffix
-                )
-            else:
-                log_message(f"Training failed for '{task.name}'. No valid model could be trained.", "ERROR")
-                if not gui_state.HEADLESS_MODE:
-                    eel.updateTrainingStatusOnUI(task.name, "Training failed.")()
+                        if run_best_f1_for_trials > overall_best_f1 or overall_best_model is None:
+                            log_message(f"New overall best model found in Run {run_num + 1} with Validation F1: {run_best_f1_for_trials:.4f}", "INFO")
+                            overall_best_f1 = run_best_f1_for_trials
+                            overall_best_model = run_best_model_for_trials
+                            overall_best_run_history = run_best_reports_history
+                            final_split_assignments = {
+                                "master_seed": split_provider.initial_seed if isinstance(split_provider, cbas.RandomSplitProvider) else "N/A",
+                                "train_groups": sorted(list(train_subjects)),
+                                "val_groups": sorted(list(val_subjects)),
+                                "test_groups": sorted(list(test_subjects))
+                            }
+
+                if self.cancel_event.is_set():
+                    log_message(f"Training for '{task.name}' was cancelled by user.", "WARN")
+                    if not gui_state.HEADLESS_MODE:
+                        eel.updateTrainingStatusOnUI(task.name, "Training cancelled.")()
+                    return
+
+                if overall_best_model and all_run_reports:
+                    self._save_averaged_training_results(
+                        task=task,
+                        best_model=overall_best_model,
+                        all_run_reports=all_run_reports,
+                        best_run_history=overall_best_run_history,
+                        best_run_cm=None,
+                        split_assignments=final_split_assignments,
+                        train_insts=train_insts,
+                        val_insts=val_insts,
+                        test_insts=test_insts,
+                        output_dir=output_dir,
+                        plot_suffix=plot_suffix
+                    )
+                else:
+                    log_message(f"Training failed for '{task.name}'. No valid model could be trained.", "ERROR")
+                    if not gui_state.HEADLESS_MODE:
+                        eel.updateTrainingStatusOnUI(task.name, "Training failed.")()
+
+            finally:
+                # Close file handles to prevent OS resource exhaustion
+                cbas.cleanup_global_handles()
 
         except Exception as e:
             log_message(f"Critical error during training task for {task.name}: {e}", "ERROR")

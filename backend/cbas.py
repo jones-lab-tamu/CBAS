@@ -48,7 +48,7 @@ from backend.splits import RandomSplitProvider
 CHUNK_SIZE = 512
 
 # =========================================================================
-# LAZY DATA LOADING IMPLEMENTATION (PHASE 1 & 3 REFACTOR)
+# LAZY DATA LOADING
 # =========================================================================
 
 # This dictionary will be created as a fresh, empty dict in each DataLoader
@@ -63,6 +63,21 @@ def _cleanup_worker_handles():
         except Exception:
             pass # Ignore errors on close, the process is terminating anyway
     _worker_h5_handles.clear()
+
+def cleanup_global_handles():
+    """
+    Explicitly closes all cached HDF5 handles in the main process.
+    This must be called by the TrainingThread after a job completes.
+    """
+    global _worker_h5_handles
+    if _worker_h5_handles:
+        print(f"Cleaning up {len(_worker_h5_handles)} open HDF5 file handles...")
+        for path, handle in list(_worker_h5_handles.items()):
+            try:
+                handle.close()
+            except Exception:
+                pass # Ignore errors on close (file might be already closed)
+        _worker_h5_handles.clear()
 
 def worker_init_fn(worker_id):
     """Initializes a DataLoader worker by registering the cleanup function."""
@@ -1251,6 +1266,11 @@ def train_lstm_model(train_set, test_set, seq_len: int, behaviors: list, cancel_
         
         model.train()
         for i, (d, l) in enumerate(train_loader):
+        
+            # Check for cancel every batch for responsive stopping
+            if cancel_event.is_set():
+                break
+                
             if d.numel() == 0: continue
             d, l = d.to(device).float(), l.to(device)
             optimizer.zero_grad()
@@ -1291,6 +1311,11 @@ def train_lstm_model(train_set, test_set, seq_len: int, behaviors: list, cancel_
             val_actuals, val_predictions = [], []
             with torch.no_grad():
                 for d, l in test_loader:
+                
+                # Check for cancel in validation
+                    if cancel_event.is_set():
+                        break
+                
                     if d.numel() == 0: continue
                     logits, _ = model(d.to(device).float())
                     val_actuals.extend(l.cpu().numpy())
