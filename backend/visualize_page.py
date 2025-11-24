@@ -96,7 +96,7 @@ def _generate_actograms_task(root: str, sub_dir: str, model: str, behaviors: lis
                             binsize_minutes_val: int, start_val: float, threshold_val: float, lightcycle: str,
                             plot_acrophase: bool, task_id: int):
     """
-    (WORKER) This function is now OPTIMIZED. It loads all CSV data into memory once,
+    (WORKER) This function loads all CSV data into memory once,
     then processes each behavior from the in-memory DataFrame.
     """
     workthreads.log_message(f"Starting optimized actogram task {task_id} for: {behaviors}", "INFO")
@@ -127,9 +127,10 @@ def _generate_actograms_task(root: str, sub_dir: str, model: str, behaviors: lis
         if not all_csv_paths:
              raise FileNotFoundError("No classification CSVs found for this model/subject.")
         
-        # Sort files by their modification time to ensure correct chronological order,
-        # which is robust to any user-provided file naming convention.
-        all_csv_paths.sort(key=os.path.getmtime)
+        # Sort files using Natural Sorting (alphanumeric) instead of modification time.
+        # This ensures frames are stitched in the correct order (e.g. 1 -> 2 -> 10) regardless
+        # of file timestamps, preventing time scrambles if a specific file was re-processed later.
+        all_csv_paths.sort(key=lambda f: [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', os.path.basename(f))])
             
         master_df = pd.concat((pd.read_csv(f) for f in all_csv_paths), ignore_index=True)
         workthreads.log_message(f"Task {task_id}: Master DataFrame created with {len(master_df)} frames.", "INFO")
@@ -202,8 +203,8 @@ def generate_actograms(root: str, sub_dir: str, model: str, behaviors: list, fra
 def generate_and_save_data(output_directory: str, root: str, sub_dir: str, model: str, behaviors: list, framerate: str,
                            binsize_from_gui: str, start: str, threshold: str):
     """
-    (WORKER) Generates binned actogram data for multiple behaviors and saves it to a single CSV file.
     """
+    (WORKER) Generates binned actogram data for multiple behaviors and saves it to a single CSV file.
     try:
         workthreads.log_message(f"Starting data export for {len(behaviors)} behavior(s)...", "INFO")
         
@@ -221,8 +222,8 @@ def generate_and_save_data(output_directory: str, root: str, sub_dir: str, model
         if not all_csv_paths:
             raise FileNotFoundError("No classification CSVs found for this model/subject.")
         
-        # Use the robust chronological sort by modification time
-        all_csv_paths.sort(key=os.path.getmtime)
+        # Use Natural Sorting for export as well
+        all_csv_paths.sort(key=lambda f: [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', os.path.basename(f))])
             
         master_df = pd.concat((pd.read_csv(f) for f in all_csv_paths), ignore_index=True)
         workthreads.log_message(f"Loaded master DataFrame with {len(master_df)} frames for export.", "INFO")
