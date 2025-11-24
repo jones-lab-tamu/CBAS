@@ -397,12 +397,11 @@ class InvalidProject(Exception):
         super().__init__(f"Path '{path}' is not a valid CBAS project directory.")
 
 def encode_file(encoder: nn.Module, path: str, progress_callback=None) -> str | None:
-    try:
-        reader = decord.VideoReader(path, ctx=decord.cpu(0))
-        video_len = len(reader)
-    except Exception as e:
-        print(f"Error reading video {path} with decord: {e}")
-        return None
+    # Allow Decord initialization errors to propagate up to the worker thread
+    # instead of catching them here and returning None.
+    reader = decord.VideoReader(path, ctx=decord.cpu(0))
+    video_len = len(reader)
+    
     if video_len == 0:
         print(f"Warning: Video {path} contains no frames. Skipping.")
         return None
@@ -447,9 +446,14 @@ def encode_file(encoder: nn.Module, path: str, progress_callback=None) -> str | 
 
     except Exception as e:
         print(f"ERROR during encoding for {path}: {e}")
+        # Safer cleanup logic
         if os.path.exists(tmp_file_path):
-            os.remove(tmp_file_path)
-        return None
+            try:
+                os.remove(tmp_file_path)
+            except OSError:
+                pass
+        # Re-raise so the worker thread logs the specific error
+        raise e
 
 def infer_file(
     file_path: str,
