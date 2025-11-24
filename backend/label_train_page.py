@@ -1082,6 +1082,8 @@ def start_labeling_with_preload(dataset_name: str, model_name: str, video_path_t
             smoothing_window=smoothing_window
         )
 
+        gui_state.live_inference_model_name = model_name
+
         eel.spawn(_start_labeling_worker, dataset_name, video_path_to_label, preloaded_instances, probability_df)
         
         print(f"Spawned pre-labeling worker for video '{os.path.basename(video_path_to_label)}'.")
