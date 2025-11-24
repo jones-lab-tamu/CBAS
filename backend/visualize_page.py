@@ -203,8 +203,8 @@ def generate_actograms(root: str, sub_dir: str, model: str, behaviors: list, fra
 def generate_and_save_data(output_directory: str, root: str, sub_dir: str, model: str, behaviors: list, framerate: str,
                            binsize_from_gui: str, start: str, threshold: str):
     """
-    """
     (WORKER) Generates binned actogram data for multiple behaviors and saves it to a single CSV file.
+    """
     try:
         workthreads.log_message(f"Starting data export for {len(behaviors)} behavior(s)...", "INFO")
         
