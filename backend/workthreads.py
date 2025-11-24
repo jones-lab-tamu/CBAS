@@ -420,7 +420,8 @@ class ClassificationThread(threading.Thread):
                     inferred_h_size = weights.get("attention_head.weight", weights.get("lin2.weight")).shape[1] // 2
                     hparams["lstm_hidden_size"] = inferred_h_size if inferred_h_size else 64
                 if "lstm_layers" not in hparams:
-                    layer_keys = [int(k.split('_l')[1].split('.')[0]) for k in weights if 'lstm.weight_ih_l' in k]
+                # Parse layer index correctly, ignoring '_reverse' suffix for bidirectional models
+                    layer_keys = [int(k.split('weight_ih_l')[1].split('_')[0]) for k in weights if 'lstm.weight_ih_l' in k]
                     hparams["lstm_layers"] = max(layer_keys) + 1 if layer_keys else 1
 
                 torch_model = classifier_head.ClassifierLSTMDeltas(

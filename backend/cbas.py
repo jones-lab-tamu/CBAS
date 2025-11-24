@@ -462,57 +462,110 @@ def infer_file(
 ) -> str | None:
     """
     Runs inference on a single HDF5 file and saves the results to a CSV.
+    Uses buffered reading (chunks) to prevent OOM on large videos.
     """
     output_file = file_path.replace("_cls.h5", f"_{dataset_name}_outputs.csv")
-    try:
-        with h5py.File(file_path, "r") as f:
-            cls_np = np.array(f["cls"][:])
-    except Exception as e:
-        print(f"Error reading HDF5 file {file_path}: {e}")
-        return None
-
-    if cls_np.ndim < 2 or cls_np.shape[0] < seq_len:
-        print(f"Warning: HDF5 file {file_path} is too short for inference. Skipping.")
-        return None
-
-    cls_np_f32 = cls_np.astype(np.float32)
-    cls = torch.from_numpy(cls_np_f32)
+    
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    # Ensure model is on correct device
     param = next(model.parameters(), None)
     if param is not None and param.device != device:
         model = model.to(device)
 
-    predictions, batch_windows = [], []
     half_seqlen = seq_len // 2
-    for i in range(half_seqlen, len(cls) - half_seqlen):
-        window = cls[i - half_seqlen : i + half_seqlen + 1]
-        batch_windows.append(window)
-        if len(batch_windows) >= 4096 or i == len(cls) - half_seqlen - 1:
-            if not batch_windows:
-                continue
-            batch_tensor = torch.stack(batch_windows)
-            with torch.no_grad():
-                logits, _ = model(batch_tensor.to(device))
-                scaled_logits = logits / max(1e-3, temperature)
-                predictions.extend(torch.softmax(scaled_logits, dim=1).cpu().numpy())
-            batch_windows = []
+    INFERENCE_CHUNK_SIZE = 20000  # Process ~20k frames at a time to save RAM
+    
+    try:
+        with h5py.File(file_path, "r") as f:
+            dset = f["cls"]
+            total_frames = dset.shape[0]
+            
+            if total_frames == 0:
+                print(f"Warning: HDF5 file {file_path} is empty.")
+                return None
 
-    if not predictions:
+            # We collect results in a list. A list of 1M float arrays is RAM-efficient (~30MB for 24h).
+            # The heavy feature vectors (GBs) are discarded after each chunk.
+            all_probs = []
+
+            for start_idx in range(0, total_frames, INFERENCE_CHUNK_SIZE):
+                end_idx = min(start_idx + INFERENCE_CHUNK_SIZE, total_frames)
+                
+                # Determine read bounds with context
+                # To predict frames [start_idx ... end_idx], we need features 
+                # from (start_idx - half) to (end_idx + half).
+                read_start = max(0, start_idx - half_seqlen)
+                read_end = min(total_frames, end_idx + half_seqlen)
+                
+                # Load ONLY the necessary chunk into RAM
+                feature_chunk = dset[read_start:read_end] 
+                chunk_tensor = torch.from_numpy(feature_chunk).float()
+                
+                # --- Edge Padding Logic ---
+                # If we are at the very start of the video and couldn't read past context:
+                if start_idx < half_seqlen:
+                    pad_qty = half_seqlen - start_idx
+                    if pad_qty > 0:
+                        # Replicate the first frame's features 'pad_qty' times
+                        front_pad = chunk_tensor[0:1].repeat(pad_qty, 1)
+                        chunk_tensor = torch.cat([front_pad, chunk_tensor], dim=0)
+
+                # If we are at the very end of the video and couldn't read future context:
+                if end_idx > total_frames - half_seqlen:
+                    pad_qty = half_seqlen - (total_frames - end_idx)
+                    if pad_qty > 0:
+                        # Replicate the last frame's features 'pad_qty' times
+                        end_pad = chunk_tensor[-1:].repeat(pad_qty, 1)
+                        chunk_tensor = torch.cat([chunk_tensor, end_pad], dim=0)
+                
+                # --- Inference Loop ---
+                # chunk_tensor is now padded to allow sliding exactly 'num_targets' windows
+                num_targets = end_idx - start_idx
+                batch_buffer = []
+                chunk_predictions = []
+                
+                for i in range(num_targets):
+                    # Slice window of size seq_len
+                    window = chunk_tensor[i : i + seq_len]
+                    batch_buffer.append(window)
+                    
+                    # Run batch when full or at end of chunk
+                    if len(batch_buffer) >= 512 or i == num_targets - 1:
+                        if not batch_buffer: continue
+                        
+                        batch_stack = torch.stack(batch_buffer).to(device)
+                        with torch.no_grad():
+                            logits, _ = model(batch_stack)
+                            scaled_logits = logits / max(1e-3, temperature)
+                            probs = torch.softmax(scaled_logits, dim=1).cpu().numpy()
+                            chunk_predictions.extend(probs)
+                        
+                        batch_buffer = []
+                
+                all_probs.extend(chunk_predictions)
+                
+                # Explicitly free memory
+                del chunk_tensor
+                del feature_chunk
+
+        # Save to CSV
+        if not all_probs:
+            return None
+            
+        # Check for length mismatch (sanity check)
+        if len(all_probs) != total_frames:
+            print(f"Warning: Prediction count ({len(all_probs)}) != Frame count ({total_frames}).")
+            
+        pd.DataFrame(np.array(all_probs), columns=behaviors).to_csv(output_file, index=False)
+        return output_file
+
+    except Exception as e:
+        print(f"Error during buffered inference on {file_path}: {e}")
+        import traceback
+        traceback.print_exc()
         return None
-
-    padded_predictions = []
-    for i in range(len(cls)):
-        if i < half_seqlen:
-            padded_predictions.append(predictions[0])
-        elif i >= len(cls) - half_seqlen:
-            padded_predictions.append(predictions[-1])
-        else:
-            padded_predictions.append(predictions[i - half_seqlen])
-
-    pd.DataFrame(np.array(padded_predictions), columns=behaviors).to_csv(output_file, index=False)
-    return output_file
 
 def _create_matplotlib_actogram(binned_activity, light_cycle_booleans, tau, bin_size_minutes, plot_title, start_hour_offset, plot_acrophase=False, base_color=None):
     bins_per_period = int((tau * 60) / bin_size_minutes)
