@@ -21,17 +21,29 @@ if (!gotTheLock) {
 
   function createPythonProcess() {
     const appRoot = app.getAppPath();
-    const venvPython = path.join(appRoot, 'venv', 'Scripts', 'python.exe');
+    
+    // Check multiple locations for the Python executable to support Windows, macOS, and Linux
+    const possiblePythonPaths = [
+        path.join(appRoot, 'venv', 'Scripts', 'python.exe'), // Windows Standard
+        path.join(appRoot, 'venv', 'bin', 'python'),         // macOS / Linux Standard
+    ];
+
+    // Find the first path that actually exists on the file system
+    const venvPython = possiblePythonPaths.find(p => fs.existsSync(p));
+
+    if (!venvPython) {
+      dialog.showErrorBox(
+          "Startup Error", 
+          `Could not find the Python virtual environment.\n\nChecked the following paths:\n${possiblePythonPaths.join('\n')}\n\nPlease ensure you have run the installation steps to create the 'venv' folder.`
+      );
+      app.quit();
+      return;
+    }
+
     const scriptPath = path.join(appRoot, 'backend', 'app.py');
     const pythonArgs = ['-u', scriptPath];
     console.log(`Spawning Python: "${venvPython}" ${pythonArgs.join(' ')}`);
 
-    if (!fs.existsSync(venvPython)) {
-      // Handle error - e.g., show a dialog
-      dialog.showErrorBox("Python Error", `Virtual environment not found at ${venvPython}. Please run the installation steps.`);
-      app.quit();
-      return;
-    }
     pythonProcess = child_process.spawn(venvPython, pythonArgs);
     pythonProcess.stdout.on('data', (data) => console.log(`[Python]: ${data.toString().trim()}`));
     pythonProcess.stderr.on('data', (data) => console.error(`[Python ERR]: ${data.toString().trim()}`));
