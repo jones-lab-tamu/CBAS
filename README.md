@@ -167,6 +167,9 @@ The documentation is organized to follow the logical workflow of a typical proje
     *   [**Recording Video:** For a guide on adding cameras and managing recording sessions in CBAS.](Recording.md)
     *   [**Training a Custom Model:** For a detailed guide on creating a new dataset and training a model.](Training.md)
     *   [**Visualizing & Analyzing Data:** For a guide on using your trained model to analyze videos and interpret the results.](Visualization_and_Analysis.md)
+
+*   **3. Support**
+    *   [**Troubleshooting Guide:** Solutions for common errors, installation issues, and analysis bugs.](Troubleshooting.md)
 	
 ### Optional: Using the Default `JonesLabModel`
 
@@ -178,7 +181,7 @@ The `JonesLabModel` is a **legacy CBAS v2 model**. It uses a different model hea
 Attempting to load it directly in CBAS v3 will result in **shape mismatch** or **“too many values to unpack”** errors.
 
 Most users should **not** copy or attempt to use this model in new projects.  
-If you want a working demonstration, train a small v3 model on your own labeled data or use a **v3-compatible demo model** if provided [to do: upload a v3 demo model plus demo videos to run it on!]
+If you want a working demonstration, train a small v3 model on your own labeled data.
 
 #### For Advanced Users Only
 If you fully understand the v2 model structure and still wish to explore it:
@@ -243,48 +246,15 @@ The first time you launch a project with the new model, the backend will downloa
 
 ## Troubleshooting
 
-<details>
-  <summary>Stuck on “Loading DINO encoder…” (Windows)</summary>
-  
-  1) Seed the model once from the SAME venv CBAS uses:
-     > .\venv\Scripts\activate
-     > huggingface-cli login
-     > python -c "from huggingface_hub import snapshot_download as d; d('facebook/dinov3-vitb16-pretrain-lvd1689m', local_files_only=False, local_dir_use_symlinks=False)"
-  2) Launch with offline cache so CBAS doesn’t make network calls:
-     > set HF_HUB_OFFLINE=1
-     > npm start
-  3) If it still stalls:
-     - Ensure the token is set in this venv:  `huggingface-cli whoami`
-     - Accept model terms in your browser while logged in (model page on Hugging Face).
-     - Upgrade hub libs in this venv:  `pip install -U huggingface_hub transformers timm`
-     - Clear stale locks and re-download:
-       > powershell -NoProfile -Command "Get-ChildItem -Recurse \"$env:USERPROFILE\.cache\huggingface\hub\" -Filter *.lock | Remove-Item -Force"
-       > rmdir /S /Q "%USERPROFILE%\.cache\huggingface\hub\models--facebook--dinov3-vitb16-pretrain-lvd1689m"
-       > python -c "from huggingface_hub import snapshot_download as d; d('facebook/dinov3-vitb16-pretrain-lvd1689m', local_files_only=False, local_dir_use_symlinks=False)"
-</details>
+If you encounter issues with installation, "No files found" errors, or model training:
 
-<details>
-  <summary>PyTorch size-mismatch when loading a trained model</summary>
-  
-  - Cause: head rebuilt with wrong dims (e.g., hidden_size 64) vs checkpoint (e.g., 128).
-  - Fix (v3): loader must read from model_meta.json and pass:
-      • lstm_hidden_size, lstm_layers, seq_len, behaviors
-    Also verify:
-      • encoder_model_identifier matches the project encoder
-      • *_cls.h5 embedding width (e.g., 768 for DINOv3) matches expectations
-  - If you must run an older build: add lstm_hidden_size=128 (or the trained value) when constructing ClassifierLSTMDeltas.
-</details>
+**[➡️ Click here to view the comprehensive Troubleshooting Guide](Troubleshooting.md)**
 
-<details>
-  <summary>v2 “Unable to allocate N GiB for an array …”</summary>
-  
-  - Cause: v2 loads entire video into RAM (e.g., a 10-min 720p clip can be ~90 GB).
-  - Best fix: use v3 (streamed/chunked encoder; no whole-video RAM spikes).
-  - If staying on v2 temporarily:
-      • Split videos into short segments (e.g., 60–120 s)
-      • Downsample resolution/FPS before import
-      • Test with short clips first
-</details>
+This guide covers:
+*   Installation errors (e.g., "No matching distribution for torch")
+*   "No new files found" / Inference errors
+*   Training stopping early
+*   Visual artifacts in recordings
 
 ## Hardware Requirements
 

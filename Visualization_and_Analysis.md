@@ -4,24 +4,47 @@ Congratulations on training a custom model! This guide explains how to use your 
 
 ---
 
-## 1. Classify Videos with Your Model (Inference)
+## 1. Understanding the Analysis Pipeline (Crucial)
 
-After a model has been successfully trained, the "Infer" button on its card becomes active. This allows you to run your model on any set of recordings.
+CBAS v3 uses a high-performance **Two-Step Pipeline** to analyze videos. Understanding this distinction is the key to avoiding common errors like "No new files found."
 
-1.  On the **Label/Train** page, find the card for the model you want to use.
-2.  Click the **Infer** button. This will open the "Start Classification" modal.
-3.  Select the recording session(s) or specific subject folders you want to analyze.
-4.  Click **Start**.
+### Step 1: Encoding (Automatic Background Task)
+When you import or record a video, CBAS immediately starts a background process called **Encoding**.
+*   **What it does:** It converts the raw video pixels (`.mp4`) into mathematical feature vectors using the DINO AI.
+*   **The Output:** It creates a file ending in **`_cls.h5`** next to your video.
+*   **How to check:** Look at the footer of the application. If the **Encoding Progress Bar** is moving, this step is active.
+
+### Step 2: Inference (Manual Action)
+This is what you trigger via the **Inference** button.
+*   **What it does:** It takes the trained model and applies it to the **`.h5` feature files** created in Step 1.
+*   **The Output:** It creates a CSV file ending in **`_outputs.csv`** containing the behavior probabilities.
+
+> [!IMPORTANT]
+> **"No new files found to process"?**
+> If you try to run Inference and get this error, it usually means **Step 1 (Encoding) hasn't finished yet.** The inference engine cannot see your videos until they have been converted to `.h5` files.
+>
+> *   **Fix:** Check the bottom footer. If the encoding bar is idle but files are missing, **restart the app**. On startup, CBAS scans for missing `.h5` files and restarts the encoder automatically.
+
+---
+
+## 2. Classify Videos with Your Model (Inference)
+
+After a model has been successfully trained—and your videos have been encoded—you can run inference.
+
+1.  Navigate to the **Inference** tab in the top navigation bar.
+2.  **Select Model:** Click on the card for the trained model you want to use.
+3.  **Select Videos:** Check the boxes for the recording session(s) or specific subject folders you want to analyze.
+4.  Click **Start Inference**.
 
 <p align="center">
     <img src="./assets/v3-inference-modal.png" alt="The CBAS inference modal." style="width: 500px; height: auto;">
 </p>
 
-The status on the model's card will update to show "Inference tasks queued..." and a progress bar will appear as the videos are processed. In the background, CBAS is creating a new `_outputs.csv` file for each video segment. These files contain the frame-by-frame predictions from your model.
+The status bar will update to show progress. In the background, CBAS is creating a new `_outputs.csv` file for each video segment.
 
 ---
 
-## 2. Session Analysis: Generating Actograms
+## 3. Session Analysis: Generating Actograms
 
 Once inference is complete, navigate to the **Visualize** page. By default, you are in "Session Analysis" mode. This mode is for analyzing entire recording sessions to see long-term behavioral patterns.
 
@@ -41,7 +64,7 @@ The actogram is a powerful tool for circadian biology. You can use the controls 
 
 ---
 
-## 3. Single Video Inspection: Ethograms and Interactive Playback
+## 4. Single Video Inspection: Ethograms and Interactive Playback
 
 This mode allows you to closely examine a model's performance on a single video file. You can either generate a static **Ethogram** plot for a quick overview or launch an **Interactive Playback** session to watch the video with the model's predictions overlaid on the timeline.
 
@@ -57,7 +80,7 @@ Launching the interactive playback will take you to a read-only version of the l
 
 ---
 
-## 4. The Analysis & Refinement Loop (Improving Your Model)
+## 5. The Analysis & Refinement Loop (Improving Your Model)
 
 Now that you have classification results, the final step is to use them to make your model even better. This is the "active learning" part of CBAS.
 

@@ -20,6 +20,16 @@ To create your first dataset:
     *   **Directories to label:** Select the parent recording session folders that contain the videos you want to access for labeling. This helps keep your video selection list clean and relevant.
 4.  Click **Create**. A new card representing your dataset will appear on the page.
 
+> [!WARNING]
+> **CRITICAL: The "Two Behavior" Rule**
+> You **must** define at least two behaviors for a model to work.
+>
+> *   **Why?** CBAS uses a probability function (Softmax) that forces all predictions to sum to 100%. If you only define one behavior (e.g., `Rearing`), the model is mathematically forced to predict "Rearing" with 100% confidence for every single frame, regardless of what the animal is doing.
+> *   **The Solution:** If you are only interested in one specific behavior, you must create a **"Background"** (or "Other") class.
+>     *   *Example:* Define behaviors as `Rearing; Background`.
+>     *   Label your Rearing instances.
+>     *   **Also label** instances of the animal *not* rearing (sleeping, walking, etc.) and assign them to "Background."
+
 <p align="center">
     <img src="./assets/v3-training-create-dataset.png" alt="Creating a new dataset in CBAS v3" style="width: 600px; height: auto;">
 </p>
@@ -70,6 +80,8 @@ This is the fastest way to expand and refine a dataset. The workflow is simple: 
 
 > ### **Pro-Tip: What Makes a Good Dataset?**
 > *   **Quantity:** Aim for at least **100-200** high-quality labeled instances for each behavior. For rare or subtle behaviors, more is always better.
+> *   **Signs of Too Little Data:** If your training finishes very quickly (e.g., in fewer than 5 epochs) or hits "Early Stopping" almost immediately, the model has likely "memorized" your small dataset rather than learning general patterns.
+>     *   **Rule of Thumb:** 15 examples is not enough. Aim for **50–100 instances** per behavior as a starting point.
 > *   **Variety:** The most important factor is variety. Ensure your labeled examples come from:
 >     *   Multiple different animals.
 >     *   Different times of day (and different lighting conditions).
