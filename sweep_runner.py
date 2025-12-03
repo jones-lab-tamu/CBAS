@@ -50,6 +50,7 @@ import hashlib
 from collections import defaultdict
 import random
 import glob
+import traceback
 
 import pandas as pd
 import torch
@@ -83,7 +84,7 @@ def _nice_multiple(x, base=32, minimum=32):
 def derive_batch_size_for_seq_len(seq_len: int,
                                   base_batch: int = 1024,
                                   base_seq: int = 31,
-                                  batch_cap: int = 512,
+                                  batch_cap: int = 1024,
                                   minimum: int = 32,
                                   snap: int = 32) -> int:
     """
@@ -92,6 +93,7 @@ def derive_batch_size_for_seq_len(seq_len: int,
     target_tokens = base_batch * base_seq
     raw = max(1, target_tokens // max(1, seq_len))
     bs = _nice_multiple(raw, base=snap, minimum=minimum)
+    # Cap at the user-defined base_batch (e.g. 1024)
     return min(bs, batch_cap)
 
 # ==============================================================================
@@ -111,10 +113,10 @@ PARAMETER_GRID = {
 # --- B. Define the parameters you want to KEEP CONSTANT for the sweep ---
 SWEEP_FIXED_PARAMETERS = {
     'training_method': 'oversampling',
-    'optimization_target': 'macro avg',
+    'optimization_target': 'weighted avg', # Changed to weighted avg as it's safer for unbalanced data
     'epochs': 10,
     'patience': 3,
-    'batch_size': 1024, # This now serves as the BASE reference for the budget calculation
+    'batch_size': 1024, # This serves as the BASE reference for the budget calculation
     'use_test': False, # Test set is NOT used in the sweep phase
     'test_split': 0.0,
     'num_runs': 5, # 5 replicates for the sweep
@@ -133,7 +135,7 @@ CHAMPION_PARAMETERS = {
 
     # --- Fixed Experimental Conditions ---
     'training_method': 'oversampling',
-    'optimization_target': 'macro avg',
+    'optimization_target': 'weighted avg',
     'learning_rate': 5e-5,
     'epochs': 10,
     'patience': 3,
@@ -282,14 +284,14 @@ def run_sweep(dataset_name: str):
         current_params = SWEEP_FIXED_PARAMETERS.copy()
         current_params.update(params)
 
-         # Dynamically derive the batch size to keep token count constant
-        # Pass a cap to the derivation function.
+        # Dynamically derive the batch size to keep token count constant
+        # Allow up to the user-defined base_batch_size
         base_batch_size = SWEEP_FIXED_PARAMETERS.get('batch_size', 1024)
         current_params['batch_size'] = derive_batch_size_for_seq_len(
             seq_len=current_params['sequence_length'],
             base_batch=base_batch_size,
             base_seq=31,
-            batch_cap=min(512, base_batch_size) # Cap at 512 or the base size, whichever is smaller
+            batch_cap=base_batch_size # Uses the user-defined limit from FIXED_PARAMETERS
         )
         print(f"--- Starting Job {i+1}/{total_jobs} ---")
         # Log both the grid parameters and the final effective parameters for clarity
@@ -322,13 +324,18 @@ def run_sweep(dataset_name: str):
                     current_params['batch_size'] * current_params['sequence_length']
                 )
 
-                # Average validation macro F1 across runs
+                # Dynamically select the metric based on what was actually optimized
+                target_metric = current_params.get('optimization_target', 'weighted avg')
+                
+                # Average validation F1 scores across runs using the correct metric
                 val_f1_scores = [
-                    r.get('validation_report', {}).get('macro avg', {}).get('f1-score', 0.0)
+                    r.get('validation_report', {}).get(target_metric, {}).get('f1-score', 0.0)
                     for r in run_reports
                 ]
                 avg_val_f1 = sum(val_f1_scores) / len(val_f1_scores) if val_f1_scores else 0.0
-                result_row['avg_validation_f1_macro'] = avg_val_f1
+                
+                # Save as a distinct column so user knows which metric was used
+                result_row[f'avg_validation_f1_{target_metric.replace(" ", "_")}'] = avg_val_f1
 
                 all_results.append(result_row)
 
@@ -400,8 +407,10 @@ def run_final_evaluation(dataset_name: str):
                 result_row[f'{behavior}_Test_Precision'] = precision
                 result_row[f'{behavior}_Test_Recall'] = recall
             
-            macro_f1 = run_report['test_report'].get('macro avg', {}).get('f1-score', 0)
-            result_row['avg_test_f1_macro'] = macro_f1
+            # Also capture the target metric for the test set
+            target_metric = CHAMPION_PARAMETERS.get('optimization_target', 'weighted avg')
+            macro_f1 = run_report['test_report'].get(target_metric, {}).get('f1-score', 0)
+            result_row[f'avg_test_f1_{target_metric.replace(" ", "_")}'] = macro_f1
             all_results.append(result_row)
 
     if all_results:
@@ -525,6 +534,9 @@ def train_final_model(dataset_name: str):
 
         with open(config_path, 'w') as f:
             yaml.dump(config, f, allow_unicode=True)
+        
+        # Update in-memory object to match
+        dataset.config = config
         
         print("Successfully updated config.yaml with metrics and instance counts.")
         print("The official performance of this model is the one reported from the 'evaluate' phase.")
